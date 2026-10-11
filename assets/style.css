@@ -75,10 +75,10 @@ section[id],[id="roles"],[id="life"],[id="perks"],[id="apply"]{scroll-margin-top
 .hero-card .lede{font-size:clamp(17px,1.4vw,20px);line-height:1.45;color:var(--text);max-width:34ch}
 .hero-card .btn{margin-top:12px;align-self:flex-start}
 /* Bar: mirrors the nav bar at the bottom edge (same insets), title left, pitch centre, button right */
-.hero-card.bar{right:20px;width:auto;flex-direction:row;align-items:flex-end;gap:clamp(20px,3vw,48px);padding:28px 32px}
-.hero-card.bar h1{flex:1.25;max-width:17ch}
-.hero-card.bar .lede{flex:1;max-width:36ch}
-.hero-card.bar .btn{flex:none;margin-top:0;align-self:flex-end}
+.hero-card.bar{right:20px;width:auto;flex-direction:row;align-items:center;gap:24px;padding:24px 28px 24px 32px}
+.hero-card.bar h1{flex:none}
+.hero-card.bar .lede{flex:0 1 auto;max-width:40ch;padding-left:24px;border-left:1px solid rgba(28,28,28,.25);line-height:1.35}
+.hero-card.bar .btn{flex:none;margin:0 0 0 auto;align-self:center}
 /* Split: one card, text left and the button at its bottom-right */
 .hero-card.split{width:min(860px,calc(100% - 40px));display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:32px;row-gap:12px;align-items:end}
 .hero-card.split h1{grid-column:1/-1}
@@ -190,9 +190,10 @@ footer a{color:var(--muted)}
   .promo .long{display:none}
   .promo .short{display:inline}
   .hero-card{left:0;right:0;bottom:20px;margin-inline:20px;width:auto;padding:22px 22px 24px}
-  .hero-card.bar,.hero-card.split{display:flex;flex-direction:column;align-items:stretch;gap:12px;right:0}
-  .hero-card.bar .btn,.hero-card.split .btn{align-self:flex-start;margin-top:12px}
+  .hero-card.bar,.hero-card.split{display:flex;flex-direction:column;align-items:stretch;gap:12px;right:0;padding:22px 22px 24px}
+  .hero-card.bar .btn,.hero-card.split .btn{align-self:flex-start;margin:12px 0 0}
   .hero-card h1{font-size:29px}
+  .hero-card.bar .lede{border-left:0;padding-left:0}
   .hero-card .lede{font-size:16px}
   .hero-card .btn{height:3rem;margin-top:6px}
   .hero-full img{object-position:50% 40%}
