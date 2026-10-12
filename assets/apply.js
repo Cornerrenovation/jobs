@@ -6,6 +6,7 @@
   if (!form) return;
   var ENDPOINT = (window.CORNER_JOBS && window.CORNER_JOBS.endpoint) || '';
   var MAX_MB = 10;
+  var ANSWER_MAX = 1500; // keep in step with build.py and apps-script/Code.gs
   var OK_EXT = /\.(pdf|doc|docx)$/i;
   var started = Date.now();
   var submissionId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2);
@@ -28,7 +29,7 @@
   });
   ['dragenter', 'dragover'].forEach(function (ev) { drop.addEventListener(ev, function () { drop.classList.add('has'); }); });
   ['dragleave', 'drop'].forEach(function (ev) { drop.addEventListener(ev, function () { if (!cvInput.files.length) drop.classList.remove('has'); }); });
-  form.querySelectorAll('input,select').forEach(function (el) {
+  form.querySelectorAll('input,select,textarea').forEach(function (el) {
     el.addEventListener('input', function () { clearErr(el.name); });
   });
 
@@ -66,6 +67,8 @@
     v.cvFile = f;
     v.portfolio = normUrl(form.elements['portfolio'].value);
     if (v.portfolio === null) { setErr('portfolio', 'This link doesn’t look right. Please check it.'); ok = false; }
+    v.answer = form.elements['answer'] ? form.elements['answer'].value.trim() : '';
+    if (v.answer.length > ANSWER_MAX) { setErr('answer', 'Please keep it under ' + ANSWER_MAX + ' characters.'); ok = false; }
     return ok ? v : null;
   }
   function readB64(file) {
@@ -86,13 +89,13 @@
     e.preventDefault();
     if (form.elements['company_site'].value) return; // honeypot: bots fill hidden fields
     var v = validate();
-    if (!v) { show('err', 'Please fix the fields marked in red.'); var b = form.querySelector('.bad input,.bad select'); if (b) b.focus(); return; }
+    if (!v) { show('err', 'Please fix the fields marked in red.'); var b = form.querySelector('.bad input,.bad select,.bad textarea'); if (b) b.focus(); return; }
     if (!ENDPOINT) { show('info', 'Everything looks right. This is a preview, so nothing was sent.'); return; }
     busy(true); status.hidden = true;
     readB64(v.cvFile).then(function (data) {
       var payload = {
         id: submissionId, job: form.dataset.job, jobTitle: form.dataset.title,
-        name: v.name, email: v.email, linkedin: v.linkedin, english: v.english, portfolio: v.portfolio || '',
+        name: v.name, email: v.email, linkedin: v.linkedin, english: v.english, portfolio: v.portfolio || '', answer: v.answer,
         cv: { name: v.cvFile.name, type: v.cvFile.type || 'application/octet-stream', size: v.cvFile.size, data: data },
         page: location.href, elapsedSec: Math.round((Date.now() - started) / 1000)
       };
