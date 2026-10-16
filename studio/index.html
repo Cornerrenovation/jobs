@@ -8,17 +8,19 @@
 <link rel="icon" href="../img/favicon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Red+Hat+Display:wght@400;500;600;700&family=Red+Hat+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="studio.css?v=1">
+<link rel="stylesheet" href="studio.css?v=2">
 </head>
 <body>
 <header class="top">
   <a class="brand" href="./"><img src="../img/corner-wordmark.png" alt="Corner" width="107" height="16"><span>Studio</span></a>
   <nav class="views" aria-label="Views">
-    <button data-view="pipeline" aria-pressed="true">Pipeline</button>
+    <button data-view="checklists" aria-pressed="true">Checklists</button>
+    <button data-view="week" aria-pressed="false">This week</button>
+    <button data-view="posts" aria-pressed="false">Posts</button>
+    <button data-view="pipeline" aria-pressed="false">Pipeline</button>
     <button data-view="candidates" aria-pressed="false">Candidates</button>
     <button data-view="outreach" aria-pressed="false">Outreach</button>
     <button data-view="templates" aria-pressed="false">Templates</button>
-    <button data-view="checklists" aria-pressed="false">Checklists</button>
     <button data-view="activity" aria-pressed="false">Activity</button>
   </nav>
   <div class="who"><span id="who" class="mono"></span><a href="/cdn-cgi/access/logout" class="signout">Sign out</a></div>
@@ -30,6 +32,6 @@
 <aside id="drawer" class="drawer" hidden aria-label="Record"><div class="dhead"><h2 id="dtitle"></h2><button type="button" class="btn ghost" id="dclose">Close</button></div><div id="dbody" class="dbody"></div></aside>
 <div id="scrim" class="scrim" hidden></div>
 <dialog id="docview" aria-labelledby="doctitle"><div class="dhead"><div><span class="mono dpath" id="docpath"></span><h2 id="doctitle"></h2></div><button type="button" class="btn ghost" id="docclose">Close</button></div><div class="docbody" id="docbody"></div></dialog>
-<script src="app.js?v=1"></script>
+<script src="app.js?v=2"></script>
 </body>
 </html>

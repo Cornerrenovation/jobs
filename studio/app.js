@@ -12,6 +12,7 @@
     ["Screen", ["screen booked", "screen done"]], ["Interview", ["interview booked", "interview done"]], ["Work sample", ["work sample"]],
     ["References", ["references"]], ["Offer", ["offer"]], ["Hired", ["hired"]], ["Closed", ["declined", "not now", "pool R1"]]];
   const CALLS = ["", "Shortlist", "Hold", "Decline"];
+  const whoName = (by) => !by ? "" : by === "claude" || /\.access$/.test(by) || /^u_/.test(by) ? "Claude" : by.replace(/@.*/, "").replace(/^\w/, (c) => c.toUpperCase());
   const state = { view: "pipeline", boot: null, roleFilter: "all", role: null, filter: "all", candidates: null, outreach: null, templates: null, search: "" };
   const store = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
 
@@ -52,6 +53,8 @@
       else if (state.view === "outreach") await renderOutreach(view);
       else if (state.view === "templates") await renderTemplates(view);
       else if (state.view === "checklists") renderChecklists(view);
+      else if (state.view === "week") await renderDocView(view, "this-week");
+      else if (state.view === "posts") await renderDocView(view, "posts");
       else if (state.view === "activity") await renderActivity(view);
     } catch (e) { if (!$("#notice").textContent) notice(String(e.message || e), true); view.innerHTML = ""; }
   }
@@ -205,16 +208,16 @@
     const phases = []; steps.forEach((s) => { let p = phases.find((x) => x.key === s.phase); if (!p) { p = { key: s.phase, title: s.phase_title, steps: [] }; phases.push(p); } p.steps.push(s); });
     view.innerHTML = `<div class="viewhead"><div><h2>Checklists</h2><div class="sub">The ${total} steps every search follows, one list per role</div></div><button type="button" class="btn" id="newsearch">New search</button></div>
       <div class="cards">${roles().map((r) => `<button type="button" class="rcard" data-role="${h(r.id)}" aria-pressed="${r.id === state.role}"><span class="pill ${r.state === "live" ? "ok" : r.state === "pool" ? "warn" : ""}">${h(r.state === "live" ? "Live" : r.state === "pool" ? "Quiet pool" : r.state || "planned")}</span><span class="cname">${h(r.short)}</span><span class="muted" style="font-size:12.5px">Owner · ${h(r.owner || "–")}</span><span class="bar"><span style="width:${Math.round(100 * count(r.id) / total)}%"></span></span><span class="mono muted"><b style="color:var(--ink);font-weight:500">${count(r.id)}</b> / ${total}</span></button>`).join("")}</div>
-      ${role ? `<div class="rolebar"><div class="chips">${roles().map((r) => `<button type="button" class="chip" data-role="${h(r.id)}" aria-pressed="${r.id === state.role}">${h(r.short)}</button>`).join("")}</div>
+      ${role ? `<div class="rolebar"><div class="rtabs">${roles().map((r) => `<button type="button" class="rtab" data-role="${h(r.id)}" aria-pressed="${r.id === state.role}">${h(r.short)}<b>${count(r.id)}</b></button>`).join("")}</div>
         <div class="filters">${["all", "open", "done"].map((f) => `<button type="button" data-filter="${f}" aria-pressed="${state.filter === f}">${f[0].toUpperCase() + f.slice(1)}</button>`).join("")}</div></div>
-      <section class="role" data-filter="${h(state.filter)}"><div class="rolehead"><div><span class="eyebrow">Owner · ${h(role.owner || "–")}</span><h2 style="margin:2px 0">${h(role.name)}</h2><p class="muted" style="margin:0;font-size:13.5px">${h(role.status)} <button type="button" class="edit" id="editrole">edit</button></p></div><div><span class="big">${count(role.id)}</span> <span class="muted">of ${total} steps done</span></div></div>
+      <section class="role" data-filter="${h(state.filter)}"><div class="rolehead"><div><span class="eyebrow">Owner · ${h(role.owner || "–")}</span><h2>${h(role.name)}</h2><p class="muted">${h(role.status)} <button type="button" class="edit" id="editrole">edit</button></p></div><div class="rolestat"><span class="big">${count(role.id)}</span><span class="muted">of ${total} steps done</span></div></div><div class="bar"><span style="width:${Math.round(100 * count(role.id) / total)}%"></span></div>
       ${phases.map((p) => `<div class="phase"><h3>${h(p.title)} <span>${p.steps.filter((s) => doneSet.has(role.id + "~" + s.id)).length} / ${p.steps.length}</span></h3><ul class="steps">
         ${p.steps.map((s) => { const key = role.id + "~" + s.id, done = doneSet.has(key), t = tickOf(role.id, s.id), rs = notes[key] || {}; let links = []; try { links = JSON.parse(rs.links || "[]"); } catch (e) {}
           return `<li class="step ${done ? "done" : ""}"><input type="checkbox" class="tick" id="t-${h(key)}" data-key="${h(key)}" ${done ? "checked" : ""}><div class="stepbody"><label for="t-${h(key)}" class="stitle">${h(s.title)}</label>
-            <p class="snote" data-note="${h(key)}">${h(rs.note || "")} <button type="button" class="edit" data-editnote="${h(key)}">${rs.note ? "edit" : "add a note"}</button></p>
+            <p class="snote" data-note="${h(key)}">${h(rs.note || "")}<button type="button" class="edit" data-editnote="${h(key)}">${rs.note ? "edit" : "add a note"}</button></p>
             ${links.length ? `<div class="chips">${links.map((l) => l.target.startsWith("doc:") ? `<button type="button" class="chip link" data-doc="${h(l.target.slice(4))}">${h(l.label)}</button>` : `<a class="chip link" href="${h(l.target.startsWith("art:") ? "https://claude.ai/artifact/" + l.target.slice(4) : l.target)}" target="_blank" rel="noopener">${h(l.label)}</a>`).join("")}</div>` : ""}
             <details class="what"><summary>What this step means</summary><p>${h(s.what)}</p></details>
-            <span class="smeta">${done && t ? "Done " + fmt(t.at) + (t.by ? " · " + h(t.by.replace(/@.*/, "")) : "") : ""}</span></div></li>`; }).join("")}</ul></div>`).join("")}</section>` : '<div class="empty">No searches yet. Start one with "New search".</div>'}`;
+            <span class="smeta">${done && t ? "Done " + fmt(t.at) + " · by " + h(whoName(t.by)) : ""}</span></div></li>`; }).join("")}</ul></div>`).join("")}</section>` : '<div class="empty">No searches yet. Start one with "New search".</div>'}`;
     view.querySelectorAll("[data-role]").forEach((el) => el.addEventListener("click", () => { state.role = el.dataset.role; store.set("studio-role", state.role); renderChecklists(view); }));
     view.querySelectorAll(".filters button").forEach((el) => el.addEventListener("click", () => { state.filter = el.dataset.filter; renderChecklists(view); }));
     view.querySelectorAll("input.tick").forEach((cb) => cb.addEventListener("change", async () => {
@@ -242,6 +245,29 @@
     });
   }
 
+  // ---------- This week and Posts: the launch kit, rendered by the checklist builder and synced as documents ----------
+  async function renderDocView(view, slug) {
+    const d = await api("docs/" + slug);
+    view.innerHTML = `<section class="kit ${slug}">${d.html || "<p class='muted'>Not synced yet.</p>"}</section>`;
+    const done = state.boot.ticks.filter((t) => t.done).length, total = state.boot.steps.length * state.boot.roles.length;
+    view.querySelectorAll('[data-count="all"]').forEach((e) => { e.textContent = done; });
+    view.querySelectorAll(".kpi b").forEach((b) => { if (/\/ 140$/.test(b.textContent)) b.innerHTML = `${done} / ${total}`; });
+    view.querySelectorAll('a[href="#posts"]').forEach((a) => { a.removeAttribute("target"); a.addEventListener("click", (e) => { e.preventDefault(); setView("posts"); window.scrollTo(0, 0); }); });
+    view.querySelectorAll("pre").forEach((pre) => {
+      const box = document.createElement("div"); box.className = "post";
+      const bar = document.createElement("div"); bar.className = "postbar";
+      const lab = document.createElement("span"); lab.className = "label"; lab.textContent = pre.textContent.trim().split("\n")[0].slice(0, 48);
+      const btn = document.createElement("button"); btn.className = "copy"; btn.type = "button"; btn.textContent = "Copy";
+      btn.addEventListener("click", () => {
+        const t = pre.textContent.replace(/\n$/, "");
+        const ok = () => { btn.textContent = "Copied"; btn.classList.add("done"); setTimeout(() => { btn.textContent = "Copy"; btn.classList.remove("done"); }, 1600); };
+        const pick = () => { const r = document.createRange(); r.selectNodeContents(pre); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); btn.textContent = "Selected: press ⌘C"; };
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(ok, pick); else pick();
+      });
+      pre.parentNode.insertBefore(box, pre); bar.appendChild(lab); bar.appendChild(btn); box.appendChild(bar); box.appendChild(pre);
+    });
+  }
+
   // ---------- activity ----------
   async function renderActivity(view) {
     const rows = await api("activity?limit=200");
@@ -262,6 +288,6 @@
   $("#docview").addEventListener("click", (e) => { if (e.target === $("#docview")) $("#docview").close(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#drawer").hidden) closeDrawer(); });
 
-  const start = (location.hash || "").slice(1) || store.get("studio-view") || "pipeline";
-  setView(["pipeline", "candidates", "outreach", "templates", "checklists", "activity"].includes(start) ? start : "pipeline");
+  const start = (location.hash || "").slice(1) || store.get("studio-view") || "checklists";
+  setView(["checklists", "week", "posts", "pipeline", "candidates", "outreach", "templates", "activity"].includes(start) ? start : "checklists");
 })();
