@@ -104,31 +104,35 @@
     if (!state.candidates) await loadCandidates();
     const list = state.candidates.filter((c) => state.roleFilter === "all" || c.role_id === state.roleFilter);
     const active = list.filter((c) => !CLOSED.includes(c.stage));
+    const closed = list.filter((c) => CLOSED.includes(c.stage));
     const idx = (c) => { const i = FUNNEL.findIndex(([, st]) => st.includes(c.stage || "applied")); return i < 0 ? 0 : i; };
     const reached = FUNNEL.map((_, i) => active.filter((c) => idx(c) >= i));
-    const top = reached[0].length || 1;
-    const closed = list.filter((c) => CLOSED.includes(c.stage));
-    const rows = FUNNEL.map(([title, stages], i) => {
-      const n = reached[i].length, prev = i ? reached[i - 1].length : n, here = active.filter((c) => idx(c) === i);
-      const conv = i ? (prev ? Math.round(100 * n / prev) : 0) : null, overall = i ? (reached[0].length ? Math.round(100 * n / reached[0].length) : 0) : null;
+    const applied = reached[0].length, top = applied || 1;
+    const pct = (a, b) => (b ? Math.round(100 * a / b) + "%" : "–");
+    // the bottleneck is the weakest step among stages with at least 5 people entering it
+    let bottleneck = null;
+    FUNNEL.forEach((_, i) => { if (i && reached[i - 1].length >= 5) { const r = reached[i].length / reached[i - 1].length; if (!bottleneck || r < bottleneck.r) bottleneck = { i, r }; } });
+    const rows = FUNNEL.map(([title], i) => {
+      const n = reached[i].length, prev = i ? reached[i - 1].length : null, here = active.filter((c) => idx(c) === i);
       const open = !!state.open[title];
-      return `<div class="stage ${open ? "open" : ""}" data-stage="${h(title)}">
+      return `<div class="stage ${open ? "open" : ""} ${bottleneck && bottleneck.i === i ? "weak" : ""}">
         <button type="button" class="stagerow" data-toggle="${h(title)}" aria-expanded="${open}">
-          <span class="sname">${h(title)}</span>
-          <span class="sbar"><span style="width:${Math.round(100 * n / top)}%"></span></span>
-          <span class="snum">${n}</span>
-          <span class="sconv">${conv == null ? "" : `${conv}% <small>of ${h(FUNNEL[i - 1][0].toLowerCase())}</small>`}</span>
-          <span class="sconv all">${overall == null ? "" : `${overall}% <small>of applied</small>`}</span>
-          <span class="snow muted">${here.length} here now</span>
+          <span class="sname">${h(title)}<small>${here.length ? `${here.length} here now` : "nobody here now"}</small></span>
+          <span class="sbar"><span style="width:${n ? Math.max(2, Math.round(100 * n / top)) : 0}%"></span></span>
+          <span class="snum">${n}<small>${i > 1 ? `${pct(n, applied)} of applied` : i === 1 ? "" : "reached"}</small></span>
+          <span class="sconv">${i ? `<b>${pct(n, prev)}</b><small>from ${h(FUNNEL[i - 1][0].toLowerCase())}</small>` : ""}${bottleneck && bottleneck.i === i ? pill("weakest step", "warn") : ""}</span>
         </button>
         ${open ? `<div class="stagelist">${here.length ? here.map((c) => `<button type="button" class="srow" data-id="${h(c.id)}"><span class="name">${h(c.name)}</span><span class="muted">${h(roleName(c.role_id))}${c.sources ? " · " + h(c.sources) : ""}</span>${callPill(c.your_call)}${c.due ? `<span class="muted">due ${h(fmt(c.due))}</span>` : ""}<span class="pill">${h(c.stage)}</span></button>`).join("") : `<p class="muted">Nobody at this stage right now.</p>`}</div>` : ""}
       </div>`;
     }).join("");
-    view.innerHTML = head("Pipeline", `${active.length} active · ${closed.length} closed · each stage counts everyone who reached it or went further; click a stage to see who is there now`, roleSeg()) +
-      `<div class="funnel">${rows}</div>
-      ${closed.length ? `<div class="stage"><button type="button" class="stagerow" data-toggle="Closed" aria-expanded="${!!state.open.Closed}"><span class="sname">Closed</span><span class="sbar"></span><span class="snum">${closed.length}</span><span class="sconv"></span><span class="sconv all"></span><span class="snow muted">declined, not now, pool</span></button>
-        ${state.open.Closed ? `<div class="stagelist">${closed.map((c) => `<button type="button" class="srow" data-id="${h(c.id)}"><span class="name">${h(c.name)}</span><span class="muted">${h(roleName(c.role_id))}</span><span class="pill">${h(c.stage)}</span></button>`).join("")}</div>` : ""}</div>` : ""}
-      ${list.length ? "" : `<div class="card empty">No candidates yet. They arrive from the jobs site, LinkedIn and Work.ua through the daily check-in, or you add one under Candidates.</div>`}`;
+    const strip = [[active.length, "active candidates"], [closed.length, "closed"], [pct(reached[FUNNEL.length - 1].length, applied), "applied to hired"],
+      [bottleneck ? FUNNEL[bottleneck.i][0] : "–", bottleneck ? "weakest step" : "weakest step (needs 5+ per stage)"]];
+    view.innerHTML = head("Pipeline", "Each stage counts everyone who reached it or went further. Closed candidates sit in their own row and don't count against the conversions. Click a stage to see who is there now.", roleSeg()) +
+      `<div class="strip four">${strip.map(([v, t]) => `<div class="kpi"><b>${h(v)}</b><span>${h(t)}</span></div>`).join("")}</div>
+      <div class="funnel">${rows}
+      <div class="stage closedrow"><button type="button" class="stagerow" data-toggle="Closed" aria-expanded="${!!state.open.Closed}"><span class="sname">Closed<small>declined, not now, pool</small></span><span class="sbar"></span><span class="snum">${closed.length}</span><span class="sconv"></span></button>
+        ${state.open.Closed ? `<div class="stagelist">${closed.length ? closed.map((c) => `<button type="button" class="srow" data-id="${h(c.id)}"><span class="name">${h(c.name)}</span><span class="muted">${h(roleName(c.role_id))}</span><span class="pill">${h(c.stage)}</span></button>`).join("") : '<p class="muted">Nobody closed yet.</p>'}</div>` : ""}</div></div>
+      ${list.length ? "" : `<p class="muted">No candidates yet. They arrive from the jobs site, LinkedIn and Work.ua through the daily check-in, or you add one under Candidates.</p>`}`;
     bindSeg(view, "role", (v) => { state.roleFilter = v; renderPipeline(view); });
     view.querySelectorAll("[data-toggle]").forEach((b) => b.addEventListener("click", () => { state.open[b.dataset.toggle] = !state.open[b.dataset.toggle]; renderPipeline(view); }));
     view.querySelectorAll(".srow").forEach((b) => b.addEventListener("click", () => openCandidate(b.dataset.id)));
