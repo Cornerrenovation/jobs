@@ -6,7 +6,7 @@
   --ink:#1c1c1c; --text:#333333; --muted:#666666; --line:rgba(106,100,100,.18);
   --btn:#232121; --btn-text:#ffffff; --ok:#409742; --err:#9e3233; --err-bg:rgba(255,242,240,.75);
   --oak:#9a7446;
-  --r-lg:16px; --r-md:8px; --r-sm:4px;
+  --r-xl:32px; --r-lg:16px; --r-md:8px; --r-sm:4px; --frame:rgba(255,255,255,.5);
   --f:"Red Hat Display",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
   --m:"Red Hat Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
   color-scheme:light;
@@ -64,63 +64,96 @@ section[id],[id="roles"],[id="life"],[id="perks"],[id="apply"]{scroll-margin-top
 .textlink{font-weight:600;color:var(--ink);text-decoration:none;font-size:15px}
 .textlink:hover{text-decoration:underline}
 
-/* Hub, 16 Oct 2026: a centred intro with no background photo, an auto-scrolling photo strip (after awesomic.com/talent),
-   then About (accordion beside a dark perks card), values, and who we hire */
-.intro{display:flex;flex-direction:column;align-items:center;text-align:center;gap:18px;max-width:880px;margin:0 auto;padding-block:clamp(40px,7vw,88px) clamp(28px,4vw,44px)}
-.intro h1{font-size:clamp(40px,7vw,84px);letter-spacing:-.025em;line-height:1.02}
-.intro .lede{font-size:clamp(17px,1.7vw,20px);line-height:1.5;max-width:50ch}
-.pills{list-style:none;margin:4px 0 0;padding:0;display:flex;flex-wrap:wrap;justify-content:center;gap:8px}
-.pills li{font-size:14px;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:999px;padding:6px 14px}
-.intro .btn{margin-top:6px}
+/* Hub (17 Oct 2026 pass), closer to awesomic.com/talent: a small tag, a 56px title, outlined fact tags, a 32px-radius
+   photo strip, and the accordion beside a dark perks card. Values stack as you scroll, after hiring.jooble.org. */
+.intro{display:flex;flex-direction:column;align-items:center;text-align:center;gap:16px;max-width:800px;margin:0 auto;padding-block:clamp(40px,6vw,80px) clamp(28px,4vw,40px)}
+.intro .tag,.tags li{font-size:13px;line-height:1.5;color:var(--text);border:1px solid rgba(28,28,28,.16);border-radius:12px;padding:4px 10px}
+.intro h1{font-size:clamp(36px,4.4vw,56px);letter-spacing:-.02em;line-height:1.1}
+.intro .lede{font-size:clamp(16px,1.3vw,18px);line-height:1.55;max-width:46ch}
+.tags{list-style:none;margin:2px 0 0;padding:0;display:flex;flex-wrap:wrap;justify-content:center;gap:8px}
+.intro .btn{margin-top:8px}
 
 .strip{margin-inline:-16px;overflow:hidden;padding-bottom:clamp(28px,4vw,48px)}
-.strip-track{display:flex;width:max-content;animation:strip 80s linear infinite}
+.strip-track{display:flex;width:max-content;animation:strip 90s linear infinite}
 .strip:hover .strip-track{animation-play-state:paused}
 .strip-set{display:flex;gap:12px;padding-right:12px}
-.strip figure{margin:0;flex:none;height:clamp(220px,27vw,400px);border-radius:var(--r-lg);overflow:hidden;background:var(--bg-3)}
+.strip figure{margin:0;flex:none;height:clamp(220px,25vw,364px);border-radius:var(--r-xl);overflow:hidden;background:var(--bg-3)}
 .strip img{height:100%;width:auto;object-fit:cover}
 @keyframes strip{to{transform:translateX(-50%)}}
 @media (prefers-reduced-motion:reduce){.strip{overflow-x:auto}.strip-track{animation:none}.strip-set[aria-hidden]{display:none}}
 
-h2.big{font-size:clamp(30px,4.2vw,48px);letter-spacing:-.02em;line-height:1.06}
-.center{text-align:center;align-self:center}
-section.block.about{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:clamp(18px,3vw,32px);align-items:start}
-.about-main{display:flex;flex-direction:column;gap:14px;min-width:0}
-.about-main > div:first-child{margin-bottom:10px}
-.acc{background:var(--card);border:1px solid var(--line);border-radius:var(--r-lg);padding:0 22px}
-.acc summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:20px 0;cursor:pointer}
+h2.big{font-size:clamp(30px,3.4vw,44px);letter-spacing:-.02em;line-height:1.08}
+
+/* About: accordion (one open, moves on by itself until someone clicks) beside the perks card */
+section.block.about{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:clamp(24px,4.5vw,64px);align-items:start;padding-block:clamp(48px,6vw,88px)}
+.accs{display:flex;flex-direction:column;gap:12px;min-width:0}
+.acc{border-radius:var(--r-xl);background:var(--frame);box-shadow:inset 0 1px 0 rgba(255,255,255,.7)}
+.acc[open]{background:var(--white);box-shadow:0 0 0 8px var(--frame),0 4px 12px rgba(0,0,0,.05);margin:8px}
+.acc summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:22px 26px;cursor:pointer;border-radius:var(--r-xl)}
 .acc summary::-webkit-details-marker{display:none}
-.acc summary h3{font-size:20px}
-.acc summary:focus-visible{outline:2px solid var(--ink);outline-offset:4px;border-radius:var(--r-sm)}
-.pm{position:relative;flex:none;width:28px;height:28px;border-radius:50%;background:var(--ink)}
-.pm::before,.pm::after{content:"";position:absolute;left:50%;top:50%;width:12px;height:2px;border-radius:1px;background:#fff;transform:translate(-50%,-50%)}
-.pm::after{transform:translate(-50%,-50%) rotate(90deg);transition:transform .2s ease}
-.acc[open] .pm::after{transform:translate(-50%,-50%) rotate(0deg)}
-.acc-body{display:flex;flex-direction:column;gap:14px;padding-bottom:22px;max-width:62ch}
+.acc summary:focus-visible{outline:2px solid var(--ink);outline-offset:-4px}
+.acc[open] summary{padding-bottom:8px}
+.acc-title{font-size:20px;font-weight:600;line-height:1.4;color:var(--ink)}
+.chev{flex:none;width:24px;height:24px;border-radius:50%;background:var(--ink);display:grid;place-items:center;transition:transform .25s ease}
+.chev svg{width:16px;height:16px;fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.acc[open] .chev{transform:rotate(180deg)}
+.acc-body{display:flex;flex-direction:column;gap:14px;padding:6px 26px 24px;font-size:15px;line-height:1.6}
+.acc-foot{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-top:6px}
+.acc-progress{flex:none;width:40px;height:8px;border-radius:99px;background:var(--bg-2);overflow:hidden}
+.acc-progress i{display:block;width:0;height:100%;border-radius:inherit;background:var(--muted)}
+.acc[open] .acc-progress i{animation:accfill 12s linear forwards}
+.acc-manual .acc-progress{visibility:hidden}
+@keyframes accfill{to{width:100%}}
 .how{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:12px}
 .how li{display:grid;grid-template-columns:auto minmax(0,1fr);gap:14px}
-.how .step{font-family:var(--m);font-size:13px;color:var(--oak);padding-top:3px}
-.perkcard{position:sticky;top:80px;background:var(--ink);color:#fff;border-radius:var(--r-lg);padding:24px;display:flex;flex-direction:column;gap:14px;min-width:0}
+.how .step{font-family:var(--m);font-size:13px;color:var(--oak);padding-top:2px}
+.perkcard{position:sticky;top:88px;background:var(--ink);border-radius:var(--r-xl);padding:32px;display:flex;flex-direction:column;gap:22px;min-width:0}
+.perkcard-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.perkcard-head .trace{width:36px;height:36px;color:var(--oak)}
 .perkcard h3{color:#fff;font-size:20px}
 .perkcard ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
-.perkcard li{display:grid;grid-template-columns:24px minmax(0,1fr);gap:14px;padding:14px 0;border-top:1px solid rgba(255,255,255,.14)}
-.perkcard li:first-child{border-top:0;padding-top:2px}
-.perkcard svg{width:22px;height:22px;stroke:#fff;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
-.perkcard b{display:block;color:#fff;font-weight:600;font-size:15px;line-height:1.35}
-.perkcard span{display:block;margin-top:3px;color:rgba(255,255,255,.72);font-size:14px;line-height:1.45}
+.perkcard li{display:grid;grid-template-columns:20px minmax(0,1fr);gap:12px;align-items:start;padding:16px 0;border-top:1px solid rgba(255,255,255,.12)}
+.perkcard li:first-child{border-top:0;padding-top:0}
+.perkcard svg{width:20px;height:20px;margin-top:1px;stroke:#fff;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.perkcard p{font-size:15px;line-height:1.45;color:rgba(255,255,255,.7)}
+.perkcard p b{color:#fff;font-weight:600}
 
-.values{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
-.value{background:var(--card);border:1px solid var(--line);border-radius:var(--r-lg);padding:26px 24px;display:flex;flex-direction:column;gap:12px;min-width:0}
-.value .trace{width:28px;height:28px;color:var(--oak)}
-.value h3{font-size:26px;letter-spacing:-.015em}
+/* Values: a sticky side with an index that follows along; cards stack on top of each other as you scroll */
+section.block.values-sec{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.5fr);gap:clamp(24px,5vw,72px);align-items:start;padding-block:clamp(56px,7vw,104px)}
+.vside{position:sticky;top:96px;display:flex;flex-direction:column;gap:14px;min-width:0}
+.vindex{list-style:none;margin:18px 0 0;padding:0;border-top:1px solid var(--line)}
+.vindex a{display:flex;align-items:baseline;gap:14px;padding:13px 0;border-bottom:1px solid var(--line);text-decoration:none;color:var(--muted);font-size:18px;font-weight:500;transition:color .2s ease}
+.vindex a span{font-family:var(--m);font-size:12px;letter-spacing:.06em}
+.vindex a:hover,.vindex a.on{color:var(--ink)}
+.vindex a.on span{color:var(--oak)}
+.vstack{display:flex;flex-direction:column;gap:28px;min-width:0}
+.vcard{position:sticky;top:calc(96px + var(--i) * 28px);scroll-margin-top:96px;min-height:360px;background:var(--card);border:1px solid var(--line);border-radius:var(--r-xl);padding:clamp(24px,3vw,36px);display:flex;flex-direction:column;gap:14px;box-shadow:0 -10px 30px rgba(28,28,28,.06)}
+.vcard:nth-child(2){background:#eeede6}
+.vcard:nth-child(3){background:var(--white)}
+.vcard-top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:auto}
+.vnum{font-family:var(--m);font-size:12px;letter-spacing:.08em;color:var(--muted)}
+.vcard svg{width:48px;height:48px;fill:none;stroke:var(--oak);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.vcard h3{padding-top:28px;font-size:clamp(30px,3.2vw,40px);letter-spacing:-.02em}
+.vtext{font-size:17px;line-height:1.55;max-width:52ch}
+.vproof{display:flex;flex-direction:column;gap:4px;margin-top:6px;padding-top:14px;border-top:1px solid var(--line);font-size:15px;line-height:1.5;color:var(--ink)}
+.vproof .label{color:var(--oak)}
 
-.you{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1.45fr);gap:12px}
-.you figure{margin:0;min-height:380px;border-radius:var(--r-lg);overflow:hidden;background:var(--bg-3)}
-.you img{width:100%;height:100%;object-fit:cover}
-.wantcard{background:var(--card);border:1px solid var(--line);border-radius:var(--r-lg);padding:24px;display:flex;flex-direction:column;gap:14px;min-width:0}
-.wantcard ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
-.wantcard li{font-size:15px;line-height:1.5}
-.wantcard b{color:var(--ink);font-weight:600}
+/* Who we hire: a centred head, then one photo beside a roomy card */
+section.block.you-sec{gap:clamp(28px,4vw,48px);padding-block:clamp(56px,7vw,104px)}
+.you-head{display:flex;flex-direction:column;align-items:center;text-align:center;gap:14px;max-width:760px;margin:0 auto}
+.you-head .lede{font-size:clamp(16px,1.3vw,18px);line-height:1.55;max-width:52ch}
+.you{display:flex;flex-direction:column;gap:16px}
+.you figure{margin:0;aspect-ratio:2.2/1;max-height:560px;border-radius:var(--r-xl);overflow:hidden;background:var(--bg-3)}
+.you img{width:100%;height:100%;object-fit:cover;object-position:50% 60%}
+.youcard{background:var(--card);border:1px solid var(--line);border-radius:var(--r-xl);padding:clamp(24px,4vw,48px);display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr);gap:clamp(24px,4vw,56px);align-items:start}
+.youcard-side{display:flex;flex-direction:column;gap:16px;min-width:0}
+.youcard h3{font-size:clamp(26px,2.6vw,34px);letter-spacing:-.015em}
+.traits{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;min-width:0}
+.traits li{display:grid;grid-template-columns:32px minmax(0,.85fr) minmax(0,1.15fr);gap:12px 20px;align-items:baseline;padding:18px 0;border-top:1px solid var(--line)}
+.traits li:first-child{border-top:0;padding-top:4px}
+.tnum{font-family:var(--m);font-size:12px;color:var(--oak)}
+.traits h4{margin:0;font-size:18px;font-weight:600;line-height:1.3;color:var(--ink)}
+.traits p{font-size:15px;line-height:1.5}
 
 .facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0;padding-block:22px 12px}
 .facts div{padding:8px 14px 8px 0;min-width:0}
@@ -215,12 +248,13 @@ footer a{color:var(--muted)}
 @media (max-width:860px){
   .two,.layout{grid-template-columns:minmax(0,1fr)}
   .side{position:static}
-  section.block.about{grid-template-columns:minmax(0,1fr)}
-  .perkcard{position:static}
-  .values{grid-template-columns:minmax(0,1fr)}
-  .you{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .you figure{min-height:240px}
-  .wantcard{grid-column:1/-1}
+  section.block.about,section.block.values-sec{grid-template-columns:minmax(0,1fr)}
+  .perkcard,.vside,.vcard{position:static}
+  .vindex{display:none}
+  .vcard{min-height:0}
+  .vcard h3{padding-top:12px}
+  .youcard{grid-template-columns:minmax(0,1fr)}
+  .you figure{aspect-ratio:3/2}
   .profile{grid-template-columns:minmax(0,1fr)}
 }
 @media (max-width:560px){
@@ -230,8 +264,11 @@ footer a{color:var(--muted)}
   .promo .long{display:none}
   .promo .short{display:inline}
   .job{grid-template-columns:minmax(0,1fr)}
-  .pills li{font-size:13px;padding:5px 12px}
-  .acc{padding:0 18px}
-  .acc summary h3{font-size:18px}
-  .you figure{min-height:200px}
+  .acc summary{padding:18px 20px}
+  .acc[open] summary{padding-bottom:6px}
+  .acc-body{padding:4px 20px 20px}
+  .acc-title{font-size:18px}
+  .perkcard{padding:24px}
+  .traits li{grid-template-columns:28px minmax(0,1fr)}
+  .traits p{grid-column:2}
 }
