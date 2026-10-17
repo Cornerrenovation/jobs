@@ -78,8 +78,17 @@
     const d = await api("docs/" + slug);
     const back = slug === "posts" ? `<p class="crumbs"><button type="button" class="linkbtn" data-back="checklists">← Checklists</button><span class="muted"> · </span><button type="button" class="linkbtn" data-back="week">This week</button></p>` : "";
     view.innerHTML = `${back}${slug === "posts" ? head("Posts", "Every text here is ready to paste. Settings for LinkedIn and Work.ua are folded under each post.") : ""}<section class="kit ${slug}">${d.html || "<p class='muted'>Not synced yet.</p>"}</section>`;
-    const done = state.boot.ticks.filter((t) => t.done).length, total = state.boot.steps.length * state.boot.roles.length;
-    view.querySelectorAll(".kpi b").forEach((b) => { if (/\/ 140$/.test(b.textContent) || b.querySelector("[data-count]")) b.innerHTML = `${done} / ${total}`; });
+    const strip = view.querySelector("[data-live-strip]");
+    if (strip) {
+      if (!state.candidates) await loadCandidates();
+      if (!state.outreach) await loadOutreach();
+      const t = today(), cands = state.candidates;
+      const tiles = [[roles().filter((r) => ["live", "pool"].includes(r.state)).length, "roles on the jobs site"], [cands.length, "applications so far"],
+        [cands.filter((c) => (c.applied || c.created_at || "").slice(0, 10) === t).length, "new applicants today, all sources"],
+        [cands.filter((c) => c.your_call === "Shortlist").length, "shortlisted so far"],
+        [state.outreach.filter((o) => (o.status || "queued").startsWith("queued")).length, "queued for LinkedIn outreach"]];
+      strip.innerHTML = tiles.map(([v, l]) => `<div class="kpi"><b>${h(v)}</b><span>${h(l)}</span></div>`).join("");
+    }
     view.querySelectorAll("section.posts > p.muted:first-child").forEach((p) => p.remove());
     view.querySelectorAll('a[href="#posts"]').forEach((a) => { a.removeAttribute("target"); a.addEventListener("click", (e) => { e.preventDefault(); setView("posts"); }); });
     view.querySelectorAll("[data-back]").forEach((b) => b.addEventListener("click", () => setView(b.dataset.back)));
