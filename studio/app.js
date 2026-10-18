@@ -84,10 +84,10 @@
     render();
   }
   document.querySelectorAll("nav.views button").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
-  async function render() {
+  async function render(quiet) {
     notice("");
-    const view = $("#view");
-    view.innerHTML = '<p class="muted">Loading…</p>';
+    const view = $("#view"), y = window.scrollY;
+    if (!quiet) view.innerHTML = '<p class="muted">Loading…</p>';
     try {
       if (!state.boot) await loadBoot();
       if (state.view === "week") await renderDocView(view, "this-week");
@@ -100,8 +100,23 @@
       else if (state.view === "activity") await renderActivity(view);
       else if (state.view === "posts") await renderDocView(view, "posts");
     } catch (e) { if (!$("#notice").textContent) notice(String(e.message || e), true); view.innerHTML = ""; }
-    window.scrollTo(0, 0);
+    window.scrollTo(0, quiet ? y : 0);
   }
+
+  // ---------- fresh data without a reload: the robots write every 30 minutes and at each check-in, people write from their own tabs ----------
+  // Every minute while the tab is visible, and the moment it comes back into view, the view re-reads the API and redraws in place.
+  // It waits while a record or document is open, or while a field has focus, so nothing is pulled from under a person's hands.
+  let lastRefresh = Date.now();
+  async function refresh(force) {
+    const busy = document.hidden || document.querySelector("dialog[open]") || ["INPUT", "TEXTAREA", "SELECT"].includes((document.activeElement || {}).tagName);
+    if (busy || (!force && Date.now() - lastRefresh < 60000)) return;
+    lastRefresh = Date.now();
+    state.boot = null; state.candidates = null; state.results = null; state.cards = null; state.outreach = null; state.templates = null;
+    await render(true);
+  }
+  setInterval(() => refresh(false), 60000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(true); });
+  window.addEventListener("focus", () => refresh(true));
 
   // Shared pieces
   const head = (title, sub, right) => `<div class="viewhead"><div><h2>${h(title)}</h2>${sub ? `<div class="sub">${sub}</div>` : ""}</div>${right || ""}</div>`;
@@ -124,7 +139,9 @@
       if (!state.outreach) await loadOutreach();
       const t = today(), cands = state.candidates.filter((c) => !isClosedRole(roleOf(c.role_id)));
       const tiles = [[roles().filter((r) => ["live", "pool"].includes(r.state)).length, "roles on the jobs site"], [cands.length, "applications so far"],
-        [cands.filter((c) => (c.applied || c.created_at || "").slice(0, 10) === t).length, "new applicants today, all sources"],
+        // New today by the date they applied. A record without that date counts only while it still sits at "applied":
+        // imports of earlier applicants (Yuliia's PM channels on 18 Oct) arrive with a stage already and are not today's news.
+        [cands.filter((c) => c.applied ? c.applied.slice(0, 10) === t : ((c.created_at || "").slice(0, 10) === t && (c.stage || "applied") === "applied")).length, "new applicants today, all sources"],
         [cands.filter((c) => c.your_call === "Shortlist").length, "shortlisted so far"],
         [state.outreach.filter((o) => (o.status || "queued").startsWith("queued")).length, "queued for LinkedIn outreach"]];
       strip.innerHTML = tiles.map(([v, l]) => `<div class="kpi"><b>${h(v)}</b><span>${h(l)}</span></div>`).join("");
@@ -606,13 +623,13 @@
       .map(([v, l]) => `<option value="${h(v)}" ${v === cur ? "selected" : ""}>${h(l)}</option>`).join("");
   }
   function poolFor(role) {
+    // Earlier rounds of the same job only (Kostya, 18 Oct: a sales designer has no place under TA Manager).
+    // Someone declined for the job stays out: the lead already decided.
     const fam = familyOf(role), mine = state.candidates.filter((c) => c.role_id === role.id);
-    // someone declined for the same job stays out (the lead already decided); declined for another job, they can still fit this one
     const declined = (c) => c.your_call === "Decline" || c.stage === "declined";
-    return state.candidates.filter((c) => c.role_id !== role.id && roles().some((r) => r.id === c.role_id) && passedStage(c) && c.stage !== "hired")
-      .map((c) => ({ c, same: familyOf(roleOf(c.role_id)) === fam, added: mine.some((m) => samePerson(c, m)) }))
-      .filter((p) => !(p.same && declined(p.c)))
-      .sort((a, b) => (b.same - a.same) || (reachedIdx(b.c) - reachedIdx(a.c)) || a.c.name.localeCompare(b.c.name));
+    return state.candidates.filter((c) => c.role_id !== role.id && roles().some((r) => r.id === c.role_id) && familyOf(roleOf(c.role_id)) === fam && passedStage(c) && c.stage !== "hired" && !declined(c))
+      .map((c) => ({ c, same: true, added: mine.some((m) => samePerson(c, m)) }))
+      .sort((a, b) => (reachedIdx(b.c) - reachedIdx(a.c)) || a.c.name.localeCompare(b.c.name));
   }
   function poolPanel(role) {
     const pool = poolFor(role), same = pool.filter((p) => p.same).length;
@@ -625,10 +642,9 @@
         ${notes ? `<p><span class="lbl">Notes</span> ${h(notes)}</p>` : ""}${m ? `<p><span class="lbl">Criteria</span> ${h(m)}</p>` : ""}
         <div class="pact">${added ? "" : `<button type="button" class="btn small" data-recontact="${h(c.id)}">Add to this search</button>`}<button type="button" class="btn ghost small" data-poolopen="${h(c.id)}">Open record</button>${c.linkedin ? `<a class="btn ghost small" href="${h(c.linkedin)}" target="_blank" rel="noopener">LinkedIn</a>` : ""}</div></li>`;
     };
-    return `<details class="fold pool" ${fresh ? "open" : ""}><summary>Re-contact first<span class="count">${same ? `${same} for this job` : "none for this job"}${pool.length > same ? ` · ${pool.length - same} from other jobs` : ""}</span></summary>
-      <p class="muted small">Everyone from another round or role who passed at least one stage (shortlisted or further), same job first, with their stage, scores and notes; anyone declined for this job stays out. Re-contact them before posting; "Add to this search" opens a record here with the source "pool".</p>
-      ${same ? `<ul class="poollist">${pool.filter((p) => p.same).map(row).join("")}</ul>` : '<p class="muted small">Nobody from an earlier round of this job is left to re-contact.</p>'}
-      ${pool.length > same ? `<details class="fold plain"><summary>From other jobs (${pool.length - same})</summary><ul class="poollist">${pool.filter((p) => !p.same).map(row).join("")}</ul></details>` : ""}</details>`;
+    return `<details class="fold pool" ${fresh ? "open" : ""}><summary>Re-contact first<span class="count">${same ? `${same} for this job` : "none for this job"}</span></summary>
+      <p class="muted small">Everyone from an earlier round of this job who passed at least one stage (shortlisted or further), with their stage, scores and notes; anyone declined stays out. Re-contact them before posting; "Add to this search" opens a record here with the source "pool".</p>
+      ${same ? `<ul class="poollist">${pool.map(row).join("")}</ul>` : '<p class="muted small">Nobody from an earlier round of this job is left to re-contact.</p>'}</details>`;
   }
 
   // ---------- checklists ----------
