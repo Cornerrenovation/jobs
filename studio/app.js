@@ -20,10 +20,10 @@
   const ORDER = ["applied", "triaged", "confirmed", "messaged", "replied", "screen booked", "screen done", "interview booked", "interview done",
     "work sample", "references", "offer", "hired"];
   const STAGE_LABEL = { confirmed: "shortlisted" };
-  const VIEWS = ["week", "checklists", "pipeline", "candidates", "outreach", "templates", "activity", "posts"];
+  const VIEWS = ["week", "checklists", "pipeline", "candidates", "calibration", "outreach", "templates", "activity", "posts"];
   const whoName = (by) => !by ? "" : by === "claude" || /\.access$/.test(by) || /^u_/.test(by) ? "Claude" : by.replace(/@.*/, "").replace(/^\w/, (c) => c.toUpperCase());
   const state = { view: "week", boot: null, roleFilter: "all", role: null, filter: "all", candidates: null, results: null, outreach: null, templates: null, search: "", open: {},
-    showClosed: false, justCreated: null };
+    showClosed: false, justCreated: null, cards: null, cardStage: {}, cardEdit: null };
   const store = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
 
   async function api(path, method, body) {
@@ -46,7 +46,7 @@
   const openRoles = () => roles().filter((r) => !isClosedRole(r));
   const familyOf = (r) => (r && (r.family || r.id)) || "";
   const leadOf = (r) => (r && (r.lead || r.owner)) || "the hiring lead";
-  async function loadCandidates() { [state.candidates, state.results] = await Promise.all([api("candidates"), api("criteria/results")]); }
+  async function loadCandidates() { [state.candidates, state.results, state.cards] = await Promise.all([api("candidates"), api("criteria/results"), api("scorecards")]); }
 
   // ---------- shared candidate logic ----------
   const stageIdx = (s) => ORDER.indexOf(s || "");
@@ -94,6 +94,7 @@
       else if (state.view === "checklists") await renderChecklists(view);
       else if (state.view === "pipeline") await renderPipeline(view);
       else if (state.view === "candidates") await renderCandidates(view);
+      else if (state.view === "calibration") await renderCalibration(view);
       else if (state.view === "outreach") await renderOutreach(view);
       else if (state.view === "templates") await renderTemplates(view);
       else if (state.view === "activity") await renderActivity(view);
@@ -297,7 +298,8 @@
         <label class="full"><span class="lbl">Notes</span><textarea name="notes">${h(c.notes)}</textarea></label>
         <div class="formfoot full"><span class="saved" id="csaved"></span><button type="submit" class="btn">${id ? "Save" : "Add"}</button></div>
       </form>${id ? leadBlock(c, role, lead) : ""}</section>`;
-    openRecord(id ? c.name : "New candidate", eyebrow, application + (id ? readBlock(c) : "") + form);
+    openRecord(id ? c.name : "New candidate", eyebrow, application + (id ? readBlock(c) : "") + form + (id ? scoreBlock(c) : ""));
+    if (id) bindScoreBlock(c);
     const f = $("#cform");
     bindSeg(f, "yourcall", (v) => { const cur = $('input[name="your_call"]', f); cur.value = cur.value === v ? "" : v; f.querySelectorAll('[data-seg="yourcall"] button').forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === cur.value)); });
     const refresh = async () => { state.candidates = null; state.boot = null; await loadBoot(); await loadCandidates(); render(); if (id) openCandidate(id); };
@@ -321,6 +323,158 @@
       lf.addEventListener("submit", async (e) => { e.preventDefault(); await api("candidates/" + id, "PATCH", Object.fromEntries(new FormData(lf).entries())); await refresh(); });
     }
   }
+  // ---------- interview scorecards: the AI recruiter drafts, people confirm or edit, Studio puts the scorers side by side ----------
+  const SCORERS = [["ai", "AI recruiter"], ["kostya@cornerrenovation.com", "Kostya"], ["julia@cornerrenovation.com", "Yuliia"], ["julieta@cornerrenovation.com", "Julieta"]];
+  const scorerName = (s) => (SCORERS.find(([k]) => k === s) || [s, String(s).replace(/@.*/, "").replace(/^\w/, (x) => x.toUpperCase())])[1];
+  const scorerRank = (s) => { const i = SCORERS.findIndex(([k]) => k === s); return i < 0 ? 9 : i; };
+  function rubricOf(roleId) {
+    const fam = familyOf(roleOf(roleId)), rule = (state.boot.rubric_rules || []).find((r) => r.role_id === fam);
+    if (!rule) return null;
+    const rows = (state.boot.rubrics || []).filter((r) => r.role_id === fam);
+    return { fam, rule, stages: JSON.parse(rule.stages || "[]"), scored: rows.filter((r) => r.kind !== "must_pass"), must: rows.find((r) => r.kind === "must_pass") || null };
+  }
+  const cardsFor = (cid) => (state.cards || []).filter((k) => k.candidate_id === cid);
+  const itemOf = (card, cid) => (card.items || []).find((i) => i.criterion_id === cid) || {};
+  const mustPill = (m) => m ? pill(m, m === "pass" ? "ok" : m === "fail" ? "bad" : "warn") : '<span class="muted">–</span>';
+  const decisionPill = (d) => pill(d || "–", d === "meets" ? "ok" : d === "partial" ? "" : d ? "bad" : "");
+  const quotesHtml = (qs) => qs && qs.length ? `<details class="q"><summary>${qs.length} quote${qs.length > 1 ? "s" : ""}</summary><ul>${qs.map((q) => `<li>“${h(q.text)}”${q.at ? ` <span class="cmeta">${h(q.at)}</span>` : ""}</li>`).join("")}</ul></details>` : "";
+  function scoreBlock(c) {
+    const rub = rubricOf(c.role_id);
+    if (!rub) return "";
+    const cards = cardsFor(c.id), me = state.boot.who;
+    const firstWith = rub.stages.find(([st]) => cards.some((k) => k.stage === st));
+    const cur = state.cardStage[c.id] || (firstWith || rub.stages[0])[0];
+    const curLabel = (rub.stages.find(([st]) => st === cur) || [cur, cur])[1];
+    const here = cards.filter((k) => k.stage === cur).sort((a, b) => scorerRank(a.scorer) - scorerRank(b.scorer));
+    const ai = here.find((k) => k.scorer === "ai"), mine = here.find((k) => k.scorer === me);
+    const edit = state.cardEdit && state.cardEdit.cid === c.id && state.cardEdit.stage === cur ? state.cardEdit : null;
+    const tabs = seg("cardstage", rub.stages.map(([st, l]) => [st, l + (cards.some((k) => k.stage === st) ? ` · ${cards.filter((k) => k.stage === st).length}` : "")]), cur);
+    const tested = (r) => (r.stages || "").split(",").includes(cur);
+    const rowsFor = rub.scored.filter((r) => tested(r) || here.some((k) => itemOf(k, r.id).score != null));
+    const untested = rub.scored.filter((r) => !rowsFor.includes(r));
+    let gaps = 0;
+    const head = `<tr><th>Criterion</th>${here.map((k) => `<th>${h(scorerName(k.scorer))}<small>${k.kind === "ai" ? "draft from the transcript" : k.entered_by ? "entered for them" : k.started_from === "draft" ? "started from the draft" : "scored blind"}</small></th>`).join("")}</tr>`;
+    const body = rowsFor.map((r) => {
+      const vals = here.map((k) => itemOf(k, r.id).score).filter((v) => v != null);
+      const gap = vals.length > 1 ? Math.max(...vals) - Math.min(...vals) : 0;
+      if (gap > 1) gaps++;
+      return `<tr class="${gap > 1 ? "gap" : ""}"><td><span class="clabel">${h(r.label)}</span><small>${r.weight}%${r.min_score ? ` · at least ${r.min_score}` : ""}${tested(r) ? "" : " · not usually tested here"}</small>${gap > 1 ? pill("gap " + gap, "warn") : ""}</td>
+        ${here.map((k) => { const it = itemOf(k, r.id); return `<td>${it.score != null ? `<b class="sc">${it.score}</b>` : '<span class="muted">–</span>'}${it.note ? `<span class="scnote">${h(it.note)}</span>` : ""}${quotesHtml(it.quotes)}</td>`; }).join("")}</tr>`;
+    }).join("");
+    const mustRow = rub.must && (rub.must.stages.split(",").includes(cur) || here.some((k) => k.must_pass)) ? (() => {
+      const set = here.map((k) => k.must_pass).filter((m) => m === "pass" || m === "fail");
+      const split = set.includes("pass") && set.includes("fail");
+      if (split) gaps++;
+      return `<tr class="mustrow ${split ? "gap" : ""}"><td><span class="clabel">Must-pass: ${h(rub.must.label)}</span>${split ? pill("scorers disagree", "warn") : ""}</td>${here.map((k) => `<td>${mustPill(k.must_pass)}${k.must_pass_note ? `<span class="scnote">${h(k.must_pass_note)}</span>` : ""}</td>`).join("")}</tr>`;
+    })() : "";
+    const foot = `<tr class="totrow"><td><span class="clabel">Weighted so far</span><small>over the criteria each card scored</small></td>${here.map((k) => `<td><b class="sc">${k.weighted != null ? Number(k.weighted).toFixed(2) : "–"}</b><small>${k.scored} of ${rub.scored.length}</small></td>`).join("")}</tr>
+      <tr class="totrow"><td><span class="clabel">Decision rule</span></td>${here.map((k) => `<td>${decisionPill(k.decision)}</td>`).join("")}</tr>`;
+    const tableHtml = here.length ? `<div class="tablewrap sctable"><table><thead>${head}</thead><tbody>${body}${mustRow}${foot}</tbody></table></div>
+      ${untested.length ? `<p class="muted small">Tested at other stages: ${untested.map((r) => h(r.label)).join(", ")}.</p>` : ""}
+      ${here.map((k) => k.summary ? `<p class="small"><b>${h(scorerName(k.scorer))}:</b> ${h(k.summary)}</p>` : "").join("")}
+      ${here.filter((k) => k.source).map((k) => `<p class="muted small">${h(scorerName(k.scorer))} · ${k.entered_by ? "entered by Claude from " : "from "}${h(k.source)}</p>`).join("")}` : "";
+    let actions = "";
+    if (!edit) actions = mine ? `<button type="button" class="btn ghost small" data-scstart="edit">Edit my card</button>`
+      : `${ai ? `<button type="button" class="btn small" data-scstart="draft">Confirm or edit the AI draft</button>` : ""}<button type="button" class="btn ${ai ? "ghost " : ""}small" data-scstart="blank">Score ${ai ? "blind" : "this stage"}</button>`;
+    const hideForBlind = !mine && here.length && (!edit || edit.mode === "blank");
+    const shown = edit && edit.mode === "blank" ? `<p class="muted small">The other cards stay hidden until you save yours, so they don't steer your scores.</p>`
+      : hideForBlind ? `<details class="fold plain"><summary>Show the ${here.length} card${here.length > 1 ? "s" : ""} for this stage${gaps ? ` · ${gaps} gap${gaps > 1 ? "s" : ""} over one point` : ""}</summary>${tableHtml}</details>
+        <p class="muted small">You haven't scored this stage yet. Score blind first if you want your card to count as an independent check.</p>` : tableHtml;
+    return `<section class="block" id="scoreblock"><div class="readhead"><div><span class="eyebrow">4 · Interview scorecards</span><h3>${h(curLabel)}${gaps && !hideForBlind ? ` <span class="muted">· ${gaps} gap${gaps > 1 ? "s" : ""} over one point</span>` : ""}</h3></div><span class="cmeta">${h(rub.rule.version || "")}</span></div>
+      ${tabs}
+      ${here.length ? "" : `<p class="muted">No cards for this stage yet. The AI recruiter drafts one from the recording's transcript; you confirm or edit it.</p>`}
+      ${shown}
+      ${actions ? `<div class="pact">${actions}</div>` : ""}
+      ${edit ? cardEditor(c, rub, cur, edit, ai, mine) : ""}
+      <p class="muted small">${h(rub.rule.decision)} The AI recruiter's card is advice; the people who interview decide.</p></section>`;
+  }
+  function cardEditor(c, rub, stage, edit, ai, mine) {
+    const base = edit.mode === "edit" ? mine : edit.mode === "draft" ? ai : null;
+    const val = (r) => base ? itemOf(base, r.id) : {};
+    const scoreSeg = (r) => { const v = val(r).score; return `${seg("sc-" + r.id, [["1", "1"], ["2", "2"], ["3", "3"], ["4", "4"], ["", "–"]], v == null ? "" : String(v))}<input type="hidden" name="score:${h(r.id)}" value="${v == null ? "" : v}">`; };
+    const tested = (r) => (r.stages || "").split(",").includes(stage);
+    const row = (r) => { const a = edit.mode !== "blank" && ai ? itemOf(ai, r.id) : null;
+      return `<div class="scedit"><div class="schead"><span class="clabel">${h(r.label)}</span><small>${r.weight}%${r.min_score ? ` · at least ${r.min_score}` : ""}</small></div>
+        <div class="anchors"><span><b>1</b> ${h(r.anchor_1)}</span><span><b>4</b> ${h(r.anchor_4)}</span></div>
+        ${a && a.score != null ? `<div class="aibox"><span class="lbl">AI recruiter: ${a.score}</span>${a.note ? `<span class="scnote">${h(a.note)}</span>` : ""}${quotesHtml(a.quotes)}</div>` : ""}
+        <div class="scctl">${scoreSeg(r)}<input name="note:${h(r.id)}" value="${h(val(r).note || "")}" placeholder="Why, in one line"></div></div>`; };
+    const main = rub.scored.filter(tested), rest = rub.scored.filter((r) => !tested(r));
+    const m = base ? base.must_pass || "" : "";
+    return `<form id="scform" class="scform"><span class="lbl">${edit.mode === "edit" ? "Your card" : edit.mode === "draft" ? "Your card, starting from the AI draft" : "Your card, scored blind"} · ${h(scorerName(state.boot.who))}</span>
+      ${main.map(row).join("")}
+      ${rest.length ? `<details class="fold plain"><summary>Criteria usually tested at other stages (${rest.length})</summary>${rest.map(row).join("")}</details>` : ""}
+      ${rub.must ? `<div class="scedit"><div class="schead"><span class="clabel">Must-pass: ${h(rub.must.label)}</span></div><div class="anchors"><span><b>Pass</b> ${h(rub.must.anchor_4)}</span><span><b>Fail</b> ${h(rub.must.anchor_1)}</span></div>
+        <div class="scctl">${seg("scmust", [["pass", "Pass"], ["fail", "Fail"], ["unclear", "Unclear"], ["", "–"]], m)}<input type="hidden" name="must_pass" value="${h(m)}"><input name="must_pass_note" value="${h(base ? base.must_pass_note || "" : "")}" placeholder="What decided it"></div></div>` : ""}
+      <label><span class="lbl">Summary</span><textarea name="summary" rows="3">${h(edit.mode === "edit" && mine ? mine.summary || "" : "")}</textarea></label>
+      <div class="formfoot"><button type="button" class="btn ghost small" data-sccancel>Cancel</button><button type="submit" class="btn">Save my card</button></div></form>`;
+  }
+  function bindScoreBlock(c) {
+    const el = $("#scoreblock");
+    if (!el) return;
+    const again = () => { const cur = $("#scoreblock"); if (cur) { cur.outerHTML = scoreBlock(c); bindScoreBlock(c); } };
+    bindSeg(el, "cardstage", (v) => { state.cardStage[c.id] = v; state.cardEdit = null; again(); });
+    el.querySelectorAll("[data-scstart]").forEach((b) => b.addEventListener("click", () => {
+      state.cardEdit = { cid: c.id, stage: state.cardStage[c.id] || (el.querySelector('[data-seg="cardstage"] [aria-pressed="true"]') || {}).dataset.v, mode: b.dataset.scstart };
+      again(); const f = $("#scform"); if (f) f.scrollIntoView({ block: "start", behavior: "smooth" });
+    }));
+    const f = $("#scform");
+    if (!f) return;
+    f.querySelectorAll("[data-seg]").forEach((g) => { const name = g.dataset.seg; bindSeg(f, name, (v) => {
+      const input = name === "scmust" ? $('input[name="must_pass"]', f) : $(`input[name="score:${CSS.escape(name.slice(3))}"]`, f);
+      input.value = v; g.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === v)); }); });
+    $("[data-sccancel]", f).addEventListener("click", () => { state.cardEdit = null; again(); });
+    f.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const d = Object.fromEntries(new FormData(f).entries()), edit = state.cardEdit;
+      const items = Object.keys(d).filter((k) => k.startsWith("score:")).map((k) => { const id = k.slice(6); return { criterion_id: id, score: d[k] === "" ? null : Number(d[k]), note: d["note:" + id] || "" }; });
+      const mine = cardsFor(c.id).find((k) => k.stage === edit.stage && k.scorer === state.boot.who);
+      await api("scorecards", "POST", { candidate_id: c.id, stage: edit.stage, items, must_pass: d.must_pass, must_pass_note: d.must_pass_note, summary: d.summary,
+        started_from: edit.mode === "edit" ? (mine && mine.started_from) || "blank" : edit.mode });
+      state.cards = await api("scorecards"); state.cardEdit = null; again();
+    });
+  }
+
+  // ---------- calibration: how close the scorers are, per pair, across candidates ----------
+  async function renderCalibration(view) {
+    if (!state.candidates) await loadCandidates();
+    const cards = state.cards || [], groups = {};
+    cards.forEach((k) => { (groups[k.candidate_id + "|" + k.stage] = groups[k.candidate_id + "|" + k.stage] || []).push(k); });
+    const pairs = {}, gapsList = [], waiting = [];
+    const critLabel = (fam, id) => ((state.boot.rubrics || []).find((r) => r.role_id === fam && r.id === id) || {}).label || id;
+    Object.values(groups).forEach((g) => {
+      g.sort((a, b) => scorerRank(a.scorer) - scorerRank(b.scorer));
+      if (g.length === 1 && g[0].scorer === "ai") waiting.push(g[0]);
+      for (let i = 0; i < g.length; i++) for (let j = i + 1; j < g.length; j++) {
+        const a = g[i], b = g[j], key = a.scorer + "|" + b.scorer;
+        const p = pairs[key] = pairs[key] || { a: a.scorer, b: b.scorer, cards: 0, fromDraft: 0, n: 0, within: 0, exact: 0, abs: 0, mustN: 0, mustAgree: 0, decN: 0, decAgree: 0, byCrit: {} };
+        p.cards++;
+        if (a.scorer === "ai" && b.started_from === "draft") p.fromDraft++;
+        (a.items || []).forEach((ia) => { const ib = itemOf(b, ia.criterion_id); if (ia.score == null || ib.score == null) return;
+          const diff = ib.score - ia.score, ad = Math.abs(diff); p.n++; p.abs += ad; if (ad <= 1) p.within++; if (!ad) p.exact++;
+          const bc = p.byCrit[ia.criterion_id] = p.byCrit[ia.criterion_id] || { fam: a.rubric_role, n: 0, sum: 0, gaps: 0 }; bc.n++; bc.sum += diff; if (ad > 1) bc.gaps++;
+          if (ad > 1) gapsList.push({ cid: a.candidate_id, stage: a.stage, crit: critLabel(a.rubric_role, ia.criterion_id), a: a.scorer, sa: ia.score, b: b.scorer, sb: ib.score }); });
+        if (["pass", "fail"].includes(a.must_pass) && ["pass", "fail"].includes(b.must_pass)) { p.mustN++; if (a.must_pass === b.must_pass) p.mustAgree++; }
+        if (a.decision && b.decision && a.decision !== "partial" && b.decision !== "partial") { p.decN++; if (a.decision === b.decision) p.decAgree++; }
+      }
+    });
+    const pct = (x, n) => n ? Math.round(100 * x / n) + "%" : "–";
+    const list = Object.values(pairs).sort((x, y) => (y.a === "ai" && y.b === "kostya@cornerrenovation.com") - (x.a === "ai" && x.b === "kostya@cornerrenovation.com") || y.n - x.n);
+    const cname = (id) => (state.candidates.find((x) => x.id === id) || {}).name || id;
+    const stageName = (cid, st) => { const r = rubricOf((state.candidates.find((x) => x.id === cid) || {}).role_id); return r ? ((r.stages.find(([x]) => x === st) || [st, st])[1]) : st; };
+    const focus = list[0];
+    view.innerHTML = head("Calibration", "How close the scorers are on the same interviews. Every pair of cards on the same candidate and stage is compared criterion by criterion; a gap over one point is flagged. This is the evidence for handing a stage over to the AI recruiter.") +
+      `<div class="strip four">${[[cards.length, "scorecards"], [cards.filter((k) => k.scorer === "ai").length, "AI recruiter drafts"], [cards.filter((k) => k.kind === "human").length, "people's cards"], [gapsList.length, "gaps over one point"]].map(([v, t]) => `<div class="kpi"><b>${h(v)}</b><span>${h(t)}</span></div>`).join("")}</div>
+      <div class="group"><span class="eyebrow">Scorer pairs</span>${list.length ? table(["Pair", "Shared cards", "Criteria compared", "Within 1 point", "Exact", "Mean difference", "Must-pass agree", "Decision agree"], list.map((p) =>
+        `<tr><td><span class="name">${h(scorerName(p.b))} vs ${h(scorerName(p.a))}</span>${p.fromDraft ? `<br><span class="muted small">${p.fromDraft} of ${p.cards} started from the AI draft</span>` : ""}</td><td>${p.cards}</td><td>${p.n}</td><td>${pct(p.within, p.n)}</td><td>${pct(p.exact, p.n)}</td><td>${p.n ? (p.abs / p.n).toFixed(2) : "–"}</td><td>${p.mustN ? `${p.mustAgree} of ${p.mustN}` : "–"}</td><td>${p.decN ? `${p.decAgree} of ${p.decN}` : "–"}</td></tr>`))
+        : `<div class="card empty">No two scorers have scored the same interview yet. The first pair appears when someone saves a card next to an AI draft.</div>`}
+        <p class="muted small">Within 1 point and Exact count criteria both scorers scored. Mean difference is the average absolute gap in points. Cards started from the AI draft agree more by construction; blind cards are the honest test. The triage handover rule in screening-logic.md is 90%+ agreement over two batches of 30 with no misses; no handover rule is set yet for interview scorecards.</p></div>
+      ${focus && Object.keys(focus.byCrit).length ? `<div class="group"><span class="eyebrow">By criterion · ${h(scorerName(focus.b))} vs ${h(scorerName(focus.a))}</span>${table(["Criterion", "Compared", "Average difference", "Gaps over one point"], Object.entries(focus.byCrit).map(([id, bc]) =>
+        `<tr><td>${h(critLabel(bc.fam, id))}</td><td>${bc.n}</td><td>${(bc.sum / bc.n > 0 ? "+" : "") + (bc.sum / bc.n).toFixed(2)}</td><td>${bc.gaps}</td></tr>`))}<p class="muted small">Average difference is ${h(scorerName(focus.b))}'s score minus ${h(scorerName(focus.a))}'s: plus means ${h(scorerName(focus.b))} scores higher.</p></div>` : ""}
+      ${gapsList.length ? `<div class="group"><span class="eyebrow">Gaps to talk through</span>${table(["Candidate", "Stage", "Criterion", "Scores"], gapsList.map((g) => `<tr class="clickable" data-id="${h(g.cid)}"><td><span class="name">${h(cname(g.cid))}</span></td><td>${h(stageName(g.cid, g.stage))}</td><td>${h(g.crit)}</td><td>${h(scorerName(g.a))} ${g.sa} · ${h(scorerName(g.b))} ${g.sb}</td></tr>`))}</div>` : ""}
+      <div class="group"><span class="eyebrow">AI drafts waiting for a person's card</span>${waiting.length ? table(["Candidate", "Stage", "AI weighted", "Decision rule"], waiting.map((k) => `<tr class="clickable" data-id="${h(k.candidate_id)}" data-stage="${h(k.stage)}"><td><span class="name">${h(cname(k.candidate_id))}</span><br><span class="muted">${h(roleName((state.candidates.find((x) => x.id === k.candidate_id) || {}).role_id))}</span></td><td>${h(stageName(k.candidate_id, k.stage))}</td><td>${k.weighted != null ? Number(k.weighted).toFixed(2) : "–"} <span class="muted">· ${k.scored} criteria</span></td><td>${decisionPill(k.decision)}</td></tr>`)) : '<p class="muted">None.</p>'}</div>`;
+    view.querySelectorAll("tr.clickable").forEach((tr) => tr.addEventListener("click", () => { if (tr.dataset.stage) state.cardStage[tr.dataset.id] = tr.dataset.stage; openCandidate(tr.dataset.id); }));
+  }
+
   function openRecord(title, eyebrow, html) {
     const d = $("#recdlg"); $("#rectitle").textContent = title; $("#receyebrow").textContent = eyebrow; $("#recbody").innerHTML = html; $("#recbody").scrollTop = 0;
     if (!d.open) (d.showModal ? d.showModal() : d.setAttribute("open", ""));
