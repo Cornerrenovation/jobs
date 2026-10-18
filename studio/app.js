@@ -236,39 +236,82 @@
     view.querySelectorAll("tr.clickable").forEach((tr) => tr.addEventListener("click", () => openCandidate(tr.dataset.id)));
     $("#add", view).addEventListener("click", () => openCandidate(null));
   }
+  // ---------- the candidate record: a pop-up with three blocks ----------
+  const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch (e) { return u; } };
+  function linkChip(u, forcedLabel) {
+    const host = hostOf(u);
+    const label = forcedLabel || (/linkedin\.com/.test(host) ? "LinkedIn" : /drive\.google\.com|docs\.google\.com/.test(host) ? "CV · in hello@'s Drive" : /instagram\.com/.test(host) ? "Instagram · " + (u.match(/instagram\.com\/([^/?]+)/) || [])[1] : /behance|dribbble|framer|notion|figma|vimeo|youtube/.test(host) ? host : host);
+    return `<a class="chip link" href="${h(u)}" target="_blank" rel="noopener" title="${h(u)}">${h(label)} ↗</a>`;
+  }
+  const urlsIn = (text) => (String(text || "").match(/https?:\/\/[^\s,;]+/g) || []);
+  const kindOf = (d, r) => d.kind === "knockout" ? (r.result === "met" ? ["passes", "ok"] : r.result === "not met" ? ["fails", "bad"] : ["unclear", "warn"])
+    : d.kind === "minus" ? (r.result === "met" ? ["red flag", "bad"] : r.result === "not met" ? ["no", ""] : ["unclear", "warn"])
+    : (r.result === "met" ? ["yes", "ok"] : r.result === "not met" ? ["no", ""] : ["unclear", "warn"]);
+  function readBlock(c) {
+    const defs = criteriaFor(c.role_id), res = resultsFor(c.id);
+    const row = (d) => { const r = res.find((x) => x.criterion_id === d.id); if (!r) return `<li class="crow"><span class="pill">not checked</span><div class="cbody"><span class="clabel">${h(d.label)}</span></div></li>`;
+      const [word, kind] = kindOf(d, r); return `<li class="crow"><span class="pill ${kind}">${h(word)}</span><div class="cbody"><span class="clabel">${h(d.label)}</span>${r.evidence ? `<span class="ev">${h(r.evidence)}</span>` : ""}${r.field ? `<span class="cmeta">From ${h(r.field)}</span>` : ""}</div></li>`; };
+    const ko = defs.filter((d) => d.kind === "knockout"), plus = defs.filter((d) => d.kind === "plus"), minus = defs.filter((d) => d.kind === "minus"), other = defs.filter((d) => !["knockout", "plus", "minus"].includes(d.kind));
+    const count = (list, pred) => list.filter((d) => { const r = res.find((x) => x.criterion_id === d.id); return r && pred(r); }).length;
+    const last = res.slice().sort((a, b) => (b.at || "").localeCompare(a.at || ""))[0];
+    const head = c.agent_call ? `<div class="readhead"><div><span class="eyebrow">2 · Claude's read</span><h3>${h(c.agent_call)}${c.confidence ? ` <span class="muted">· ${h(c.confidence.toLowerCase())} confidence</span>` : ""}</h3></div><span class="cmeta">${h(c.rules_version || (last && last.rules_version) || "")}${last ? ` · ${h(fmt(last.at))}` : ""}</span></div>`
+      : `<div class="readhead"><div><span class="eyebrow">2 · Claude's read</span><h3 class="muted">Not read yet</h3></div></div>`;
+    if (!c.agent_call && !res.length) return `<section class="block">${head}<p class="muted">The next robot run reads the application against the ${h(roleName(c.role_id))} scorecard: completeness, knockouts, markers, then a proposal.</p></section>`;
+    return `<section class="block read">${head}
+      ${c.why ? `<p class="why">${h(c.why)}</p>` : ""}
+      ${ko.length ? `<div class="critgroup"><span class="lbl">Knockouts · ${count(ko, (r) => r.result === "not met")} failed of ${ko.length}</span><ul class="critlist">${ko.map(row).join("")}</ul></div>` : ""}
+      ${plus.length ? `<div class="critgroup"><span class="lbl">Markers for · ${count(plus, (r) => r.result === "met")} of ${plus.length}</span><ul class="critlist">${plus.map(row).join("")}</ul></div>` : ""}
+      ${minus.length ? `<div class="critgroup"><span class="lbl">Red flags · ${count(minus, (r) => r.result === "met")} of ${minus.length}</span><ul class="critlist">${minus.map(row).join("")}</ul></div>` : ""}
+      ${other.length ? `<div class="critgroup"><span class="lbl">Criteria</span><ul class="critlist">${other.map(row).join("")}</ul></div>` : ""}
+      ${c.doubt ? `<div class="kvline"><span class="lbl">Doubt to probe</span><span>${h(c.doubt)}</span></div>` : ""}
+      <p class="muted small">Claude's reading of what she or he sent, against the scorecard, with the words it rests on. It informs your call; nobody is declined on it.</p></section>`;
+  }
   function openCandidate(id) {
     const c = id ? state.candidates.find((x) => x.id === id) : { stage: "applied", role_id: state.roleFilter !== "all" && state.roleFilter !== "closed" ? state.roleFilter : (openRoles()[0] || {}).id };
     const sel = (name, opts, val, labels) => `<select name="${name}">${opts.map((o, i) => `<option value="${h(o)}" ${o === (val || "") ? "selected" : ""}>${h(labels ? labels[i] : (o || "–"))}</option>`).join("")}</select>`;
-    const ro = (k, v, isLink) => v ? `<dt>${h(k)}</dt><dd>${isLink ? `<a href="${h(v)}" target="_blank" rel="noopener">${h(v.replace(/^https?:\/\/(www\.)?/, ""))}</a>` : h(v)}</dd>` : "";
+    const kv = (k, v) => v ? `<dt>${h(k)}</dt><dd>${h(v)}</dd>` : "";
     const role = roleOf(c.role_id), lead = leadOf(role);
     const furthest = id && reachedIdx(c) > stageIdx(c.stage || "applied") ? stageWord(reachedOf(c)) : "";
-    const suggestion = id ? (c.agent_call ? `<span class="hint">Claude suggests <b>${h(c.agent_call)}</b>${c.confidence ? " · " + h(c.confidence) : ""}. A suggestion only: nothing moves until you choose.</span>` : `<span class="hint">No suggestion from Claude yet.</span>`) : "";
-    openDrawer(id ? c.name : "New candidate", `
-      ${id ? `<dl class="kv">${ro("ID", c.id)}${ro("Role", roleName(c.role_id) + (isClosedRole(role) ? " (earlier round)" : ""))}${ro("LinkedIn", c.linkedin, true)}${ro("Email", c.email)}${ro("Location", c.location)}${ro("Sources", c.sources)}
-        ${ro("Referred by", c.referred_by)}${ro("Applied", c.applied)}${ro("Headline", c.headline)}${ro("English", c.english)}${ro("Screening", c.screening)}${ro("Site answer", c.site_answer)}${ro("CV / portfolio", c.cv, /^https?:/.test(c.cv || ""))}
-        ${ro("Furthest stage", furthest)}${ro("Scores", c.scores)}${ro("Knockout", c.knockout)}${ro("Agent call", c.agent_call && (c.agent_call + (c.confidence ? " · " + c.confidence : "")))}${ro("Why", c.why)}${ro("Doubt to probe", c.doubt)}${ro("Latest reply", c.latest_reply)}${ro("Last contact", c.last_contact)}</dl>
-        ${criteriaBlock(c)}${leadBlock(c, role, lead)}` : ""}
+    const links = [];
+    if (c.linkedin) links.push(linkChip(c.linkedin, "LinkedIn"));
+    urlsIn(c.cv).forEach((u) => links.push(linkChip(u)));
+    const eyebrow = id ? [c.id, roleName(c.role_id) + (isClosedRole(role) ? " (earlier round)" : ""), c.sources, c.applied ? "applied " + fmt(c.applied) : ""].filter(Boolean).join(" · ") : roleName(c.role_id);
+    const application = id ? `<section class="block"><span class="eyebrow">1 · From the application</span>
+        <dl class="kv">${kv("Location", c.location)}${kv("Email", c.email)}${kv("English, self-rated", c.english)}${kv("Headline", c.headline)}${kv("Referred by", c.referred_by)}${kv("Screening answers", c.screening)}${kv("Furthest stage", furthest)}${kv("Scores", c.scores)}${kv("Latest reply", c.latest_reply)}${kv("Last contact", c.last_contact)}</dl>
+        ${links.length ? `<div class="links"><span class="lbl">Links she or he gave</span><div class="chips">${links.join("")}</div>${/drive\.google\.com/.test(c.cv || "") ? `<span class="muted small">The CV sits in hello@'s Drive. If the link asks for access, hello@ needs to share the "Corner Careers — Applications" folder with you once.</span>` : ""}</div>` : ""}
+        ${c.site_answer ? `<div class="answer"><span class="lbl">Written answer</span><p>${h(c.site_answer).replace(/\n+/g, "<br>")}</p></div>` : ""}</section>` : "";
+    const callSeg = `${seg("yourcall", [["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"]], c.your_call || "")}<input type="hidden" name="your_call" value="${h(c.your_call || "")}">`;
+    const form = `<section class="block"><span class="eyebrow">${id ? "3 · Your call" : "New candidate"}</span>
       <form class="form" id="cform">
         ${id ? "" : `<label class="full"><span class="lbl">Name</span><input name="name" required></label><label><span class="lbl">Role</span>${sel("role_id", openRoles().map((r) => r.id), c.role_id, openRoles().map((r) => r.short))}</label><label><span class="lbl">Source</span><input name="sources" placeholder="LinkedIn UA, referral…"></label><label class="full"><span class="lbl">LinkedIn</span><input name="linkedin" type="url"></label><label><span class="lbl">Email</span><input name="email" type="email"></label><label><span class="lbl">Location</span><input name="location"></label>`}
-        <label><span class="lbl">Your call</span>${sel("your_call", CALLS, c.your_call)}${suggestion}</label>
+        <div class="full callrow"><span class="lbl">Your call</span>${callSeg}${id && c.agent_call ? `<span class="hint">Claude suggests <b>${h(c.agent_call)}</b>. Set yours before reading the block above if you want a blind check.</span>` : ""}</div>
+        <label class="full"><span class="lbl">Your reason</span><input name="your_reason" value="${h(c.your_reason)}" placeholder="Needed when you disagree with Claude"></label>
         <label><span class="lbl">Stage</span>${sel("stage", STAGES, c.stage || "applied")}</label>
-        <label class="full"><span class="lbl">Your reason</span><input name="your_reason" value="${h(c.your_reason)}"></label>
-        <label><span class="lbl">Next step</span><input name="next_step" value="${h(c.next_step)}"></label>
         <label><span class="lbl">Due</span><input name="due" type="date" value="${h((c.due || "").slice(0, 10))}"></label>
-        <label><span class="lbl">Referred by</span><input name="referred_by" value="${h(c.referred_by)}" placeholder="Who on the team or in our network"></label>
-        <label><span class="lbl">Referral bounty</span><input name="bounty" value="${h(c.bounty)}" placeholder="Blank until Kostya sets it"></label>
-        ${id ? `<label><span class="lbl">Hired on</span><input name="hired_at" type="date" value="${h((c.hired_at || "").slice(0, 10))}"></label>
-        <div class="fieldnote"><span class="lbl">Bounty due</span><span>${c.bounty_due ? h(fmt(c.bounty_due)) + " · hire + 90 days" : (c.referred_by ? "90 days after the hire date" : "Only for referrals")}</span></div>` : ""}
+        <label class="full"><span class="lbl">Next step</span><input name="next_step" value="${h(c.next_step)}"></label>
+        <details class="fold plain more"><summary>Referral and hire fields</summary><div class="form inner">
+          <label><span class="lbl">Referred by</span><input name="referred_by" value="${h(c.referred_by)}" placeholder="Who on the team or in our network"></label>
+          <label><span class="lbl">Referral bounty</span><input name="bounty" value="${h(c.bounty)}" placeholder="Blank until Kostya sets it"></label>
+          ${id ? `<label><span class="lbl">Hired on</span><input name="hired_at" type="date" value="${h((c.hired_at || "").slice(0, 10))}"></label>
+          <div class="fieldnote"><span class="lbl">Bounty due</span><span>${c.bounty_due ? h(fmt(c.bounty_due)) + " · hire + 90 days" : (c.referred_by ? "90 days after the hire date" : "Only for referrals")}</span></div>` : ""}</div></details>
         <label class="full"><span class="lbl">Notes</span><textarea name="notes">${h(c.notes)}</textarea></label>
         <div class="formfoot full"><span class="saved" id="csaved"></span><button type="submit" class="btn">${id ? "Save" : "Add"}</button></div>
-      </form>`);
+      </form>${id ? leadBlock(c, role, lead) : ""}</section>`;
+    openRecord(id ? c.name : "New candidate", eyebrow, application + (id ? readBlock(c) : "") + form);
+    const f = $("#cform");
+    bindSeg(f, "yourcall", (v) => { const cur = $('input[name="your_call"]', f); cur.value = cur.value === v ? "" : v; f.querySelectorAll('[data-seg="yourcall"] button').forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === cur.value)); });
     const refresh = async () => { state.candidates = null; state.boot = null; await loadBoot(); await loadCandidates(); render(); if (id) openCandidate(id); };
-    $("#cform").addEventListener("submit", async (e) => {
+    f.addEventListener("submit", async (e) => {
       e.preventDefault();
       const data = Object.fromEntries(new FormData(e.target).entries());
+      // Your call moves the stage: a person decided. Decline closes; Shortlist confirms; Hold leaves it.
+      if (id && data.your_call !== (c.your_call || "") && ["applied", "triaged", "confirmed", "declined"].includes(data.stage)) {
+        if (data.your_call === "Decline") data.stage = "declined";
+        else if (data.your_call === "Shortlist") data.stage = "confirmed";
+        else if (!data.your_call || data.your_call === "Hold") data.stage = c.agent_call ? "triaged" : "applied";
+      }
       if (id) await api("candidates/" + id, "PATCH", data); else await api("candidates", "POST", data);
-      $("#csaved").textContent = "Saved";
-      if (id) await refresh(); else { state.candidates = null; state.boot = null; await loadBoot(); await loadCandidates(); render(); closeDrawer(); }
+      if (id) await refresh(); else { state.candidates = null; state.boot = null; await loadBoot(); await loadCandidates(); render(); closeRecord(); }
     });
     const send = $("#sendlead");
     if (send) send.addEventListener("click", async () => { send.disabled = true; try { await api("candidates/" + id, "PATCH", { sent_to_lead: new Date().toISOString() }); await refresh(); } catch (e) { send.disabled = false; } });
@@ -278,6 +321,14 @@
       lf.addEventListener("submit", async (e) => { e.preventDefault(); await api("candidates/" + id, "PATCH", Object.fromEntries(new FormData(lf).entries())); await refresh(); });
     }
   }
+  function openRecord(title, eyebrow, html) {
+    const d = $("#recdlg"); $("#rectitle").textContent = title; $("#receyebrow").textContent = eyebrow; $("#recbody").innerHTML = html; $("#recbody").scrollTop = 0;
+    if (!d.open) (d.showModal ? d.showModal() : d.setAttribute("open", ""));
+  }
+  function closeRecord() { const d = $("#recdlg"); if (d.open) d.close(); }
+  $("#recclose").addEventListener("click", closeRecord);
+  $("#recdlg").addEventListener("click", (e) => { if (e.target === $("#recdlg")) closeRecord(); });
+  
   // Criteria match with evidence: Claude's reading against the scorecard, per criterion. It informs "Your call" and never rejects.
   function criteriaBlock(c) {
     const defs = criteriaFor(c.role_id), res = resultsFor(c.id);
