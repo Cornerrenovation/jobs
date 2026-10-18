@@ -23,7 +23,7 @@
   const VIEWS = ["week", "checklists", "pipeline", "candidates", "calibration", "outreach", "templates", "activity", "posts"];
   const whoName = (by) => !by ? "" : by === "claude" || /\.access$/.test(by) || /^u_/.test(by) ? "Claude" : by.replace(/@.*/, "").replace(/^\w/, (c) => c.toUpperCase());
   const state = { view: "week", boot: null, roleFilter: "all", role: null, filter: "all", candidates: null, results: null, outreach: null, templates: null, search: "", open: {},
-    showClosed: false, justCreated: null, cards: null, cardStage: {}, cardEdit: null };
+    showClosed: false, justCreated: null, cards: null, cardStage: {}, cardEdit: null, srcFilter: "all", callFilter: "all" };
   const store = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
 
   async function api(path, method, body) {
@@ -223,10 +223,19 @@
   async function renderCandidates(view) {
     if (!state.candidates) await loadCandidates();
     const q = state.search.trim().toLowerCase();
-    const list = state.candidates.filter((c) => inRole(c) &&
+    // Source and Your call filters (Yuliia's request, 18 Oct); options count within the chosen role
+    const base = state.candidates.filter(inRole);
+    const callOf = (c) => c.your_call || "none";
+    const count = (f) => { const m = {}; base.forEach((c) => { m[f(c)] = (m[f(c)] || 0) + 1; }); return m; };
+    const srcCounts = count(sourceOf), callCounts = count(callOf);
+    if (state.srcFilter !== "all" && !srcCounts[state.srcFilter]) state.srcFilter = "all";
+    const list = base.filter((c) => (state.srcFilter === "all" || sourceOf(c) === state.srcFilter) && (state.callFilter === "all" || callOf(c) === state.callFilter) &&
       (!q || [c.name, c.headline, c.location, c.sources, c.email, c.stage, c.your_call, c.agent_call].join(" ").toLowerCase().includes(q)));
+    const opt = (v, label, cur) => `<option value="${h(v)}" ${v === cur ? "selected" : ""}>${h(label)}</option>`;
+    const srcSel = `<select id="fsrc" aria-label="Source">${opt("all", "All sources", state.srcFilter)}${Object.entries(srcCounts).sort((a, b) => b[1] - a[1]).map(([v, n]) => opt(v, `${v} (${n})`, state.srcFilter)).join("")}</select>`;
+    const callSel = `<select id="fcall" aria-label="Your call">${opt("all", "Any call", state.callFilter)}${[["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"], ["none", "No call yet"]].map(([v, l]) => opt(v, `${l} (${callCounts[v] || 0})`, state.callFilter)).join("")}</select>`;
     view.innerHTML = head("Candidates", `${list.length} of ${state.candidates.length}`, `<button type="button" class="btn" id="add">Add candidate</button>`) +
-      `<div class="toolbar"><input type="search" id="q" placeholder="Search name, headline, source, stage" value="${h(state.search)}">${roleSeg()}</div>
+      `<div class="toolbar"><input type="search" id="q" placeholder="Search name, headline, source, stage" value="${h(state.search)}">${srcSel}${callSel}${roleSeg()}</div>
       ${list.length ? table(["Name", "Role", "Source", "Applied", "Agent call", "Your call", "Stage", "Next step", "Due"],
         list.map((c) => `<tr class="clickable" data-id="${h(c.id)}"><td><span class="name">${h(c.name)}</span><br><span class="muted">${h(c.headline || c.location || "")}</span></td><td>${h(roleName(c.role_id))}</td><td>${h(c.sources)}${c.referred_by ? `<br><span class="muted">referred by ${h(c.referred_by)}</span>` : ""}</td><td>${h(fmt(c.applied))}</td><td>${h(c.agent_call)}</td><td>${callPill(c.your_call)}</td><td>${pill(c.stage || "applied")}</td><td>${h(c.next_step)}</td><td>${h(fmt(c.due))}</td></tr>`))
         : `<div class="card empty">No candidates yet. They arrive from the jobs site, LinkedIn and Work.ua through the daily check-in, or add one by hand.</div>`}`;
@@ -234,6 +243,8 @@
     qel.addEventListener("input", (e) => { state.search = e.target.value; renderCandidates(view); qel.focus(); });
     if (q) { qel.focus(); qel.setSelectionRange(qel.value.length, qel.value.length); }
     bindSeg(view, "role", (v) => { state.roleFilter = v; renderCandidates(view); });
+    $("#fsrc", view).addEventListener("change", (e) => { state.srcFilter = e.target.value; renderCandidates(view); });
+    $("#fcall", view).addEventListener("change", (e) => { state.callFilter = e.target.value; renderCandidates(view); });
     view.querySelectorAll("tr.clickable").forEach((tr) => tr.addEventListener("click", () => openCandidate(tr.dataset.id)));
     $("#add", view).addEventListener("click", () => openCandidate(null));
   }
