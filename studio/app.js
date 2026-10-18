@@ -353,7 +353,7 @@
     const rowsFor = rub.scored.filter((r) => tested(r) || here.some((k) => itemOf(k, r.id).score != null));
     const untested = rub.scored.filter((r) => !rowsFor.includes(r));
     let gaps = 0;
-    const head = `<tr><th>Criterion</th>${here.map((k) => `<th>${h(scorerName(k.scorer))}<small>${k.kind === "ai" ? "draft from the transcript" : k.entered_by ? "entered for them" : k.started_from === "draft" ? "started from the draft" : "scored blind"}</small></th>`).join("")}</tr>`;
+    const head = `<tr><th>Criterion</th>${here.map((k) => `<th>${h(scorerName(k.scorer))}<small>${k.kind === "ai" ? "draft from the transcript" : k.entered_by ? "entered for them" : k.started_from === "draft" ? "started from the draft" : "scored blind"}${k.hindsight ? " · after the outcome" : ""}</small></th>`).join("")}</tr>`;
     const body = rowsFor.map((r) => {
       const vals = here.map((k) => itemOf(k, r.id).score).filter((v) => v != null);
       const gap = vals.length > 1 ? Math.max(...vals) - Math.min(...vals) : 0;
@@ -376,7 +376,8 @@
     let actions = "";
     if (!edit) actions = mine ? `<button type="button" class="btn ghost small" data-scstart="edit">Edit my card</button>`
       : `${ai ? `<button type="button" class="btn small" data-scstart="draft">Confirm or edit the AI draft</button>` : ""}<button type="button" class="btn ${ai ? "ghost " : ""}small" data-scstart="blank">Score ${ai ? "blind" : "this stage"}</button>`;
-    const hideForBlind = !mine && here.length && (!edit || edit.mode === "blank");
+    const known = ["hired", "declined", "not now"].includes(c.stage) || isClosedRole(roleOf(c.role_id));
+    const hideForBlind = !mine && here.length && !known && (!edit || edit.mode === "blank");
     const shown = edit && edit.mode === "blank" ? `<p class="muted small">The other cards stay hidden until you save yours, so they don't steer your scores.</p>`
       : hideForBlind ? `<details class="fold plain"><summary>Show the ${here.length} card${here.length > 1 ? "s" : ""} for this stage${gaps ? ` · ${gaps} gap${gaps > 1 ? "s" : ""} over one point` : ""}</summary>${tableHtml}</details>
         <p class="muted small">You haven't scored this stage yet. Score blind first if you want your card to count as an independent check.</p>` : tableHtml;
@@ -384,6 +385,7 @@
       ${tabs}
       ${here.length ? "" : `<p class="muted">No cards for this stage yet. The AI recruiter drafts one from the recording's transcript; you confirm or edit it.</p>`}
       ${shown}
+      ${known ? `<p class="muted small">This candidate's outcome is already known, so cards saved here can't be blind. They show the rubric at work but don't count in Calibration.</p>` : ""}
       ${actions ? `<div class="pact">${actions}</div>` : ""}
       ${edit ? cardEditor(c, rub, cur, edit, ai, mine) : ""}
       <p class="muted small">${h(rub.rule.decision)} The AI recruiter's card is advice; the people who interview decide.</p></section>`;
@@ -437,7 +439,8 @@
   // ---------- calibration: how close the scorers are, per pair, across candidates ----------
   async function renderCalibration(view) {
     if (!state.candidates) await loadCandidates();
-    const cards = state.cards || [], groups = {};
+    const all = state.cards || [], groups = {};
+    const practice = all.filter((k) => k.hindsight), cards = all.filter((k) => !k.hindsight);  // after-the-outcome cards can't be blind
     cards.forEach((k) => { (groups[k.candidate_id + "|" + k.stage] = groups[k.candidate_id + "|" + k.stage] || []).push(k); });
     const pairs = {}, gapsList = [], waiting = [];
     const critLabel = (fam, id) => ((state.boot.rubrics || []).find((r) => r.role_id === fam && r.id === id) || {}).label || id;
@@ -462,7 +465,7 @@
     const cname = (id) => (state.candidates.find((x) => x.id === id) || {}).name || id;
     const stageName = (cid, st) => { const r = rubricOf((state.candidates.find((x) => x.id === cid) || {}).role_id); return r ? ((r.stages.find(([x]) => x === st) || [st, st])[1]) : st; };
     const focus = list[0];
-    view.innerHTML = head("Calibration", "How close the scorers are on the same interviews. Every pair of cards on the same candidate and stage is compared criterion by criterion; a gap over one point is flagged. This is the evidence for handing a stage over to the AI recruiter.") +
+    view.innerHTML = head("Calibration", "How close the scorers are on the same interviews. Every pair of cards on the same candidate and stage is compared criterion by criterion; a gap over one point is flagged. Only cards saved before the candidate's outcome was known count. This is the evidence for handing a stage over to the AI recruiter.") +
       `<div class="strip four">${[[cards.length, "scorecards"], [cards.filter((k) => k.scorer === "ai").length, "AI recruiter drafts"], [cards.filter((k) => k.kind === "human").length, "people's cards"], [gapsList.length, "gaps over one point"]].map(([v, t]) => `<div class="kpi"><b>${h(v)}</b><span>${h(t)}</span></div>`).join("")}</div>
       <div class="group"><span class="eyebrow">Scorer pairs</span>${list.length ? table(["Pair", "Shared cards", "Criteria compared", "Within 1 point", "Exact", "Mean difference", "Must-pass agree", "Decision agree"], list.map((p) =>
         `<tr><td><span class="name">${h(scorerName(p.b))} vs ${h(scorerName(p.a))}</span>${p.fromDraft ? `<br><span class="muted small">${p.fromDraft} of ${p.cards} started from the AI draft</span>` : ""}</td><td>${p.cards}</td><td>${p.n}</td><td>${pct(p.within, p.n)}</td><td>${pct(p.exact, p.n)}</td><td>${p.n ? (p.abs / p.n).toFixed(2) : "–"}</td><td>${p.mustN ? `${p.mustAgree} of ${p.mustN}` : "–"}</td><td>${p.decN ? `${p.decAgree} of ${p.decN}` : "–"}</td></tr>`))
@@ -471,6 +474,7 @@
       ${focus && Object.keys(focus.byCrit).length ? `<div class="group"><span class="eyebrow">By criterion · ${h(scorerName(focus.b))} vs ${h(scorerName(focus.a))}</span>${table(["Criterion", "Compared", "Average difference", "Gaps over one point"], Object.entries(focus.byCrit).map(([id, bc]) =>
         `<tr><td>${h(critLabel(bc.fam, id))}</td><td>${bc.n}</td><td>${(bc.sum / bc.n > 0 ? "+" : "") + (bc.sum / bc.n).toFixed(2)}</td><td>${bc.gaps}</td></tr>`))}<p class="muted small">Average difference is ${h(scorerName(focus.b))}'s score minus ${h(scorerName(focus.a))}'s: plus means ${h(scorerName(focus.b))} scores higher.</p></div>` : ""}
       ${gapsList.length ? `<div class="group"><span class="eyebrow">Gaps to talk through</span>${table(["Candidate", "Stage", "Criterion", "Scores"], gapsList.map((g) => `<tr class="clickable" data-id="${h(g.cid)}"><td><span class="name">${h(cname(g.cid))}</span></td><td>${h(stageName(g.cid, g.stage))}</td><td>${h(g.crit)}</td><td>${h(scorerName(g.a))} ${g.sa} · ${h(scorerName(g.b))} ${g.sb}</td></tr>`))}</div>` : ""}
+      ${practice.length ? `<p class="muted small">Not counted: ${practice.length} card${practice.length > 1 ? "s" : ""} saved after the outcome was known (${[...new Set(practice.map((k) => cname(k.candidate_id)))].map(h).join(", ")}). They test the rubric, not the scorers.</p>` : ""}
       <div class="group"><span class="eyebrow">AI drafts waiting for a person's card</span>${waiting.length ? table(["Candidate", "Stage", "AI weighted", "Decision rule"], waiting.map((k) => `<tr class="clickable" data-id="${h(k.candidate_id)}" data-stage="${h(k.stage)}"><td><span class="name">${h(cname(k.candidate_id))}</span><br><span class="muted">${h(roleName((state.candidates.find((x) => x.id === k.candidate_id) || {}).role_id))}</span></td><td>${h(stageName(k.candidate_id, k.stage))}</td><td>${k.weighted != null ? Number(k.weighted).toFixed(2) : "–"} <span class="muted">· ${k.scored} criteria</span></td><td>${decisionPill(k.decision)}</td></tr>`)) : '<p class="muted">None.</p>'}</div>`;
     view.querySelectorAll("tr.clickable").forEach((tr) => tr.addEventListener("click", () => { if (tr.dataset.stage) state.cardStage[tr.dataset.id] = tr.dataset.stage; openCandidate(tr.dataset.id); }));
   }
