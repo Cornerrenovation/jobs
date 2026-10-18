@@ -6,7 +6,8 @@
   const $ = (s, el) => (el || document).querySelector(s);
   const h = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const today = () => new Date().toISOString().slice(0, 10);
-  const fmt = (iso) => { if (!iso) return ""; const d = new Date(iso); return isNaN(d) ? iso : d.toLocaleDateString("en-GB", { day: "numeric", month: "short" }); };
+  // a date without a time is a calendar day: read it at local noon, or UTC midnight shows as the day before west of Greenwich
+  const fmt = (iso) => { if (!iso) return ""; const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(iso) ? iso + "T12:00:00" : iso); return isNaN(d) ? iso : d.toLocaleDateString("en-GB", { day: "numeric", month: "short" }); };
   const fmtTime = (iso) => { const d = new Date(iso); return isNaN(d) ? iso : d.toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); };
   const STAGES = ["applied", "triaged", "confirmed", "messaged", "replied", "screen booked", "screen done", "interview booked", "interview done",
     "work sample", "references", "offer", "hired", "declined", "not now", "pool R1"];
@@ -15,9 +16,14 @@
     ["References", ["references"]], ["Offer", ["offer"]], ["Hired", ["hired"]]];
   const CLOSED = ["declined", "not now", "pool R1"];
   const CALLS = ["", "Shortlist", "Hold", "Decline"];
+  // The funnel order the Worker keeps "reached" in: the furthest stage a candidate got to, even after they were closed.
+  const ORDER = ["applied", "triaged", "confirmed", "messaged", "replied", "screen booked", "screen done", "interview booked", "interview done",
+    "work sample", "references", "offer", "hired"];
+  const STAGE_LABEL = { confirmed: "shortlisted" };
   const VIEWS = ["week", "checklists", "pipeline", "candidates", "outreach", "templates", "activity", "posts"];
   const whoName = (by) => !by ? "" : by === "claude" || /\.access$/.test(by) || /^u_/.test(by) ? "Claude" : by.replace(/@.*/, "").replace(/^\w/, (c) => c.toUpperCase());
-  const state = { view: "week", boot: null, roleFilter: "all", role: null, filter: "all", candidates: null, outreach: null, templates: null, search: "", open: {} };
+  const state = { view: "week", boot: null, roleFilter: "all", role: null, filter: "all", candidates: null, results: null, outreach: null, templates: null, search: "", open: {},
+    showClosed: false, justCreated: null };
   const store = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
 
   async function api(path, method, body) {
@@ -34,8 +40,40 @@
   // ---------- data ----------
   async function loadBoot() { state.boot = await api("bootstrap"); $("#who").textContent = whoName(state.boot.who) === "Claude" ? state.boot.who : state.boot.who; }
   const roles = () => state.boot.roles;
-  const roleName = (id) => (roles().find((r) => r.id === id) || {}).short || id;
-  async function loadCandidates() { state.candidates = await api("candidates"); }
+  const roleOf = (id) => roles().find((r) => r.id === id) || { id, short: id, name: id };
+  const roleName = (id) => roleOf(id).short || id;
+  const isClosedRole = (r) => (r || {}).state === "closed";
+  const openRoles = () => roles().filter((r) => !isClosedRole(r));
+  const familyOf = (r) => (r && (r.family || r.id)) || "";
+  const leadOf = (r) => (r && (r.lead || r.owner)) || "the hiring lead";
+  async function loadCandidates() { [state.candidates, state.results] = await Promise.all([api("candidates"), api("criteria/results")]); }
+
+  // ---------- shared candidate logic ----------
+  const stageIdx = (s) => ORDER.indexOf(s || "");
+  const reachedIdx = (c) => Math.max(stageIdx(c.stage || "applied"), stageIdx(c.reached));
+  const reachedOf = (c) => ORDER[reachedIdx(c)] || "applied";
+  const stageWord = (s) => STAGE_LABEL[s] || s || "applied";
+  // Passed at least one stage: shortlisted (Your call) or got as far as the shortlist or further, in any round.
+  const passedStage = (c) => c.your_call === "Shortlist" || reachedIdx(c) >= stageIdx("confirmed");
+  const sourceOf = (c) => (c.referred_by || "").trim() ? "Referral" : ((c.sources || "").split(/[,;·]/)[0].trim() || "Not recorded");
+  const samePerson = (a, b) => (a.linkedin && b.linkedin && a.linkedin.replace(/[?#].*$/, "").replace(/\/+$/, "").toLowerCase() === b.linkedin.replace(/[?#].*$/, "").replace(/\/+$/, "").toLowerCase())
+    || (a.email && b.email && a.email.trim().toLowerCase() === b.email.trim().toLowerCase()) || (!a.linkedin && !a.email && a.name && a.name.trim().toLowerCase() === (b.name || "").trim().toLowerCase());
+  function criteriaFor(roleId) {
+    const all = state.boot.criteria || [], own = all.filter((k) => k.role_id === roleId);
+    return own.length ? own : all.filter((k) => k.role_id === familyOf(roleOf(roleId)));
+  }
+  const resultsFor = (cid) => (state.results || []).filter((x) => x.candidate_id === cid);
+  function matchSummary(c) {
+    const res = resultsFor(c.id), n = { met: 0, "not met": 0, unclear: 0 };
+    res.forEach((x) => { if (x.result in n) n[x.result]++; });
+    return res.length ? `${n.met} met · ${n["not met"]} not met · ${n.unclear} unclear` : "";
+  }
+  // First-three calibration: the first three a role sends to its hiring lead wait for a yes or no with a reason before more go.
+  function calibration(roleId) {
+    const sent = (state.candidates || []).filter((c) => c.role_id === roleId && c.sent_to_lead).sort((a, b) => (a.sent_to_lead + a.id).localeCompare(b.sent_to_lead + b.id));
+    const first = sent.slice(0, 3), answered = first.filter((c) => c.lead_call && (c.lead_reason || "").trim()).length;
+    return { sent, first, answered, open: first.length < 3 || answered === 3, done: first.length === 3 && answered === 3 };
+  }
   async function loadOutreach() { state.outreach = await api("outreach"); }
   async function loadTemplates() { state.templates = await api("templates"); }
 
@@ -53,7 +91,7 @@
     try {
       if (!state.boot) await loadBoot();
       if (state.view === "week") await renderDocView(view, "this-week");
-      else if (state.view === "checklists") renderChecklists(view);
+      else if (state.view === "checklists") await renderChecklists(view);
       else if (state.view === "pipeline") await renderPipeline(view);
       else if (state.view === "candidates") await renderCandidates(view);
       else if (state.view === "outreach") await renderOutreach(view);
@@ -68,7 +106,8 @@
   const head = (title, sub, right) => `<div class="viewhead"><div><h2>${h(title)}</h2>${sub ? `<div class="sub">${sub}</div>` : ""}</div>${right || ""}</div>`;
   const seg = (name, items, current) => `<div class="seg" data-seg="${h(name)}">${items.map(([v, l]) => `<button type="button" data-v="${h(v)}" aria-pressed="${v === current}">${h(l)}</button>`).join("")}</div>`;
   function bindSeg(el, name, onPick) { el.querySelectorAll(`[data-seg="${name}"] button`).forEach((b) => b.addEventListener("click", () => onPick(b.dataset.v))); }
-  const roleSeg = () => seg("role", [["all", "All roles"]].concat(roles().map((r) => [r.id, r.short])), state.roleFilter);
+  const roleSeg = () => seg("role", [["all", "All roles"]].concat(openRoles().map((r) => [r.id, r.short]), roles().some(isClosedRole) ? [["closed", "Earlier rounds"]] : []), state.roleFilter);
+  const inRole = (c) => state.roleFilter === "all" || c.role_id === state.roleFilter || (state.roleFilter === "closed" && isClosedRole(roleOf(c.role_id)));
   const pill = (text, kind) => text ? `<span class="pill ${kind || ""}" title="${h(text)}">${h(text)}</span>` : "";
   const callPill = (c) => pill(c, c === "Shortlist" ? "ok" : c === "Decline" ? "bad" : c ? "warn" : "");
   const table = (cols, rows) => `<div class="tablewrap"><table><thead><tr>${cols.map((c) => `<th>${h(c)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
@@ -82,7 +121,7 @@
     if (strip) {
       if (!state.candidates) await loadCandidates();
       if (!state.outreach) await loadOutreach();
-      const t = today(), cands = state.candidates;
+      const t = today(), cands = state.candidates.filter((c) => !isClosedRole(roleOf(c.role_id)));
       const tiles = [[roles().filter((r) => ["live", "pool"].includes(r.state)).length, "roles on the jobs site"], [cands.length, "applications so far"],
         [cands.filter((c) => (c.applied || c.created_at || "").slice(0, 10) === t).length, "new applicants today, all sources"],
         [cands.filter((c) => c.your_call === "Shortlist").length, "shortlisted so far"],
@@ -111,9 +150,10 @@
   // ---------- pipeline: a vertical funnel with conversions ----------
   async function renderPipeline(view) {
     if (!state.candidates) await loadCandidates();
-    const list = state.candidates.filter((c) => state.roleFilter === "all" || c.role_id === state.roleFilter);
-    const active = list.filter((c) => !CLOSED.includes(c.stage));
-    const closed = list.filter((c) => CLOSED.includes(c.stage));
+    const list = state.candidates.filter(inRole);
+    const isClosed = (c) => CLOSED.includes(c.stage) || isClosedRole(roleOf(c.role_id));  // an earlier round is closed as a whole
+    const active = list.filter((c) => !isClosed(c));
+    const closed = list.filter(isClosed);
     const idx = (c) => { const i = FUNNEL.findIndex(([, st]) => st.includes(c.stage || "applied")); return i < 0 ? 0 : i; };
     const reached = FUNNEL.map((_, i) => active.filter((c) => idx(c) >= i));
     const applied = reached[0].length, top = applied || 1;
@@ -121,6 +161,13 @@
     // the bottleneck is the weakest step among stages with at least 5 people entering it
     let bottleneck = null;
     FUNNEL.forEach((_, i) => { if (i && reached[i - 1].length >= 5) { const r = reached[i].length / reached[i - 1].length; if (!bottleneck || r < bottleneck.r) bottleneck = { i, r }; } });
+    // Interview rate: of the shortlisted candidates sent to the hiring lead, the share the lead agreed to interview (yes ÷ answered).
+    const sent = list.filter((c) => c.sent_to_lead), yes = sent.filter((c) => c.lead_call === "Interview").length, no = sent.filter((c) => c.lead_call === "No").length;
+    const waiting = sent.length - yes - no, rate = yes + no ? Math.round(100 * yes / (yes + no)) + "%" : "–";
+    const leadRow = `<div class="stage leadrow"><div class="stagerow static"><span class="sname">Lead agreed to interview<small>${sent.length ? `${sent.length} of ${list.filter((c) => c.your_call === "Shortlist").length} shortlisted sent to the lead` : "nobody sent to the lead yet"}</small></span>
+        <span class="sbar"><span style="width:${yes + no ? Math.round(100 * yes / (yes + no)) : 0}%"></span></span>
+        <span class="snum">${yes}<small>${yes + no} answered</small></span>
+        <span class="sconv"><b>${rate}</b><small>interview rate${waiting ? ` · ${waiting} waiting` : ""}</small></span></div></div>`;
     const rows = FUNNEL.map(([title], i) => {
       const n = reached[i].length, prev = i ? reached[i - 1].length : null, here = active.filter((c) => idx(c) === i);
       const open = !!state.open[title];
@@ -132,17 +179,41 @@
           <span class="sconv">${i ? `<b>${pct(n, prev)}</b><small>from ${h(FUNNEL[i - 1][0].toLowerCase())}</small>` : ""}${bottleneck && bottleneck.i === i ? pill("weakest step", "warn") : ""}</span>
         </button>
         ${open ? `<div class="stagelist">${here.length ? here.map((c) => `<button type="button" class="srow" data-id="${h(c.id)}"><span class="name">${h(c.name)}</span><span class="muted">${h(roleName(c.role_id))}${c.sources ? " · " + h(c.sources) : ""}</span>${callPill(c.your_call)}${c.due ? `<span class="muted">due ${h(fmt(c.due))}</span>` : ""}<span class="pill">${h(c.stage)}</span></button>`).join("") : `<p class="muted">Nobody at this stage right now.</p>`}</div>` : ""}
-      </div>`;
+      </div>${title === "Shortlisted" ? leadRow : ""}`;
     }).join("");
     const strip = [[active.length, "active candidates"], [closed.length, "closed"], [pct(reached[FUNNEL.length - 1].length, applied), "applied to hired"],
+      [rate, yes + no ? `interview rate (${yes} of ${yes + no} the lead answered)` : "interview rate (no answers yet)"],
       [bottleneck ? FUNNEL[bottleneck.i][0] : "–", bottleneck ? "weakest step" : "weakest step (needs 5+ per stage)"]];
+    // Per role: the hiring lead's answers and where the first-three calibration stands
+    const leadRoles = (state.roleFilter === "all" ? openRoles() : state.roleFilter === "closed" ? roles().filter(isClosedRole) : [roleOf(state.roleFilter)]);
+    const leadTable = table(["Role", "Hiring lead", "Shortlisted", "Sent", "Interview", "No", "Waiting", "Interview rate", "First three"], leadRoles.map((r) => {
+      const mine = list.filter((c) => c.role_id === r.id), cal = calibration(r.id), y = mine.filter((c) => c.lead_call === "Interview").length, nn = mine.filter((c) => c.lead_call === "No").length;
+      const firstThree = cal.done ? pill("calibrated", "ok") : !cal.first.length ? '<span class="muted">none sent yet</span>'
+        : pill(`${cal.answered} of 3 answered`, "warn") + (cal.first.length < 3 ? ` <span class="muted">${cal.first.length} sent</span>` : "");
+      return `<tr><td>${h(r.short)}</td><td>${h(leadOf(r))}</td><td>${mine.filter((c) => c.your_call === "Shortlist").length}</td><td>${cal.sent.length}</td><td>${y}</td><td>${nn}</td><td>${cal.sent.length - y - nn}</td><td>${y + nn ? Math.round(100 * y / (y + nn)) + "%" : "–"}</td><td>${firstThree}</td></tr>`;
+    }));
+    // Source of hire: everyone by the furthest stage they reached, closed candidates included; a referral counts as Referral
+    const bySource = {}; list.forEach((c) => { (bySource[sourceOf(c)] = bySource[sourceOf(c)] || []).push(c); });
+    const atLeast = (cs, st) => cs.filter((c) => reachedIdx(c) >= stageIdx(st)).length;
+    const hiredAll = atLeast(list, "hired");
+    const sourceTable = table(["Source", "Candidates", "Shortlisted", "Lead said interview", "Interviewed", "Hired", "Share of hires"], Object.entries(bySource).sort((a, b) => atLeast(b[1], "hired") - atLeast(a[1], "hired") || b[1].length - a[1].length).map(([src, cs]) =>
+      `<tr><td>${h(src)}</td><td>${cs.length}</td><td>${cs.filter(passedStage).length}</td><td>${cs.filter((c) => c.lead_call === "Interview").length}</td><td>${atLeast(cs, "interview booked")}</td><td>${atLeast(cs, "hired")}</td><td>${hiredAll ? Math.round(100 * atLeast(cs, "hired") / hiredAll) + "%" : "–"}</td></tr>`));
+    const referred = list.filter((c) => (c.referred_by || "").trim());
+    const bountyTable = referred.length ? table(["Candidate", "Role", "Referred by", "Stage", "Hired on", "Bounty", "Bounty due"], referred.map((c) =>
+      `<tr class="clickable" data-id="${h(c.id)}"><td><span class="name">${h(c.name)}</span></td><td>${h(roleName(c.role_id))}</td><td>${h(c.referred_by)}</td><td>${pill(c.stage || "applied")}</td><td>${h(fmt(c.hired_at))}</td><td>${c.bounty ? h(c.bounty) : '<span class="muted">not set yet</span>'}</td><td>${c.bounty_due ? (c.bounty_due <= today() ? `<b>${h(fmt(c.bounty_due))} · due</b>` : h(fmt(c.bounty_due))) : '<span class="muted">at hire + 90 days</span>'}</td></tr>`)) : "";
     view.innerHTML = head("Pipeline", "Each stage counts everyone who reached it or went further. Closed candidates sit in their own row and don't count against the conversions. Click a stage to see who is there now.", roleSeg()) +
-      `<div class="strip four">${strip.map(([v, t]) => `<div class="kpi"><b>${h(v)}</b><span>${h(t)}</span></div>`).join("")}</div>
+      `<div class="strip">${strip.map(([v, t]) => `<div class="kpi"><b>${h(v)}</b><span>${h(t)}</span></div>`).join("")}</div>
       <div class="funnel">${rows}
-      <div class="stage closedrow"><button type="button" class="stagerow" data-toggle="Closed" aria-expanded="${!!state.open.Closed}"><span class="sname">Closed<small>declined, not now, pool</small></span><span class="sbar"></span><span class="snum">${closed.length}</span><span class="sconv"></span></button>
-        ${state.open.Closed ? `<div class="stagelist">${closed.length ? closed.map((c) => `<button type="button" class="srow" data-id="${h(c.id)}"><span class="name">${h(c.name)}</span><span class="muted">${h(roleName(c.role_id))}</span><span class="pill">${h(c.stage)}</span></button>`).join("") : '<p class="muted">Nobody closed yet.</p>'}</div>` : ""}</div></div>
-      ${list.length ? "" : `<p class="muted">No candidates yet. They arrive from the jobs site, LinkedIn and Work.ua through the daily check-in, or you add one under Candidates.</p>`}`;
+      <div class="stage closedrow"><button type="button" class="stagerow" data-toggle="Closed" aria-expanded="${!!state.open.Closed}"><span class="sname">Closed<small>declined, not now, pool, earlier rounds</small></span><span class="sbar"></span><span class="snum">${closed.length}</span><span class="sconv"></span></button>
+        ${state.open.Closed ? `<div class="stagelist">${closed.length ? closed.map((c) => `<button type="button" class="srow" data-id="${h(c.id)}"><span class="name">${h(c.name)}</span><span class="muted">${h(roleName(c.role_id))}</span><span class="pill">${h(isClosedRole(roleOf(c.role_id)) && !CLOSED.includes(c.stage) ? "got to " + stageWord(c.stage) : c.stage)}</span></button>`).join("") : '<p class="muted">Nobody closed yet.</p>'}</div>` : ""}</div></div>
+      ${list.length ? "" : `<p class="muted">No candidates yet. They arrive from the jobs site, LinkedIn and Work.ua through the daily check-in, or you add one under Candidates.</p>`}
+      <div class="group"><span class="eyebrow">Hiring lead: interview rate and the first three</span>${leadTable}
+        <p class="muted small">Interview rate is the lead's "Interview" answers divided by all their answers; candidates still waiting are left out until answered. Each role's first three sent to the lead wait for a yes or no with a reason before a fourth can go.</p></div>
+      <div class="group"><span class="eyebrow">Source of hire</span>${sourceTable}
+        <p class="muted small">Counts everyone by the furthest stage they reached, closed candidates included. Source is the first channel in Sources; anyone with "Referred by" filled counts as Referral.</p></div>
+      ${bountyTable ? `<div class="group"><span class="eyebrow">Referrals and bounties</span>${bountyTable}<p class="muted small">The bounty is due 90 days after the hire. Kostya sets the amount on each referred candidate.</p></div>` : ""}`;
     bindSeg(view, "role", (v) => { state.roleFilter = v; renderPipeline(view); });
+    view.querySelectorAll("tr.clickable").forEach((tr) => tr.addEventListener("click", () => openCandidate(tr.dataset.id)));
     view.querySelectorAll("[data-toggle]").forEach((b) => b.addEventListener("click", () => { state.open[b.dataset.toggle] = !state.open[b.dataset.toggle]; renderPipeline(view); }));
     view.querySelectorAll(".srow").forEach((b) => b.addEventListener("click", () => openCandidate(b.dataset.id)));
   }
@@ -151,12 +222,12 @@
   async function renderCandidates(view) {
     if (!state.candidates) await loadCandidates();
     const q = state.search.trim().toLowerCase();
-    const list = state.candidates.filter((c) => (state.roleFilter === "all" || c.role_id === state.roleFilter) &&
+    const list = state.candidates.filter((c) => inRole(c) &&
       (!q || [c.name, c.headline, c.location, c.sources, c.email, c.stage, c.your_call, c.agent_call].join(" ").toLowerCase().includes(q)));
     view.innerHTML = head("Candidates", `${list.length} of ${state.candidates.length}`, `<button type="button" class="btn" id="add">Add candidate</button>`) +
       `<div class="toolbar"><input type="search" id="q" placeholder="Search name, headline, source, stage" value="${h(state.search)}">${roleSeg()}</div>
       ${list.length ? table(["Name", "Role", "Source", "Applied", "Agent call", "Your call", "Stage", "Next step", "Due"],
-        list.map((c) => `<tr class="clickable" data-id="${h(c.id)}"><td><span class="name">${h(c.name)}</span><br><span class="muted">${h(c.headline || c.location || "")}</span></td><td>${h(roleName(c.role_id))}</td><td>${h(c.sources)}</td><td>${h(fmt(c.applied))}</td><td>${h(c.agent_call)}</td><td>${callPill(c.your_call)}</td><td>${pill(c.stage || "applied")}</td><td>${h(c.next_step)}</td><td>${h(fmt(c.due))}</td></tr>`))
+        list.map((c) => `<tr class="clickable" data-id="${h(c.id)}"><td><span class="name">${h(c.name)}</span><br><span class="muted">${h(c.headline || c.location || "")}</span></td><td>${h(roleName(c.role_id))}</td><td>${h(c.sources)}${c.referred_by ? `<br><span class="muted">referred by ${h(c.referred_by)}</span>` : ""}</td><td>${h(fmt(c.applied))}</td><td>${h(c.agent_call)}</td><td>${callPill(c.your_call)}</td><td>${pill(c.stage || "applied")}</td><td>${h(c.next_step)}</td><td>${h(fmt(c.due))}</td></tr>`))
         : `<div class="card empty">No candidates yet. They arrive from the jobs site, LinkedIn and Work.ua through the daily check-in, or add one by hand.</div>`}`;
     const qel = $("#q", view);
     qel.addEventListener("input", (e) => { state.search = e.target.value; renderCandidates(view); qel.focus(); });
@@ -166,30 +237,83 @@
     $("#add", view).addEventListener("click", () => openCandidate(null));
   }
   function openCandidate(id) {
-    const c = id ? state.candidates.find((x) => x.id === id) : { stage: "applied", role_id: state.roleFilter !== "all" ? state.roleFilter : (roles()[0] || {}).id };
+    const c = id ? state.candidates.find((x) => x.id === id) : { stage: "applied", role_id: state.roleFilter !== "all" && state.roleFilter !== "closed" ? state.roleFilter : (openRoles()[0] || {}).id };
     const sel = (name, opts, val, labels) => `<select name="${name}">${opts.map((o, i) => `<option value="${h(o)}" ${o === (val || "") ? "selected" : ""}>${h(labels ? labels[i] : (o || "–"))}</option>`).join("")}</select>`;
     const ro = (k, v, isLink) => v ? `<dt>${h(k)}</dt><dd>${isLink ? `<a href="${h(v)}" target="_blank" rel="noopener">${h(v.replace(/^https?:\/\/(www\.)?/, ""))}</a>` : h(v)}</dd>` : "";
+    const role = roleOf(c.role_id), lead = leadOf(role);
+    const furthest = id && reachedIdx(c) > stageIdx(c.stage || "applied") ? stageWord(reachedOf(c)) : "";
+    const suggestion = id ? (c.agent_call ? `<span class="hint">Claude suggests <b>${h(c.agent_call)}</b>${c.confidence ? " · " + h(c.confidence) : ""}. A suggestion only: nothing moves until you choose.</span>` : `<span class="hint">No suggestion from Claude yet.</span>`) : "";
     openDrawer(id ? c.name : "New candidate", `
-      ${id ? `<dl class="kv">${ro("ID", c.id)}${ro("Role", roleName(c.role_id))}${ro("LinkedIn", c.linkedin, true)}${ro("Email", c.email)}${ro("Location", c.location)}${ro("Sources", c.sources)}
-        ${ro("Applied", c.applied)}${ro("Headline", c.headline)}${ro("English", c.english)}${ro("Screening", c.screening)}${ro("Site answer", c.site_answer)}${ro("CV / portfolio", c.cv, /^https?:/.test(c.cv || ""))}
-        ${ro("Knockout", c.knockout)}${ro("Agent call", c.agent_call && (c.agent_call + (c.confidence ? " · " + c.confidence : "")))}${ro("Why", c.why)}${ro("Doubt to probe", c.doubt)}${ro("Latest reply", c.latest_reply)}${ro("Last contact", c.last_contact)}</dl>` : ""}
+      ${id ? `<dl class="kv">${ro("ID", c.id)}${ro("Role", roleName(c.role_id) + (isClosedRole(role) ? " (earlier round)" : ""))}${ro("LinkedIn", c.linkedin, true)}${ro("Email", c.email)}${ro("Location", c.location)}${ro("Sources", c.sources)}
+        ${ro("Referred by", c.referred_by)}${ro("Applied", c.applied)}${ro("Headline", c.headline)}${ro("English", c.english)}${ro("Screening", c.screening)}${ro("Site answer", c.site_answer)}${ro("CV / portfolio", c.cv, /^https?:/.test(c.cv || ""))}
+        ${ro("Furthest stage", furthest)}${ro("Scores", c.scores)}${ro("Knockout", c.knockout)}${ro("Agent call", c.agent_call && (c.agent_call + (c.confidence ? " · " + c.confidence : "")))}${ro("Why", c.why)}${ro("Doubt to probe", c.doubt)}${ro("Latest reply", c.latest_reply)}${ro("Last contact", c.last_contact)}</dl>
+        ${criteriaBlock(c)}${leadBlock(c, role, lead)}` : ""}
       <form class="form" id="cform">
-        ${id ? "" : `<label class="full"><span class="lbl">Name</span><input name="name" required></label><label><span class="lbl">Role</span>${sel("role_id", roles().map((r) => r.id), c.role_id, roles().map((r) => r.short))}</label><label><span class="lbl">Source</span><input name="sources" placeholder="LinkedIn UA, referral…"></label><label class="full"><span class="lbl">LinkedIn</span><input name="linkedin" type="url"></label><label><span class="lbl">Email</span><input name="email" type="email"></label><label><span class="lbl">Location</span><input name="location"></label>`}
-        <label><span class="lbl">Your call</span>${sel("your_call", CALLS, c.your_call)}</label>
+        ${id ? "" : `<label class="full"><span class="lbl">Name</span><input name="name" required></label><label><span class="lbl">Role</span>${sel("role_id", openRoles().map((r) => r.id), c.role_id, openRoles().map((r) => r.short))}</label><label><span class="lbl">Source</span><input name="sources" placeholder="LinkedIn UA, referral…"></label><label class="full"><span class="lbl">LinkedIn</span><input name="linkedin" type="url"></label><label><span class="lbl">Email</span><input name="email" type="email"></label><label><span class="lbl">Location</span><input name="location"></label>`}
+        <label><span class="lbl">Your call</span>${sel("your_call", CALLS, c.your_call)}${suggestion}</label>
         <label><span class="lbl">Stage</span>${sel("stage", STAGES, c.stage || "applied")}</label>
         <label class="full"><span class="lbl">Your reason</span><input name="your_reason" value="${h(c.your_reason)}"></label>
         <label><span class="lbl">Next step</span><input name="next_step" value="${h(c.next_step)}"></label>
         <label><span class="lbl">Due</span><input name="due" type="date" value="${h((c.due || "").slice(0, 10))}"></label>
+        <label><span class="lbl">Referred by</span><input name="referred_by" value="${h(c.referred_by)}" placeholder="Who on the team or in our network"></label>
+        <label><span class="lbl">Referral bounty</span><input name="bounty" value="${h(c.bounty)}" placeholder="Blank until Kostya sets it"></label>
+        ${id ? `<label><span class="lbl">Hired on</span><input name="hired_at" type="date" value="${h((c.hired_at || "").slice(0, 10))}"></label>
+        <div class="fieldnote"><span class="lbl">Bounty due</span><span>${c.bounty_due ? h(fmt(c.bounty_due)) + " · hire + 90 days" : (c.referred_by ? "90 days after the hire date" : "Only for referrals")}</span></div>` : ""}
         <label class="full"><span class="lbl">Notes</span><textarea name="notes">${h(c.notes)}</textarea></label>
         <div class="formfoot full"><span class="saved" id="csaved"></span><button type="submit" class="btn">${id ? "Save" : "Add"}</button></div>
       </form>`);
+    const refresh = async () => { state.candidates = null; state.boot = null; await loadBoot(); await loadCandidates(); render(); if (id) openCandidate(id); };
     $("#cform").addEventListener("submit", async (e) => {
       e.preventDefault();
       const data = Object.fromEntries(new FormData(e.target).entries());
       if (id) await api("candidates/" + id, "PATCH", data); else await api("candidates", "POST", data);
-      $("#csaved").textContent = "Saved"; state.candidates = null; state.boot = null;
-      await loadBoot(); await loadCandidates(); render(); if (id) openCandidate(id); else closeDrawer();
+      $("#csaved").textContent = "Saved";
+      if (id) await refresh(); else { state.candidates = null; state.boot = null; await loadBoot(); await loadCandidates(); render(); closeDrawer(); }
     });
+    const send = $("#sendlead");
+    if (send) send.addEventListener("click", async () => { send.disabled = true; try { await api("candidates/" + id, "PATCH", { sent_to_lead: new Date().toISOString() }); await refresh(); } catch (e) { send.disabled = false; } });
+    const lf = $("#lform");
+    if (lf) {
+      bindSeg(lf, "leadcall", (v) => { $('input[name="lead_call"]', lf).value = v; lf.querySelectorAll("[data-seg] button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === v)); });
+      lf.addEventListener("submit", async (e) => { e.preventDefault(); await api("candidates/" + id, "PATCH", Object.fromEntries(new FormData(lf).entries())); await refresh(); });
+    }
+  }
+  // Criteria match with evidence: Claude's reading against the scorecard, per criterion. It informs "Your call" and never rejects.
+  function criteriaBlock(c) {
+    const defs = criteriaFor(c.role_id), res = resultsFor(c.id);
+    const extra = res.filter((x) => !defs.some((d) => d.id === x.criterion_id)).map((x) => ({ id: x.criterion_id, label: x.criterion_id, kind: "" }));
+    const items = defs.concat(extra);
+    if (!items.length) return "";
+    const kindWord = { knockout: "Knockout", plus: "Plus marker", minus: "Minus marker", scored: "Scored" };
+    const counts = { met: 0, "not met": 0, unclear: 0, none: 0 };
+    const rows = items.map((d) => {
+      const r = res.find((x) => x.criterion_id === d.id);
+      counts[r ? r.result : "none"]++;
+      // green is good for the candidate: a minus marker that is met is a red flag
+      const kind = !r ? "" : r.result === "unclear" ? "warn" : d.kind === "minus" ? (r.result === "met" ? "bad" : "ok")
+        : r.result === "met" ? "ok" : d.kind === "knockout" ? "bad" : "";
+      return `<li class="crow"><span class="pill ${kind}">${h(r ? r.result : "not checked")}</span><div class="cbody"><span class="clabel">${h(d.label)}${d.kind ? `<span class="ckind">${h(kindWord[d.kind] || d.kind)}</span>` : ""}</span>
+        ${r && r.evidence ? `<span class="ev">${h(r.evidence)}</span>` : ""}${r ? `<span class="cmeta">${r.field ? "From " + h(r.field) + " · " : ""}${r.rules_version ? h(r.rules_version) + " · " : ""}${h(whoName(r.by))}, ${h(fmt(r.at))}</span>` : ""}</div></li>`;
+    }).join("");
+    const src = (defs[0] || {}).source;
+    if (!res.length) return `<section class="crit"><details class="fold plain"><summary>Criteria${src ? " · " + h(src) : ""}: not checked yet (${items.length})</summary>
+      <ul class="critnames">${items.map((d) => `<li>${h(d.label)}</li>`).join("")}</ul></details><p class="muted small">Claude checks each one against the application, with the words it rests on. It informs your call; nobody is rejected on it.</p></section>`;
+    return `<section class="crit"><div class="crithead"><span class="eyebrow">Criteria${src ? " · " + h(src) : ""}</span><span class="muted small">${counts.met} met · ${counts["not met"]} not met · ${counts.unclear} unclear${counts.none ? ` · ${counts.none} not checked` : ""}</span></div>
+      <ul class="critlist">${rows}</ul><p class="muted small">Claude's reading of the application against the scorecard, with the words it rests on. It informs your call; nobody is rejected on it.</p></section>`;
+  }
+  // The hiring lead's yes or no, and the first-three gate
+  function leadBlock(c, role, lead) {
+    if (c.your_call !== "Shortlist" && !c.sent_to_lead) return "";
+    const cal = calibration(c.role_id), pos = cal.first.findIndex((x) => x.id === c.id);
+    if (!c.sent_to_lead) {
+      return `<section class="leadbox"><span class="eyebrow">Hiring lead · ${h(lead)}</span>
+        ${cal.open ? `<p>Shortlisted. Send to ${h(lead)}, who answers yes or no to an interview, with a reason.${cal.first.length < 3 ? ` This would be number ${cal.first.length + 1} of the first three, which calibrate the search.` : ""}</p><div><button type="button" class="btn small" id="sendlead">Send to ${h(lead)}</button></div>`
+          : `<p><b>Calibration first.</b> The first three sent for ${h(role.short)} need ${h(lead)}'s yes or no with a reason before more go: ${cal.answered} of 3 answered.</p><div class="chips">${cal.first.map((x) => `<span class="chip">${h(x.name)} · ${x.lead_call ? h(x.lead_call) : "waiting"}</span>`).join("")}</div>`}</section>`;
+    }
+    return `<section class="leadbox"><span class="eyebrow">Hiring lead · ${h(lead)}</span><p>Sent ${h(fmt(c.sent_to_lead))}${pos >= 0 ? ` · number ${pos + 1} of the first three for ${h(role.short)}` : ""}. ${c.lead_call ? "" : `Waiting for ${h(lead)}'s yes or no.`}</p>
+      <form class="form" id="lform"><label><span class="lbl">Interview?</span>${seg("leadcall", [["Interview", "Yes, interview"], ["No", "No"]], c.lead_call || "")}<input type="hidden" name="lead_call" value="${h(c.lead_call)}"></label>
+        <label class="full"><span class="lbl">Reason</span><input name="lead_reason" value="${h(c.lead_reason)}" required placeholder="What decided it, in one line"></label>
+        <div class="formfoot full"><button type="submit" class="btn small">Save ${h(lead)}'s answer</button></div></form></section>`;
   }
 
   // ---------- outreach ----------
@@ -253,23 +377,57 @@
     });
   }
 
+  // ---------- talent rediscovery: a search first lists earlier candidates who passed a stage ----------
+  function families(r) {  // the job families of the other searches, each named after its open search when there is one
+    const fams = {};
+    roles().forEach((x) => { if (x.id === r.id) return; const f = familyOf(x); if (!fams[f] || !isClosedRole(x)) fams[f] = x.name; });
+    const cur = r.id && familyOf(r) !== r.id ? familyOf(r) : "";
+    return [["", r.id ? "Its own (no earlier rounds)" : "None: a new kind of role"]].concat(Object.entries(fams))
+      .map(([v, l]) => `<option value="${h(v)}" ${v === cur ? "selected" : ""}>${h(l)}</option>`).join("");
+  }
+  function poolFor(role) {
+    const fam = familyOf(role), mine = state.candidates.filter((c) => c.role_id === role.id);
+    return state.candidates.filter((c) => c.role_id !== role.id && roles().some((r) => r.id === c.role_id) && passedStage(c) && c.stage !== "hired")
+      .map((c) => ({ c, same: familyOf(roleOf(c.role_id)) === fam, added: mine.some((m) => samePerson(c, m)) }))
+      .sort((a, b) => (b.same - a.same) || (reachedIdx(b.c) - reachedIdx(a.c)) || a.c.name.localeCompare(b.c.name));
+  }
+  function poolPanel(role) {
+    const pool = poolFor(role), same = pool.filter((p) => p.same).length;
+    const fresh = state.justCreated === role.id || !state.candidates.some((c) => c.role_id === role.id && c.sources !== "pool");
+    const row = ({ c, same: sameJob, added }) => {
+      const from = roleOf(c.role_id), notes = [c.your_reason, c.notes].filter(Boolean).join(" · "), m = matchSummary(c);
+      return `<li class="prow"><div class="ptop"><span class="name">${h(c.name)}</span>${sameJob ? pill("same job", "ok") : ""}${added ? pill("in this search", "") : ""}
+          <span class="muted small">${h(from.short)} · got to ${h(stageWord(reachedOf(c)))}${c.stage && c.stage !== reachedOf(c) ? ", now " + h(stageWord(c.stage)) : ""}</span></div>
+        ${c.scores ? `<p><span class="lbl">Scores</span> ${h(c.scores)}</p>` : ""}${c.why ? `<p><span class="lbl">Why</span> ${h(c.why)}</p>` : ""}${c.doubt ? `<p><span class="lbl">To probe</span> ${h(c.doubt)}</p>` : ""}
+        ${notes ? `<p><span class="lbl">Notes</span> ${h(notes)}</p>` : ""}${m ? `<p><span class="lbl">Criteria</span> ${h(m)}</p>` : ""}
+        <div class="pact">${added ? "" : `<button type="button" class="btn small" data-recontact="${h(c.id)}">Add to this search</button>`}<button type="button" class="btn ghost small" data-poolopen="${h(c.id)}">Open record</button>${c.linkedin ? `<a class="btn ghost small" href="${h(c.linkedin)}" target="_blank" rel="noopener">LinkedIn</a>` : ""}</div></li>`;
+    };
+    return `<details class="fold pool" ${fresh ? "open" : ""}><summary>Re-contact first<span class="count">${pool.length ? `${pool.length} from earlier rounds${same ? `, ${same} for the same job` : ""}` : "nobody yet"}</span></summary>
+      <p class="muted small">Everyone from another round or role who passed at least one stage (shortlisted or further), same job first, with their stage, scores and notes. Re-contact them before posting; "Add to this search" opens a record here with the source "pool".</p>
+      ${pool.length ? `<ul class="poollist">${pool.map(row).join("")}</ul>` : '<p class="muted small">Nobody in the pool has passed a stage yet.</p>'}</details>`;
+  }
+
   // ---------- checklists ----------
-  function renderChecklists(view) {
+  async function renderChecklists(view) {
+    if (!state.candidates) await loadCandidates();
     const b = state.boot, steps = b.steps, total = steps.length;
     const doneSet = new Set(b.ticks.filter((t) => t.done).map((t) => t.role_id + "~" + t.step_id));
     const tickOf = (rid, sid) => b.ticks.find((t) => t.role_id === rid && t.step_id === sid);
     const count = (rid) => steps.filter((s) => doneSet.has(rid + "~" + s.id)).length;
-    if (!state.role || !roles().find((r) => r.id === state.role)) state.role = roles().find((r) => r.id === store.get("studio-role")) ? store.get("studio-role") : (roles()[0] || {}).id;
-    const role = roles().find((r) => r.id === state.role);
+    const shown = roles().filter((r) => state.showClosed || !isClosedRole(r)), closedCount = roles().filter(isClosedRole).length;
+    if (!state.role || !shown.find((r) => r.id === state.role)) state.role = shown.find((r) => r.id === store.get("studio-role")) ? store.get("studio-role") : (shown[0] || {}).id;
+    const role = shown.find((r) => r.id === state.role);
     const notes = {}; b.role_steps.forEach((rs) => { notes[rs.role_id + "~" + rs.step_id] = rs; });
     const phases = []; steps.forEach((s) => { let p = phases.find((x) => x.key === s.phase); if (!p) { p = { key: s.phase, title: s.phase_title, steps: [] }; phases.push(p); } p.steps.push(s); });
     const chipFor = (l) => l.target === "#posts" ? `<button type="button" class="chip link" data-posts>${h(l.label)}</button>`
       : l.target.startsWith("doc:") ? `<button type="button" class="chip link" data-doc="${h(l.target.slice(4))}">${h(l.label)}</button>`
       : `<a class="chip link" href="${h(l.target.startsWith("art:") ? "https://claude.ai/artifact/" + l.target.slice(4) : l.target)}" target="_blank" rel="noopener">${h(l.label)}</a>`;
     view.innerHTML = head("Checklists", `The ${total} steps every search follows, one list per role`, `<button type="button" class="btn" id="newsearch">New search</button>`) +
-      `<div class="cards">${roles().map((r) => `<button type="button" class="rcard" data-role="${h(r.id)}" aria-pressed="${r.id === state.role}">${pill(r.state === "live" ? "Live" : r.state === "pool" ? "Quiet pool" : r.state || "planned", r.state === "live" ? "ok" : r.state === "pool" ? "warn" : "")}<span class="cname">${h(r.short)}</span><span class="muted small">Owner · ${h(r.owner || "–")}</span><span class="bar"><span style="width:${Math.round(100 * count(r.id) / total)}%"></span></span><span class="mono muted"><b>${count(r.id)}</b> / ${total}</span></button>`).join("")}</div>
-      ${role ? `<div class="rolebar"><div class="rtabs">${roles().map((r) => `<button type="button" class="rtab" data-role="${h(r.id)}" aria-pressed="${r.id === state.role}">${h(r.short)}<b>${count(r.id)}</b></button>`).join("")}</div>${seg("filter", [["all", "All"], ["open", "Open"], ["done", "Done"]], state.filter)}</div>
+      `<div class="cards">${shown.map((r) => `<button type="button" class="rcard" data-role="${h(r.id)}" aria-pressed="${r.id === state.role}">${pill(r.state === "live" ? "Live" : r.state === "pool" ? "Quiet pool" : r.state || "planned", r.state === "live" ? "ok" : r.state === "pool" ? "warn" : "")}<span class="cname">${h(r.short)}</span><span class="muted small">Owner · ${h(r.owner || "–")}</span><span class="bar"><span style="width:${Math.round(100 * count(r.id) / total)}%"></span></span><span class="mono muted"><b>${count(r.id)}</b> / ${total}</span></button>`).join("")}</div>
+      ${closedCount ? `<p class="small"><button type="button" class="linkbtn" id="toggleclosed">${state.showClosed ? "Hide" : "Show"} earlier rounds (${closedCount})</button></p>` : ""}
+      ${role ? `<div class="rolebar"><div class="rtabs">${shown.map((r) => `<button type="button" class="rtab" data-role="${h(r.id)}" aria-pressed="${r.id === state.role}">${h(r.short)}<b>${count(r.id)}</b></button>`).join("")}</div>${seg("filter", [["all", "All"], ["open", "Open"], ["done", "Done"]], state.filter)}</div>
       <section class="role" data-filter="${h(state.filter)}"><div class="rolehead"><div><span class="eyebrow">Owner · ${h(role.owner || "–")}</span><h2>${h(role.name)}</h2><p class="muted">${h(role.status)}<button type="button" class="edit" id="editrole">edit</button></p></div><div class="rolestat"><span class="big">${count(role.id)}</span><span class="muted">of ${total} steps done</span></div></div><div class="bar"><span style="width:${Math.round(100 * count(role.id) / total)}%"></span></div>
+      ${isClosedRole(role) ? "" : poolPanel(role)}
       ${phases.map((p) => `<div class="phase"><h3>${h(p.title)} <span>${p.steps.filter((s) => doneSet.has(role.id + "~" + s.id)).length} / ${p.steps.length}</span></h3><ul class="steps">
         ${p.steps.map((s) => { const key = role.id + "~" + s.id, done = doneSet.has(key), t = tickOf(role.id, s.id), rs = notes[key] || {}; let links = []; try { links = JSON.parse(rs.links || "[]"); } catch (e) {}
           return `<li class="step ${done ? "done" : ""}"><input type="checkbox" class="tick" id="t-${h(key)}" data-key="${h(key)}" ${done ? "checked" : ""}><div class="stepbody"><label for="t-${h(key)}" class="stitle">${h(s.title)}</label>
@@ -278,6 +436,15 @@
             <details class="what"><summary>What this step means</summary><p>${h(s.what)}</p></details>
             <span class="smeta">${done && t ? "Done " + fmt(t.at) + " · by " + h(whoName(t.by)) : ""}</span></div></li>`; }).join("")}</ul></div>`).join("")}</section>` : '<div class="card empty">No searches yet. Start one with "New search".</div>'}`;
     view.querySelectorAll("[data-role]").forEach((el) => el.addEventListener("click", () => { state.role = el.dataset.role; store.set("studio-role", state.role); renderChecklists(view); }));
+    const tc = $("#toggleclosed", view); if (tc) tc.addEventListener("click", () => { state.showClosed = !state.showClosed; renderChecklists(view); });
+    view.querySelectorAll("[data-recontact]").forEach((btn) => btn.addEventListener("click", async () => {
+      const c = state.candidates.find((x) => x.id === btn.dataset.recontact), from = roleOf(c.role_id);
+      btn.disabled = true;
+      await api("candidates", "POST", { role_id: role.id, name: c.name, linkedin: c.linkedin, email: c.email, location: c.location, headline: c.headline, english: c.english,
+        sources: "pool", stage: "applied", next_step: `Re-contact first: ${stageWord(reachedOf(c))} in ${from.short} (${c.id})` });
+      state.candidates = null; await loadCandidates(); renderChecklists(view);
+    }));
+    view.querySelectorAll("[data-poolopen]").forEach((btn) => btn.addEventListener("click", () => openCandidate(btn.dataset.poolopen)));
     bindSeg(view, "filter", (v) => { state.filter = v; renderChecklists(view); });
     view.querySelectorAll("input.tick").forEach((cb) => cb.addEventListener("change", async () => {
       const [rid, sid] = cb.dataset.key.split("~"); cb.disabled = true;
@@ -293,11 +460,13 @@
     view.querySelectorAll("[data-posts]").forEach((b) => b.addEventListener("click", () => setView("posts")));
     const roleForm = (title, r, onSubmit) => {
       openDrawer(title, `<form class="form" id="rform"><label class="full"><span class="lbl">Role name</span><input name="name" value="${h(r.name || "")}" required placeholder="Technical Designer"></label><label><span class="lbl">Short name</span><input name="short" value="${h(r.short || "")}" placeholder="TD"></label><label><span class="lbl">Owner</span><input name="owner" value="${h(r.owner || "")}" placeholder="Kostya"></label>
-        <label><span class="lbl">State</span><select name="state">${[["planned", "Planned"], ["live", "Live"], ["pool", "Quiet pool"], ["closed", "Closed"]].map(([v, l]) => `<option value="${v}" ${v === (r.state || "planned") ? "selected" : ""}>${l}</option>`).join("")}</select></label><label class="full"><span class="lbl">Status line</span><input name="status" value="${h(r.status || "")}" placeholder="Opens when the first TA Manager round is hired"></label>
+        <label><span class="lbl">State</span><select name="state">${[["planned", "Planned"], ["live", "Live"], ["pool", "Quiet pool"], ["closed", "Closed"]].map(([v, l]) => `<option value="${v}" ${v === (r.state || "planned") ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+        <label><span class="lbl">Hiring lead</span><input name="lead" value="${h(r.lead || "")}" placeholder="Who says yes or no to interviews"></label>
+        <label class="full"><span class="lbl">Earlier rounds of</span><select name="family">${families(r)}</select></label><label class="full"><span class="lbl">Status line</span><input name="status" value="${h(r.status || "")}" placeholder="Opens when the first TA Manager round is hired"></label>
         <div class="formfoot full"><button type="submit" class="btn">${r.id ? "Save" : "Create the checklist"}</button></div></form>`);
       $("#rform").addEventListener("submit", async (e) => { e.preventDefault(); await onSubmit(Object.fromEntries(new FormData(e.target).entries())); state.boot = null; closeDrawer(); await loadBoot(); renderChecklists(view); });
     };
-    $("#newsearch", view).addEventListener("click", () => roleForm("New search", {}, async (d) => { const r = await api("roles", "POST", d); state.role = r.id; store.set("studio-role", r.id); }));
+    $("#newsearch", view).addEventListener("click", () => roleForm("New search", {}, async (d) => { const r = await api("roles", "POST", d); state.role = r.id; state.justCreated = r.id; store.set("studio-role", r.id); }));
     const er = $("#editrole", view); if (er) er.addEventListener("click", () => roleForm("Edit search", role, (d) => api("roles/" + role.id, "PATCH", d)));
   }
 

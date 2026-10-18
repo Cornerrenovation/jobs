@@ -127,6 +127,44 @@ td.actions .btn{margin-right:4px}
 .srow:hover{border-color:var(--line)}
 .srow .name{font-weight:600;color:var(--ink)}
 
+.stage.leadrow{background:transparent;border-style:dashed;margin:-2px 0 0 28px}
+.stagerow.static{cursor:default}.stagerow.static:hover{background:none}
+.stage.leadrow .sname{font-size:14.5px}.stage.leadrow .snum{font-size:20px}
+.stage.leadrow .sbar span{background:var(--accent)}
+@media (max-width:900px){.stage.leadrow{margin-left:12px}}
+
+/* Candidate record: criteria with evidence, the hiring lead, referral fields */
+.hint{font-size:12.5px;color:var(--muted);line-height:1.4;margin-top:2px}
+.hint b{color:var(--ink);font-weight:600}
+.fieldnote{display:flex;flex-direction:column;gap:4px;font-size:13.5px;color:var(--text);padding-top:1px}
+.fieldnote .lbl,.prow .lbl{font-family:var(--m);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.fieldnote>span:last-child{padding:9px 0}
+.crit,.leadbox{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.crithead{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline}
+ul.critlist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.crow{display:grid;grid-template-columns:92px 1fr;gap:10px;align-items:start;padding:9px 0;border-top:1px solid var(--line)}
+.crow:first-child{border-top:none;padding-top:2px}
+.crow .pill{justify-self:start;margin-top:1px}
+.cbody{display:flex;flex-direction:column;gap:3px;min-width:0;font-size:13.5px}
+.clabel{color:var(--ink);font-weight:500;line-height:1.4}
+.ckind{font-family:var(--m);font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin-left:8px;white-space:nowrap}
+.cbody .ev{color:var(--text);font-style:italic;overflow-wrap:anywhere}
+.cmeta{font-family:var(--m);font-size:11px;color:var(--muted)}
+.leadbox p{font-size:14px}
+.leadbox .form{margin-top:2px}
+
+/* Checklists: re-contact first */
+details.fold.pool>summary{font-size:16px}
+details.fold.pool[open]{background:var(--card)}
+details.fold ul.poollist{list-style:none;margin:10px 0 0;padding:0;display:flex;flex-direction:column;gap:8px;font-size:14px}
+.prow{display:flex;flex-direction:column;gap:5px;padding:12px 14px;background:var(--bg);border:1px solid var(--line);border-radius:10px}
+.ptop{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.ptop .name{font-weight:600;color:var(--ink);font-size:15px}
+.prow p{max-width:90ch}
+.prow .lbl{margin-right:6px}
+.pact{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+.pact a.btn{text-decoration:none;display:inline-block}
+
 /* Templates */
 form.tpl{display:flex;flex-direction:column;gap:10px}
 .tplhead{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
@@ -258,3 +296,4 @@ dialog .dhead{display:flex;justify-content:space-between;gap:12px;align-items:fl
 .docbody blockquote{margin:0;padding:4px 14px;border-left:3px solid var(--line)}
 .docbody table{min-width:560px}
 @media (prefers-reduced-motion:reduce){.bar span{transition:none}}
+details.fold.plain ul.critnames{font-size:13px;color:var(--text);margin-top:6px}
