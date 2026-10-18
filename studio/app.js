@@ -387,8 +387,11 @@
   }
   function poolFor(role) {
     const fam = familyOf(role), mine = state.candidates.filter((c) => c.role_id === role.id);
+    // someone declined for the same job stays out (the lead already decided); declined for another job, they can still fit this one
+    const declined = (c) => c.your_call === "Decline" || c.stage === "declined";
     return state.candidates.filter((c) => c.role_id !== role.id && roles().some((r) => r.id === c.role_id) && passedStage(c) && c.stage !== "hired")
       .map((c) => ({ c, same: familyOf(roleOf(c.role_id)) === fam, added: mine.some((m) => samePerson(c, m)) }))
+      .filter((p) => !(p.same && declined(p.c)))
       .sort((a, b) => (b.same - a.same) || (reachedIdx(b.c) - reachedIdx(a.c)) || a.c.name.localeCompare(b.c.name));
   }
   function poolPanel(role) {
@@ -402,9 +405,10 @@
         ${notes ? `<p><span class="lbl">Notes</span> ${h(notes)}</p>` : ""}${m ? `<p><span class="lbl">Criteria</span> ${h(m)}</p>` : ""}
         <div class="pact">${added ? "" : `<button type="button" class="btn small" data-recontact="${h(c.id)}">Add to this search</button>`}<button type="button" class="btn ghost small" data-poolopen="${h(c.id)}">Open record</button>${c.linkedin ? `<a class="btn ghost small" href="${h(c.linkedin)}" target="_blank" rel="noopener">LinkedIn</a>` : ""}</div></li>`;
     };
-    return `<details class="fold pool" ${fresh ? "open" : ""}><summary>Re-contact first<span class="count">${pool.length ? `${pool.length} from earlier rounds${same ? `, ${same} for the same job` : ""}` : "nobody yet"}</span></summary>
-      <p class="muted small">Everyone from another round or role who passed at least one stage (shortlisted or further), same job first, with their stage, scores and notes. Re-contact them before posting; "Add to this search" opens a record here with the source "pool".</p>
-      ${pool.length ? `<ul class="poollist">${pool.map(row).join("")}</ul>` : '<p class="muted small">Nobody in the pool has passed a stage yet.</p>'}</details>`;
+    return `<details class="fold pool" ${fresh ? "open" : ""}><summary>Re-contact first<span class="count">${same ? `${same} for this job` : "none for this job"}${pool.length > same ? ` · ${pool.length - same} from other jobs` : ""}</span></summary>
+      <p class="muted small">Everyone from another round or role who passed at least one stage (shortlisted or further), same job first, with their stage, scores and notes; anyone declined for this job stays out. Re-contact them before posting; "Add to this search" opens a record here with the source "pool".</p>
+      ${same ? `<ul class="poollist">${pool.filter((p) => p.same).map(row).join("")}</ul>` : '<p class="muted small">Nobody from an earlier round of this job is left to re-contact.</p>'}
+      ${pool.length > same ? `<details class="fold plain"><summary>From other jobs (${pool.length - same})</summary><ul class="poollist">${pool.filter((p) => !p.same).map(row).join("")}</ul></details>` : ""}</details>`;
   }
 
   // ---------- checklists ----------
