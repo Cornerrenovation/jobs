@@ -208,7 +208,7 @@ input.tick:checked::after{content:"";width:8px;height:8px;border-radius:2px;back
 input.tick:disabled{cursor:default;opacity:.55}
 .stepbody{display:flex;flex-direction:column;gap:7px;min-width:0;flex:1}
 .stitle{font-weight:600;color:var(--ink);cursor:pointer;font-size:16px}
-.snote{margin:0;font-size:14.5px;color:var(--text);max-width:80ch}
+.snote{margin:0;font-size:14.5px;color:var(--text);max-width:80ch;white-space:pre-line}
 .what{font-size:12.5px;color:var(--muted)}
 .what summary{cursor:pointer;width:max-content;max-width:100%}
 .what p{margin:4px 0 0;font-size:13.5px}
