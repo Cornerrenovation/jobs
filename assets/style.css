@@ -235,6 +235,11 @@ section.block{display:flex;flex-direction:column;gap:18px;padding-block:clamp(28
 .field .hint a{color:var(--ink);text-decoration:underline;text-underline-offset:2px}
 .field.bad input,.field.bad select,.field.bad textarea,.field.bad .drop{border-color:var(--err)}
 .field .msg{font-size:13px;color:var(--err);min-height:0}
+.field .label{font-size:14px;font-weight:600;color:var(--ink)}
+.choices{display:flex;gap:24px;flex-wrap:wrap}
+.choices label{display:flex;align-items:center;gap:8px;font-weight:400;font-size:15px;cursor:pointer}
+.field .choices input{width:18px;height:18px;padding:0;margin:0;accent-color:var(--ink)}
+.field.bad .choices{color:var(--err)}
 .drop{position:relative;border:1px dashed var(--bg-3);border-radius:var(--r-md);background:var(--white);padding:16px;display:flex;align-items:center;gap:12px;min-height:3rem;cursor:pointer}
 .drop input{position:absolute;inset:0;opacity:0;cursor:pointer;height:100%}
 .drop.has{border-style:solid;border-color:var(--ink)}

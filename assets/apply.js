@@ -65,9 +65,14 @@
     else if (!OK_EXT.test(f.name)) { setErr('cv', 'Please attach a PDF or Word file.'); ok = false; }
     else if (f.size > MAX_MB * 1048576) { setErr('cv', 'The file is larger than ' + MAX_MB + ' MB. Please attach a smaller file.'); ok = false; }
     v.cvFile = f;
-    v.portfolio = normUrl(form.elements['portfolio'].value);
+    v.portfolio = form.elements['portfolio'] ? normUrl(form.elements['portfolio'].value) : '';
     if (v.portfolio === null) { setErr('portfolio', 'This link doesn’t look right. Please check it.'); ok = false; }
     v.answer = form.elements['answer'] ? form.elements['answer'].value.trim() : '';
+    if (form.elements['answer'] && form.elements['answer'].required && v.answer.length < 2) { setErr('answer', 'Please answer this question.'); ok = false; }
+    if (form.elements['hours']) {
+      var h = form.querySelector('input[name="hours"]:checked'); v.hours = h ? h.value : '';
+      if (!v.hours) { setErr('hours', 'Please choose Yes or No.'); ok = false; }
+    }
     if (v.answer.length > ANSWER_MAX) { setErr('answer', 'Please keep it under ' + ANSWER_MAX + ' characters.'); ok = false; }
     return ok ? v : null;
   }
@@ -95,7 +100,7 @@
     readB64(v.cvFile).then(function (data) {
       var payload = {
         id: submissionId, job: form.dataset.job, jobTitle: form.dataset.title,
-        name: v.name, email: v.email, linkedin: v.linkedin, english: v.english, portfolio: v.portfolio || '', answer: v.answer,
+        name: v.name, email: v.email, linkedin: v.linkedin, english: v.english, portfolio: v.portfolio || '', answer: v.answer, hours: v.hours || '',
         cv: { name: v.cvFile.name, type: v.cvFile.type || 'application/octet-stream', size: v.cvFile.size, data: data },
         page: location.href, elapsedSec: Math.round((Date.now() - started) / 1000)
       };
