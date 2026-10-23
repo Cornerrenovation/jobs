@@ -86,7 +86,7 @@
   function setView(v) {
     state.view = v; store.set("studio-view", v);
     document.querySelectorAll("nav.views button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.view === v));
-    render();
+    return render();
   }
   document.querySelectorAll("nav.views button").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
   async function render(quiet) {
@@ -310,7 +310,7 @@
   async function openCandidate(id) {
     if (id) await need("candidates", "results", "cards");
     const c = id ? state.candidates.find((x) => x.id === id) : { stage: "applied", role_id: state.roleFilter !== "all" && state.roleFilter !== "closed" ? state.roleFilter : (openRoles()[0] || {}).id };
-    if (!c) { forget(); await render(true); notice(`${id} isn't in the studio any more. The list was refreshed.`, true); return; }
+    if (!c) { forget(); await render(true); notice(`There's no candidate ${id} in the studio.`, true); return; }
     const sel = (name, opts, val, labels) => `<select name="${name}">${opts.map((o, i) => `<option value="${h(o)}" ${o === (val || "") ? "selected" : ""}>${h(labels ? labels[i] : (o || "–"))}</option>`).join("")}</select>`;
     const kv = (k, v) => v ? `<dt>${h(k)}</dt><dd>${h(v)}</dd>` : "";
     const role = roleOf(c.role_id), lead = leadOf(role);
@@ -521,7 +521,10 @@
     const d = $("#recdlg"); $("#rectitle").textContent = title; $("#receyebrow").textContent = eyebrow; $("#recbody").innerHTML = html; $("#recbody").scrollTop = 0;
     if (!d.open) (d.showModal ? d.showModal() : d.setAttribute("open", ""));
   }
-  function closeRecord() { const d = $("#recdlg"); if (d.open) d.close(); }
+  // Closing a record opened from a link leaves the address at the list, so a reload doesn't open it again.
+  const leaveLink = () => { if (/^#candidates\//.test(location.hash)) history.replaceState(null, "", "#candidates"); };
+  function closeRecord() { const d = $("#recdlg"); if (d.open) d.close(); leaveLink(); }
+  $("#recdlg").addEventListener("cancel", leaveLink);  // Escape
   $("#recclose").addEventListener("click", closeRecord);
   $("#recdlg").addEventListener("click", (e) => { if (e.target === $("#recdlg")) closeRecord(); });
 
@@ -716,6 +719,13 @@
   $("#docview").addEventListener("click", (e) => { if (e.target === $("#docview")) $("#docview").close(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#drawer").hidden) closeDrawer(); });
 
-  const start = (location.hash || "").slice(1) || store.get("studio-view") || "week";
-  setView(VIEWS.includes(start) ? start : "week");
+  // Links: #<view> opens a view, #candidates/<ID> opens that candidate's record on the Candidates view (the #talent posts link there).
+  async function follow() {
+    const [v, id] = decodeURIComponent((location.hash || "").slice(1)).split("/");
+    const saved = store.get("studio-view");
+    await setView(VIEWS.includes(v) ? v : VIEWS.includes(saved) ? saved : "week");
+    if (v === "candidates" && id && state.boot) await openCandidate(id);
+  }
+  window.addEventListener("hashchange", follow);
+  follow();
 })();
