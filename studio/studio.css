@@ -139,15 +139,13 @@ td.actions .btn{margin-right:4px}
 .fieldnote{display:flex;flex-direction:column;gap:4px;font-size:13.5px;color:var(--text);padding-top:1px}
 .fieldnote .lbl,.prow .lbl{font-family:var(--m);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 .fieldnote>span:last-child{padding:9px 0}
-.crit,.leadbox{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:10px}
-.crithead{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline}
+.leadbox{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:10px}
 ul.critlist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
 .crow{display:grid;grid-template-columns:92px 1fr;gap:10px;align-items:start;padding:9px 0;border-top:1px solid var(--line)}
 .crow:first-child{border-top:none;padding-top:2px}
 .crow .pill{justify-self:start;margin-top:1px}
 .cbody{display:flex;flex-direction:column;gap:3px;min-width:0;font-size:13.5px}
 .clabel{color:var(--ink);font-weight:500;line-height:1.4}
-.ckind{font-family:var(--m);font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin-left:8px;white-space:nowrap}
 .cbody .ev{color:var(--text);font-style:italic;overflow-wrap:anywhere}
 .cmeta{font-family:var(--m);font-size:11px;color:var(--muted)}
 .leadbox p{font-size:14px}
@@ -296,7 +294,6 @@ dialog .dhead{display:flex;justify-content:space-between;gap:12px;align-items:fl
 .docbody blockquote{margin:0;padding:4px 14px;border-left:3px solid var(--line)}
 .docbody table{min-width:560px}
 @media (prefers-reduced-motion:reduce){.bar span{transition:none}}
-details.fold.plain ul.critnames{font-size:13px;color:var(--text);margin-top:6px}
 
 /* The candidate record: a pop-up with three blocks */
 dialog.record{width:min(960px,calc(100vw - 32px));max-height:calc(100vh - 32px);border:1px solid var(--line);border-radius:14px;background:var(--bg);color:var(--text);padding:0;display:none;flex-direction:column;overflow:hidden}

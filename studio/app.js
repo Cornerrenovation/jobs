@@ -5,7 +5,8 @@
   const API = "/studio/api/";
   const $ = (s, el) => (el || document).querySelector(s);
   const h = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const today = () => new Date().toISOString().slice(0, 10);
+  const localDay = (d) => d.toLocaleDateString("en-CA");  // YYYY-MM-DD in the viewer's time zone (UTC is a day ahead in Brazil after 21:00)
+  const today = () => localDay(new Date());
   // a date without a time is a calendar day: read it at local noon, or UTC midnight shows as the day before west of Greenwich
   const fmt = (iso) => { if (!iso) return ""; const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(iso) ? iso + "T12:00:00" : iso); return isNaN(d) ? iso : d.toLocaleDateString("en-GB", { day: "numeric", month: "short" }); };
   const fmtTime = (iso) => { const d = new Date(iso); return isNaN(d) ? iso : d.toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); };
@@ -30,15 +31,15 @@
     const r = await fetch(API + path, { method: method || "GET", credentials: "same-origin",
       headers: body ? { "content-type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
     if (r.status === 401) { notice("Your sign-in expired. Reload the page to sign in again.", true); throw new Error("unauthorized"); }
-    if (r.status === 503) { notice("Sign-in isn't switched on for the studio yet.", true); throw new Error("not configured"); }
     const j = await r.json().catch(() => ({}));
+    if (r.status === 503) { notice(j.error === "login_not_configured" ? "Sign-in isn't switched on for the studio yet." : "The sign-in check didn't answer. Try again in a minute.", true); throw new Error(j.error || "unavailable"); }
     if (!r.ok || j.error) { notice(j.error || ("Request failed: " + r.status), true); throw new Error(j.error || r.status); }
     return j;
   }
   function notice(text, bad) { const n = $("#notice"); n.textContent = text || ""; n.hidden = !text; n.classList.toggle("bad", !!bad); }
 
   // ---------- data ----------
-  async function loadBoot() { state.boot = await api("bootstrap"); $("#who").textContent = whoName(state.boot.who) === "Claude" ? state.boot.who : state.boot.who; }
+  async function loadBoot() { state.boot = await api("bootstrap"); $("#who").textContent = state.boot.who; }
   const roles = () => state.boot.roles;
   const roleOf = (id) => roles().find((r) => r.id === id) || { id, short: id, name: id };
   const roleName = (id) => roleOf(id).short || id;
@@ -46,7 +47,13 @@
   const openRoles = () => roles().filter((r) => !isClosedRole(r));
   const familyOf = (r) => (r && (r.family || r.id)) || "";
   const leadOf = (r) => (r && (r.lead || r.owner)) || "the hiring lead";
-  async function loadCandidates() { [state.candidates, state.results, state.cards] = await Promise.all([api("candidates"), api("criteria/results"), api("scorecards")]); }
+  // Each view loads only what it shows; the caches are dropped when the data changes (see refresh) or after a save.
+  async function need(...keys) {
+    const load = { candidates: "candidates", results: "criteria/results", cards: "scorecards", outreach: "outreach", templates: "templates" };
+    const missing = keys.filter((k) => !state[k]);
+    (await Promise.all(missing.map((k) => api(load[k])))).forEach((v, i) => { state[missing[i]] = v; });
+  }
+  const forget = () => { state.boot = null; state.candidates = null; state.results = null; state.cards = null; state.outreach = null; state.templates = null; };
 
   // ---------- shared candidate logic ----------
   const stageIdx = (s) => ORDER.indexOf(s || "");
@@ -74,8 +81,6 @@
     const first = sent.slice(0, 3), answered = first.filter((c) => c.lead_call && (c.lead_reason || "").trim()).length;
     return { sent, first, answered, open: first.length < 3 || answered === 3, done: first.length === 3 && answered === 3 };
   }
-  async function loadOutreach() { state.outreach = await api("outreach"); }
-  async function loadTemplates() { state.templates = await api("templates"); }
 
   // ---------- shell ----------
   function setView(v) {
@@ -103,15 +108,21 @@
     window.scrollTo(0, quiet ? y : 0);
   }
 
-  // ---------- fresh data without a reload: the robots write every 30 minutes and at each check-in, people write from their own tabs ----------
-  // Every minute while the tab is visible, and the moment it comes back into view, the view re-reads the API and redraws in place.
-  // It waits while a record or document is open, or while a field has focus, so nothing is pulled from under a person's hands.
-  let lastRefresh = Date.now();
+  // ---------- fresh data without a reload: the robots write every two hours and at each check-in, people write from their own tabs ----------
+  // Every minute while the tab is visible, and the moment it comes back into view, the app asks the API for its change counter
+  // (one small read). Only when it moved does the view re-read its data and redraw in place. It waits while a record or document
+  // is open, while a field has focus, or while a form has edits not saved yet, so nothing is pulled from under a person's hands.
+  let lastCheck = Date.now();
+  document.addEventListener("input", (e) => { const f = e.target.closest && e.target.closest("form"); if (f) f.dataset.dirty = "1"; });
+  const editing = () => document.querySelector("dialog[open], #view form[data-dirty], #drawer:not([hidden]) form[data-dirty], [data-note] textarea")
+    || ["INPUT", "TEXTAREA", "SELECT"].includes((document.activeElement || {}).tagName);
   async function refresh(force) {
-    const busy = document.hidden || document.querySelector("dialog[open]") || ["INPUT", "TEXTAREA", "SELECT"].includes((document.activeElement || {}).tagName);
-    if (busy || (!force && Date.now() - lastRefresh < 60000)) return;
-    lastRefresh = Date.now();
-    state.boot = null; state.candidates = null; state.results = null; state.cards = null; state.outreach = null; state.templates = null;
+    if (document.hidden || editing() || (!force && Date.now() - lastCheck < 55000)) return;
+    lastCheck = Date.now();
+    let version;
+    try { version = (await api("changes")).version; } catch (e) { return; }
+    if (state.boot && version === state.boot.version) return;
+    forget();
     await render(true);
   }
   setInterval(() => refresh(false), 60000);
@@ -121,7 +132,9 @@
   // Shared pieces
   const head = (title, sub, right) => `<div class="viewhead"><div><h2>${h(title)}</h2>${sub ? `<div class="sub">${sub}</div>` : ""}</div>${right || ""}</div>`;
   const seg = (name, items, current) => `<div class="seg" data-seg="${h(name)}">${items.map(([v, l]) => `<button type="button" data-v="${h(v)}" aria-pressed="${v === current}">${h(l)}</button>`).join("")}</div>`;
-  function bindSeg(el, name, onPick) { el.querySelectorAll(`[data-seg="${name}"] button`).forEach((b) => b.addEventListener("click", () => onPick(b.dataset.v))); }
+  function bindSeg(el, name, onPick) {
+    el.querySelectorAll(`[data-seg="${name}"] button`).forEach((b) => b.addEventListener("click", () => { const f = b.closest("form"); if (f) f.dataset.dirty = "1"; onPick(b.dataset.v); }));
+  }
   const roleSeg = () => seg("role", [["all", "All roles"]].concat(openRoles().map((r) => [r.id, r.short]), roles().some(isClosedRole) ? [["closed", "Earlier rounds"]] : []), state.roleFilter);
   const inRole = (c) => state.roleFilter === "all" || c.role_id === state.roleFilter || (state.roleFilter === "closed" && isClosedRole(roleOf(c.role_id)));
   const pill = (text, kind) => text ? `<span class="pill ${kind || ""}" title="${h(text)}">${h(text)}</span>` : "";
@@ -135,13 +148,12 @@
     view.innerHTML = `${back}${slug === "posts" ? head("Posts", "Every text here is ready to paste. Settings for LinkedIn and Work.ua are folded under each post.") : ""}<section class="kit ${slug}">${d.html || "<p class='muted'>Not synced yet.</p>"}</section>`;
     const strip = view.querySelector("[data-live-strip]");
     if (strip) {
-      if (!state.candidates) await loadCandidates();
-      if (!state.outreach) await loadOutreach();
+      await need("candidates", "outreach");
       const t = today(), cands = state.candidates.filter((c) => !isClosedRole(roleOf(c.role_id)));
       const tiles = [[roles().filter((r) => ["live", "pool"].includes(r.state)).length, "roles on the jobs site"], [cands.length, "applications so far"],
         // New today by the date they applied. A record without that date counts only while it still sits at "applied":
         // imports of earlier applicants (Yuliia's PM channels on 18 Oct) arrive with a stage already and are not today's news.
-        [cands.filter((c) => c.applied ? c.applied.slice(0, 10) === t : ((c.created_at || "").slice(0, 10) === t && (c.stage || "applied") === "applied")).length, "new applicants today, all sources"],
+        [cands.filter((c) => c.applied ? c.applied.slice(0, 10) === t : (c.created_at && localDay(new Date(c.created_at)) === t && (c.stage || "applied") === "applied")).length, "new applicants today, all sources"],
         [cands.filter((c) => c.your_call === "Shortlist").length, "shortlisted so far"],
         [state.outreach.filter((o) => (o.status || "queued").startsWith("queued")).length, "queued for LinkedIn outreach"]];
       strip.innerHTML = tiles.map(([v, l]) => `<div class="kpi"><b>${h(v)}</b><span>${h(l)}</span></div>`).join("");
@@ -167,7 +179,7 @@
 
   // ---------- pipeline: a vertical funnel with conversions ----------
   async function renderPipeline(view) {
-    if (!state.candidates) await loadCandidates();
+    await need("candidates");
     const list = state.candidates.filter(inRole);
     const isClosed = (c) => CLOSED.includes(c.stage) || isClosedRole(roleOf(c.role_id));  // an earlier round is closed as a whole
     const active = list.filter((c) => !isClosed(c));
@@ -238,7 +250,7 @@
 
   // ---------- candidates ----------
   async function renderCandidates(view) {
-    if (!state.candidates) await loadCandidates();
+    await need("candidates");
     const q = state.search.trim().toLowerCase();
     // Source and Your call filters (Yuliia's request, 18 Oct); options count within the chosen role
     const base = state.candidates.filter(inRole);
@@ -295,8 +307,10 @@
       ${c.doubt ? `<div class="kvline"><span class="lbl">Doubt to probe</span><span>${h(c.doubt)}</span></div>` : ""}
       <p class="muted small">Claude's reading of what she or he sent, against the scorecard, with the words it rests on. It informs your call; nobody is declined on it.</p></section>`;
   }
-  function openCandidate(id) {
+  async function openCandidate(id) {
+    if (id) await need("candidates", "results", "cards");
     const c = id ? state.candidates.find((x) => x.id === id) : { stage: "applied", role_id: state.roleFilter !== "all" && state.roleFilter !== "closed" ? state.roleFilter : (openRoles()[0] || {}).id };
+    if (!c) { forget(); await render(true); notice(`${id} isn't in the studio any more. The list was refreshed.`, true); return; }
     const sel = (name, opts, val, labels) => `<select name="${name}">${opts.map((o, i) => `<option value="${h(o)}" ${o === (val || "") ? "selected" : ""}>${h(labels ? labels[i] : (o || "–"))}</option>`).join("")}</select>`;
     const kv = (k, v) => v ? `<dt>${h(k)}</dt><dd>${h(v)}</dd>` : "";
     const role = roleOf(c.role_id), lead = leadOf(role);
@@ -330,25 +344,21 @@
     if (id) bindScoreBlock(c);
     const f = $("#cform");
     bindSeg(f, "yourcall", (v) => { const cur = $('input[name="your_call"]', f); cur.value = cur.value === v ? "" : v; f.querySelectorAll('[data-seg="yourcall"] button').forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === cur.value)); });
-    const refresh = async () => { state.candidates = null; state.boot = null; await loadBoot(); await loadCandidates(); render(); if (id) openCandidate(id); };
+    // After a save: everything is re-read (the Worker moves the stage when Your call changes, and keeps reached, hired_at and bounty_due),
+    // the page behind redraws in place, and the record reopens with what was stored.
+    const reopen = async () => { forget(); await render(true); if (id) await openCandidate(id); else closeRecord(); };
     f.addEventListener("submit", async (e) => {
       e.preventDefault();
       const data = Object.fromEntries(new FormData(e.target).entries());
-      // Your call moves the stage: a person decided. Decline closes; Shortlist confirms; Hold leaves it.
-      if (id && data.your_call !== (c.your_call || "") && ["applied", "triaged", "confirmed", "declined"].includes(data.stage)) {
-        if (data.your_call === "Decline") data.stage = "declined";
-        else if (data.your_call === "Shortlist") data.stage = "confirmed";
-        else if (!data.your_call || data.your_call === "Hold") data.stage = c.agent_call ? "triaged" : "applied";
-      }
       if (id) await api("candidates/" + id, "PATCH", data); else await api("candidates", "POST", data);
-      if (id) await refresh(); else { state.candidates = null; state.boot = null; await loadBoot(); await loadCandidates(); render(); closeRecord(); }
+      await reopen();
     });
     const send = $("#sendlead");
-    if (send) send.addEventListener("click", async () => { send.disabled = true; try { await api("candidates/" + id, "PATCH", { sent_to_lead: new Date().toISOString() }); await refresh(); } catch (e) { send.disabled = false; } });
+    if (send) send.addEventListener("click", async () => { send.disabled = true; try { await api("candidates/" + id, "PATCH", { sent_to_lead: new Date().toISOString() }); await reopen(); } catch (e) { send.disabled = false; } });
     const lf = $("#lform");
     if (lf) {
       bindSeg(lf, "leadcall", (v) => { $('input[name="lead_call"]', lf).value = v; lf.querySelectorAll("[data-seg] button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === v)); });
-      lf.addEventListener("submit", async (e) => { e.preventDefault(); await api("candidates/" + id, "PATCH", Object.fromEntries(new FormData(lf).entries())); await refresh(); });
+      lf.addEventListener("submit", async (e) => { e.preventDefault(); await api("candidates/" + id, "PATCH", Object.fromEntries(new FormData(lf).entries())); await reopen(); });
     }
   }
   // ---------- interview scorecards: the AI recruiter drafts, people confirm or edit, Studio puts the scorers side by side ----------
@@ -466,7 +476,7 @@
 
   // ---------- calibration: how close the scorers are, per pair, across candidates ----------
   async function renderCalibration(view) {
-    if (!state.candidates) await loadCandidates();
+    await need("candidates", "cards");
     const all = state.cards || [], groups = {};
     const practice = all.filter((k) => k.hindsight), cards = all.filter((k) => !k.hindsight);  // after-the-outcome cards can't be blind
     cards.forEach((k) => { (groups[k.candidate_id + "|" + k.stage] = groups[k.candidate_id + "|" + k.stage] || []).push(k); });
@@ -514,30 +524,7 @@
   function closeRecord() { const d = $("#recdlg"); if (d.open) d.close(); }
   $("#recclose").addEventListener("click", closeRecord);
   $("#recdlg").addEventListener("click", (e) => { if (e.target === $("#recdlg")) closeRecord(); });
-  
-  // Criteria match with evidence: Claude's reading against the scorecard, per criterion. It informs "Your call" and never rejects.
-  function criteriaBlock(c) {
-    const defs = criteriaFor(c.role_id), res = resultsFor(c.id);
-    const extra = res.filter((x) => !defs.some((d) => d.id === x.criterion_id)).map((x) => ({ id: x.criterion_id, label: x.criterion_id, kind: "" }));
-    const items = defs.concat(extra);
-    if (!items.length) return "";
-    const kindWord = { knockout: "Knockout", plus: "Plus marker", minus: "Minus marker", scored: "Scored" };
-    const counts = { met: 0, "not met": 0, unclear: 0, none: 0 };
-    const rows = items.map((d) => {
-      const r = res.find((x) => x.criterion_id === d.id);
-      counts[r ? r.result : "none"]++;
-      // green is good for the candidate: a minus marker that is met is a red flag
-      const kind = !r ? "" : r.result === "unclear" ? "warn" : d.kind === "minus" ? (r.result === "met" ? "bad" : "ok")
-        : r.result === "met" ? "ok" : d.kind === "knockout" ? "bad" : "";
-      return `<li class="crow"><span class="pill ${kind}">${h(r ? r.result : "not checked")}</span><div class="cbody"><span class="clabel">${h(d.label)}${d.kind ? `<span class="ckind">${h(kindWord[d.kind] || d.kind)}</span>` : ""}</span>
-        ${r && r.evidence ? `<span class="ev">${h(r.evidence)}</span>` : ""}${r ? `<span class="cmeta">${r.field ? "From " + h(r.field) + " · " : ""}${r.rules_version ? h(r.rules_version) + " · " : ""}${h(whoName(r.by))}, ${h(fmt(r.at))}</span>` : ""}</div></li>`;
-    }).join("");
-    const src = (defs[0] || {}).source;
-    if (!res.length) return `<section class="crit"><details class="fold plain"><summary>Criteria${src ? " · " + h(src) : ""}: not checked yet (${items.length})</summary>
-      <ul class="critnames">${items.map((d) => `<li>${h(d.label)}</li>`).join("")}</ul></details><p class="muted small">Claude checks each one against the application, with the words it rests on. It informs your call; nobody is rejected on it.</p></section>`;
-    return `<section class="crit"><div class="crithead"><span class="eyebrow">Criteria${src ? " · " + h(src) : ""}</span><span class="muted small">${counts.met} met · ${counts["not met"]} not met · ${counts.unclear} unclear${counts.none ? ` · ${counts.none} not checked` : ""}</span></div>
-      <ul class="critlist">${rows}</ul><p class="muted small">Claude's reading of the application against the scorecard, with the words it rests on. It informs your call; nobody is rejected on it.</p></section>`;
-  }
+
   // The hiring lead's yes or no, and the first-three gate
   function leadBlock(c, role, lead) {
     if (c.your_call !== "Shortlist" && !c.sent_to_lead) return "";
@@ -569,8 +556,7 @@
   }
   const shortStatus = (s) => (s || "queued").replace(/^queued.*/, "queued");
   async function renderOutreach(view) {
-    if (!state.outreach) await loadOutreach();
-    if (!state.templates) await loadTemplates();
+    await need("outreach", "templates");
     const list = state.outreach;
     const counts = {}; list.forEach((o) => { const k = shortStatus(o.status); counts[k] = (counts[k] || 0) + 1; });
     const due = list.filter((o) => o.due && o.due <= today() && !o.replied).length;
@@ -586,7 +572,7 @@
           <td class="actions">${nextActions(o).map(([label, patch]) => `<button type="button" class="btn ghost small" data-id="${h(o.id)}" data-patch='${h(JSON.stringify(patch))}'>${h(label)}</button>`).join("")}<button type="button" class="btn ghost small" data-open="${h(o.id)}">Open</button></td></tr>`))}</div>`).join("") || '<div class="card empty">No prospects queued.</div>'}`;
     view.querySelectorAll("[data-go]").forEach((b) => b.addEventListener("click", () => setView(b.dataset.go)));
     view.querySelectorAll("button[data-patch]").forEach((b) => b.addEventListener("click", async () => {
-      b.disabled = true; await api("outreach/" + b.dataset.id, "PATCH", JSON.parse(b.dataset.patch)); state.outreach = null; state.boot = null; renderOutreach(view);
+      b.disabled = true; await api("outreach/" + b.dataset.id, "PATCH", JSON.parse(b.dataset.patch)); state.outreach = null; renderOutreach(view);
     }));
     view.querySelectorAll("button[data-open]").forEach((b) => b.addEventListener("click", () => {
       const o = list.find((x) => x.id === b.dataset.open);
@@ -598,7 +584,7 @@
 
   // ---------- templates ----------
   async function renderTemplates(view) {
-    if (!state.templates) await loadTemplates();
+    await need("templates");
     const approved = state.templates.filter((t) => t.approved === "Yes").length;
     view.innerHTML = head("Templates", `${approved} of ${state.templates.length} approved · only approved templates go out; variables are filled from each prospect's row`) +
       state.templates.map((t) => `<form class="card tpl" data-id="${h(t.id)}">
@@ -628,15 +614,15 @@
     const fam = familyOf(role), mine = state.candidates.filter((c) => c.role_id === role.id);
     const declined = (c) => c.your_call === "Decline" || c.stage === "declined";
     return state.candidates.filter((c) => c.role_id !== role.id && roles().some((r) => r.id === c.role_id) && familyOf(roleOf(c.role_id)) === fam && passedStage(c) && c.stage !== "hired" && !declined(c))
-      .map((c) => ({ c, same: true, added: mine.some((m) => samePerson(c, m)) }))
+      .map((c) => ({ c, added: mine.some((m) => samePerson(c, m)) }))
       .sort((a, b) => (reachedIdx(b.c) - reachedIdx(a.c)) || a.c.name.localeCompare(b.c.name));
   }
   function poolPanel(role) {
-    const pool = poolFor(role), same = pool.filter((p) => p.same).length;
+    const pool = poolFor(role), same = pool.length;
     const fresh = state.justCreated === role.id || !state.candidates.some((c) => c.role_id === role.id && c.sources !== "pool");
-    const row = ({ c, same: sameJob, added }) => {
+    const row = ({ c, added }) => {
       const from = roleOf(c.role_id), notes = [c.your_reason, c.notes].filter(Boolean).join(" · "), m = matchSummary(c);
-      return `<li class="prow"><div class="ptop"><span class="name">${h(c.name)}</span>${sameJob ? pill("same job", "ok") : ""}${added ? pill("in this search", "") : ""}
+      return `<li class="prow"><div class="ptop"><span class="name">${h(c.name)}</span>${pill("same job", "ok")}${added ? pill("in this search", "") : ""}
           <span class="muted small">${h(from.short)} · got to ${h(stageWord(reachedOf(c)))}${c.stage && c.stage !== reachedOf(c) ? ", now " + h(stageWord(c.stage)) : ""}</span></div>
         ${c.scores ? `<p><span class="lbl">Scores</span> ${h(c.scores)}</p>` : ""}${c.why ? `<p><span class="lbl">Why</span> ${h(c.why)}</p>` : ""}${c.doubt ? `<p><span class="lbl">To probe</span> ${h(c.doubt)}</p>` : ""}
         ${notes ? `<p><span class="lbl">Notes</span> ${h(notes)}</p>` : ""}${m ? `<p><span class="lbl">Criteria</span> ${h(m)}</p>` : ""}
@@ -649,7 +635,7 @@
 
   // ---------- checklists ----------
   async function renderChecklists(view) {
-    if (!state.candidates) await loadCandidates();
+    await need("candidates", "results");
     const b = state.boot, steps = b.steps, total = steps.length;
     const doneSet = new Set(b.ticks.filter((t) => t.done).map((t) => t.role_id + "~" + t.step_id));
     const tickOf = (rid, sid) => b.ticks.find((t) => t.role_id === rid && t.step_id === sid);
@@ -682,7 +668,7 @@
       btn.disabled = true;
       await api("candidates", "POST", { role_id: role.id, name: c.name, linkedin: c.linkedin, email: c.email, location: c.location, headline: c.headline, english: c.english,
         sources: "pool", stage: "applied", next_step: `Re-contact first: ${stageWord(reachedOf(c))} in ${from.short} (${c.id})` });
-      state.candidates = null; await loadCandidates(); renderChecklists(view);
+      state.candidates = null; renderChecklists(view);
     }));
     view.querySelectorAll("[data-poolopen]").forEach((btn) => btn.addEventListener("click", () => openCandidate(btn.dataset.poolopen)));
     bindSeg(view, "filter", (v) => { state.filter = v; renderChecklists(view); });
