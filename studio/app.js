@@ -21,10 +21,12 @@
   const ORDER = ["applied", "triaged", "confirmed", "messaged", "replied", "screen booked", "screen done", "interview booked", "interview done",
     "work sample", "references", "offer", "hired"];
   const STAGE_LABEL = { confirmed: "shortlisted" };
-  const VIEWS = ["week", "checklists", "pipeline", "candidates", "calibration", "outreach", "templates", "activity", "posts"];
+  const VIEWS = ["week", "checklists", "pipeline", "candidates", "screening", "calibration", "outreach", "templates", "activity", "posts"];
+  const CALL_RANK = { Shortlist: 0, Hold: 1, Decline: 2 }, CONF_RANK = { High: 0, Medium: 1, Low: 2 };
   const whoName = (by) => !by ? "" : by === "claude" || /\.access$/.test(by) || /^u_/.test(by) ? "Claude" : by.replace(/@.*/, "").replace(/^\w/, (c) => c.toUpperCase());
   const state = { view: "week", boot: null, roleFilter: "all", role: null, filter: "all", candidates: null, results: null, outreach: null, templates: null, search: "", open: {},
-    showClosed: false, justCreated: null, cards: null, cardStage: {}, cardEdit: null, srcFilter: "all", callFilter: "all" };
+    showClosed: false, justCreated: null, cards: null, cardStage: {}, cardEdit: null, srcFilter: "all", callFilter: "all", agentFilter: "all", confFilter: "all",
+    sort: { key: "", dir: 1 }, screenFilter: "tosend" };
   const store = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
 
   async function api(path, method, body) {
@@ -99,6 +101,7 @@
       else if (state.view === "checklists") await renderChecklists(view);
       else if (state.view === "pipeline") await renderPipeline(view);
       else if (state.view === "candidates") await renderCandidates(view);
+      else if (state.view === "screening") await renderScreening(view);
       else if (state.view === "calibration") await renderCalibration(view);
       else if (state.view === "outreach") await renderOutreach(view);
       else if (state.view === "templates") await renderTemplates(view);
@@ -114,7 +117,7 @@
   // is open, while a field has focus, or while a form has edits not saved yet, so nothing is pulled from under a person's hands.
   let lastCheck = Date.now();
   document.addEventListener("input", (e) => { const f = e.target.closest && e.target.closest("form"); if (f) f.dataset.dirty = "1"; });
-  const editing = () => document.querySelector("dialog[open], #view form[data-dirty], #drawer:not([hidden]) form[data-dirty], [data-note] textarea")
+  const editing = () => document.querySelector("dialog[open], #view form[data-dirty], #drawer:not([hidden]) form[data-dirty], [data-note] textarea, .scrmsg[data-dirty=\"1\"]")
     || ["INPUT", "TEXTAREA", "SELECT"].includes((document.activeElement || {}).tagName);
   async function refresh(force) {
     if (document.hidden || editing() || (!force && Date.now() - lastCheck < 55000)) return;
@@ -139,6 +142,7 @@
   const inRole = (c) => state.roleFilter === "all" || c.role_id === state.roleFilter || (state.roleFilter === "closed" && isClosedRole(roleOf(c.role_id)));
   const pill = (text, kind) => text ? `<span class="pill ${kind || ""}" title="${h(text)}">${h(text)}</span>` : "";
   const callPill = (c) => pill(c, c === "Shortlist" ? "ok" : c === "Decline" ? "bad" : c ? "warn" : "");
+  const confWord = (c) => c ? `<span class="conf conf-${h(c.toLowerCase())}">${h(c)}</span>` : "";
   const table = (cols, rows) => `<div class="tablewrap"><table><thead><tr>${cols.map((c) => `<th>${h(c)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
 
   // ---------- This week and Posts: the launch kit, rendered by the checklist builder and synced as documents ----------
@@ -254,26 +258,40 @@
     const q = state.search.trim().toLowerCase();
     // Source and Your call filters (Yuliia's request, 18 Oct); options count within the chosen role
     const base = state.candidates.filter(inRole);
-    const callOf = (c) => c.your_call || "none";
+    const callOf = (c) => c.your_call || "none", agentOf = (c) => c.agent_call || "none", confOf = (c) => c.confidence || "none";
     const count = (f) => { const m = {}; base.forEach((c) => { m[f(c)] = (m[f(c)] || 0) + 1; }); return m; };
-    const srcCounts = count(sourceOf), callCounts = count(callOf);
+    const srcCounts = count(sourceOf), callCounts = count(callOf), agentCounts = count(agentOf), confCounts = count(confOf);
     if (state.srcFilter !== "all" && !srcCounts[state.srcFilter]) state.srcFilter = "all";
     const list = base.filter((c) => (state.srcFilter === "all" || sourceOf(c) === state.srcFilter) && (state.callFilter === "all" || callOf(c) === state.callFilter) &&
+      (state.agentFilter === "all" || agentOf(c) === state.agentFilter) && (state.confFilter === "all" || confOf(c) === state.confFilter) &&
       (!q || [c.name, c.headline, c.location, c.sources, c.email, c.stage, c.your_call, c.agent_call].join(" ").toLowerCase().includes(q)));
+    // Sorting: click a column header; click again to reverse. Calls sort Shortlist, Hold, Decline, then none; confidence High to Low.
+    const SORTS = { name: (c) => (c.name || "").toLowerCase(), applied: (c) => c.applied || c.created_at || "", agent: (c) => CALL_RANK[c.agent_call] ?? 3,
+      conf: (c) => CONF_RANK[c.confidence] ?? 3, your: (c) => CALL_RANK[c.your_call] ?? 3, stage: (c) => stageIdx(c.stage || "applied"), due: (c) => c.due || "~" };
+    const sk = state.sort.key, sd = state.sort.dir;
+    if (SORTS[sk]) list.sort((a, b) => { const x = SORTS[sk](a), y = SORTS[sk](b); return (x < y ? -1 : x > y ? 1 : 0) * sd || (a.name || "").localeCompare(b.name || ""); });
     const opt = (v, label, cur) => `<option value="${h(v)}" ${v === cur ? "selected" : ""}>${h(label)}</option>`;
     const srcSel = `<select id="fsrc" aria-label="Source">${opt("all", "All sources", state.srcFilter)}${Object.entries(srcCounts).sort((a, b) => b[1] - a[1]).map(([v, n]) => opt(v, `${v} (${n})`, state.srcFilter)).join("")}</select>`;
-    const callSel = `<select id="fcall" aria-label="Your call">${opt("all", "Any call", state.callFilter)}${[["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"], ["none", "No call yet"]].map(([v, l]) => opt(v, `${l} (${callCounts[v] || 0})`, state.callFilter)).join("")}</select>`;
+    const callSel = `<select id="fcall" aria-label="Your call">${opt("all", "Your call: any", state.callFilter)}${[["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"], ["none", "No call yet"]].map(([v, l]) => opt(v, `Your call: ${l} (${callCounts[v] || 0})`, state.callFilter)).join("")}</select>`;
+    const agentSel = `<select id="fagent" aria-label="Agent call">${opt("all", "Agent call: any", state.agentFilter)}${[["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"], ["none", "Not read yet"]].map(([v, l]) => opt(v, `Agent call: ${l} (${agentCounts[v] || 0})`, state.agentFilter)).join("")}</select>`;
+    const confSel = `<select id="fconf" aria-label="Confidence">${opt("all", "Confidence: any", state.confFilter)}${[["High", "High"], ["Medium", "Medium"], ["Low", "Low"]].map(([v, l]) => opt(v, `Confidence: ${l} (${confCounts[v] || 0})`, state.confFilter)).join("")}</select>`;
+    const cols = [["Name", "name"], ["Role", ""], ["Source", ""], ["Applied", "applied"], ["Agent call", "agent"], ["Confidence", "conf"], ["Your call", "your"], ["Stage", "stage"], ["Next step", ""], ["Due", "due"]];
+    const th = ([label, key]) => key ? `<th><button type="button" class="sorth" data-sort="${key}" aria-sort="${sk === key ? (sd > 0 ? "ascending" : "descending") : "none"}">${h(label)}<span class="arrow">${sk === key ? (sd > 0 ? "↑" : "↓") : "↕"}</span></button></th>` : `<th>${h(label)}</th>`;
     view.innerHTML = head("Candidates", `${list.length} of ${state.candidates.length}`, `<button type="button" class="btn" id="add">Add candidate</button>`) +
-      `<div class="toolbar"><input type="search" id="q" placeholder="Search name, headline, source, stage" value="${h(state.search)}">${srcSel}${callSel}${roleSeg()}</div>
-      ${list.length ? table(["Name", "Role", "Source", "Applied", "Agent call", "Your call", "Stage", "Next step", "Due"],
-        list.map((c) => `<tr class="clickable" data-id="${h(c.id)}"><td><span class="name">${h(c.name)}</span><br><span class="muted">${h(c.headline || c.location || "")}</span></td><td>${h(roleName(c.role_id))}</td><td>${h(c.sources)}${c.referred_by ? `<br><span class="muted">referred by ${h(c.referred_by)}</span>` : ""}</td><td>${h(fmt(c.applied))}</td><td>${h(c.agent_call)}</td><td>${callPill(c.your_call)}</td><td>${pill(c.stage || "applied")}</td><td>${h(c.next_step)}</td><td>${h(fmt(c.due))}</td></tr>`))
-        : `<div class="card empty">No candidates yet. They arrive from the jobs site, LinkedIn and Work.ua through the daily check-in, or add one by hand.</div>`}`;
+      `<div class="toolbar"><input type="search" id="q" placeholder="Search name, headline, source, stage" value="${h(state.search)}">${srcSel}${agentSel}${confSel}${callSel}${roleSeg()}</div>
+      ${list.length ? `<div class="tablewrap"><table><thead><tr>${cols.map(th).join("")}</tr></thead><tbody>${
+        list.map((c) => `<tr class="clickable" data-id="${h(c.id)}"><td><span class="name">${h(c.name)}</span><br><span class="muted">${h(c.headline || c.location || "")}</span></td><td>${h(roleName(c.role_id))}</td><td>${h(c.sources)}${c.referred_by ? `<br><span class="muted">referred by ${h(c.referred_by)}</span>` : ""}</td><td>${h(fmt(c.applied))}</td><td>${callPill(c.agent_call)}</td><td>${confWord(c.confidence)}</td><td>${callPill(c.your_call)}</td><td>${pill(c.stage || "applied")}</td><td>${h(c.next_step)}</td><td>${h(fmt(c.due))}</td></tr>`).join("")}</tbody></table></div>`
+        : `<div class="card empty">No candidates match. They arrive from the jobs site, LinkedIn and Work.ua through the daily check-in, or add one by hand.</div>`}`;
     const qel = $("#q", view);
     qel.addEventListener("input", (e) => { state.search = e.target.value; renderCandidates(view); qel.focus(); });
     if (q) { qel.focus(); qel.setSelectionRange(qel.value.length, qel.value.length); }
     bindSeg(view, "role", (v) => { state.roleFilter = v; renderCandidates(view); });
     $("#fsrc", view).addEventListener("change", (e) => { state.srcFilter = e.target.value; renderCandidates(view); });
     $("#fcall", view).addEventListener("change", (e) => { state.callFilter = e.target.value; renderCandidates(view); });
+    $("#fagent", view).addEventListener("change", (e) => { state.agentFilter = e.target.value; renderCandidates(view); });
+    $("#fconf", view).addEventListener("change", (e) => { state.confFilter = e.target.value; renderCandidates(view); });
+    view.querySelectorAll("[data-sort]").forEach((b) => b.addEventListener("click", () => {
+      const k = b.dataset.sort; state.sort = { key: k, dir: state.sort.key === k ? -state.sort.dir : 1 }; renderCandidates(view); }));
     view.querySelectorAll("tr.clickable").forEach((tr) => tr.addEventListener("click", () => openCandidate(tr.dataset.id)));
     $("#add", view).addEventListener("click", () => openCandidate(null));
   }
@@ -281,10 +299,47 @@
   const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch (e) { return u; } };
   function linkChip(u, forcedLabel) {
     const host = hostOf(u);
-    const label = forcedLabel || (/linkedin\.com/.test(host) ? "LinkedIn" : /drive\.google\.com|docs\.google\.com/.test(host) ? "CV · in hello@'s Drive" : /instagram\.com/.test(host) ? "Instagram · " + (u.match(/instagram\.com\/([^/?]+)/) || [])[1] : /behance|dribbble|framer|notion|figma|vimeo|youtube/.test(host) ? host : host);
+    const label = forcedLabel || (/linkedin\.com\/hiring\/applicants/.test(u) ? "LinkedIn application" : /linkedin\.com/.test(host) ? "LinkedIn" :/drive\.google\.com|docs\.google\.com/.test(host) ? "CV · in hello@'s Drive" : /instagram\.com/.test(host) ? "Instagram · " + (u.match(/instagram\.com\/([^/?]+)/) || [])[1] : /behance|dribbble|framer|notion|figma|vimeo|youtube/.test(host) ? host : host);
     return `<a class="chip link" href="${h(u)}" target="_blank" rel="noopener" title="${h(u)}">${h(label)} ↗</a>`;
   }
   const urlsIn = (text) => (String(text || "").match(/https?:\/\/[^\s,;]+/g) || []);
+  // Screening answers as a structured block. LinkedIn imports join their parts with " · ": question-and-answer pairs, LinkedIn's own
+  // match, the experience lines (title — company • years) and whether a resume is attached. Notes from the jobs site, Work.ua and the
+  // robots' CV reads are "Label: text" segments. Anything else stays as written.
+  // LinkedIn screening questions were stored cut at 60 characters until 26 Oct; show them whole.
+  const QUESTIONS = { "Have you recruited for a furniture, kitchen, joinery or cons…": "Have you recruited for a furniture, kitchen, joinery or construction company?" };
+  function parseScreening(text) {
+    const t = String(text || "").trim();
+    const out = { qa: [], exp: [], match: "", resume: false, notes: [] };
+    if (!t) return out;
+    if (/\s·\s/.test(t) || /^(LinkedIn's match:|Experience:)/.test(t)) {
+      for (const p of t.split(/\s+·\s+/)) {
+        if (/^LinkedIn's match:/i.test(p)) out.match = p.replace(/^LinkedIn's match:\s*/i, "");
+        else if (/^Experience:/i.test(p)) out.exp = p.replace(/^Experience:\s*/i, "").split(/;\s+/).filter(Boolean);
+        else if (/^Resume attached on LinkedIn$/i.test(p.trim())) out.resume = true;
+        else { const m = p.match(/^(.{4,160}?[?…])\s+(.+)$/s), l = p.match(/^([A-Z][\w ./()'&-]{1,40}):\s+([\s\S]+)$/);
+          if (l && (!m || l[1].length < m[1].length)) out.notes.push([l[1], l[2]]); else if (m) out.qa.push([QUESTIONS[m[1]] || m[1], m[2]]); else out.notes.push(["", p]); }
+      }
+      return out;
+    }
+    // "Label: text" segments, split where a new short label starts a sentence or clause
+    t.split(/(?:(?<=[.;])\s+|^)(?=[A-Z][\w ./()'&-]{1,32}:\s)/).map((s) => s.trim()).filter(Boolean).forEach((s) => {
+      const m = s.match(/^([A-Z][\w ./()'&-]{1,32}):\s+([\s\S]+)$/);
+      out.notes.push(m ? [m[1], m[2]] : ["", s]);
+    });
+    return out;
+  }
+  function screeningBlock(c) {
+    const s = parseScreening(c.screening);
+    if (!s.qa.length && !s.exp.length && !s.match && !s.resume && !s.notes.length) return "";
+    const expRow = (e) => { const [title, rest] = e.split(/\s+—\s+/); const [org, years] = String(rest || "").split(/\s+•\s+/);
+      return `<li><span class="etitle">${h(title)}</span>${org ? ` <span class="muted">·</span> <span class="eorg">${h(org)}</span>` : ""}${years ? ` <span class="cmeta">${h(years)}</span>` : ""}</li>`; };
+    return `<div class="scr"><span class="lbl">Screening answers</span>
+      ${s.qa.length ? `<dl class="qa">${s.qa.map(([q, a]) => `<dt>${h(q)}</dt><dd>${h(a)}</dd>`).join("")}</dl>` : ""}
+      ${s.notes.length ? `<dl class="qa">${s.notes.map(([l, v]) => l ? `<dt>${h(l)}</dt><dd>${h(v)}</dd>` : `<dd class="plain">${h(v)}</dd>`).join("")}</dl>` : ""}
+      ${s.exp.length ? `<div class="exp"><span class="lbl">Experience on the application</span><ul>${s.exp.map(expRow).join("")}</ul></div>` : ""}
+      ${s.match || s.resume ? `<p class="cmeta">${s.resume ? "Resume attached on LinkedIn. " : ""}${s.match ? `LinkedIn's own match: ${h(s.match)} (LinkedIn's score against the post, not used for the call).` : ""}</p>` : ""}</div>`;
+  }
   const kindOf = (d, r) => d.kind === "knockout" ? (r.result === "met" ? ["passes", "ok"] : r.result === "not met" ? ["fails", "bad"] : ["unclear", "warn"])
     : d.kind === "minus" ? (r.result === "met" ? ["red flag", "bad"] : r.result === "not met" ? ["no", ""] : ["unclear", "warn"])
     : (r.result === "met" ? ["yes", "ok"] : r.result === "not met" ? ["no", ""] : ["unclear", "warn"]);
@@ -320,7 +375,8 @@
     urlsIn(c.cv).forEach((u) => links.push(linkChip(u)));
     const eyebrow = id ? [c.id, roleName(c.role_id) + (isClosedRole(role) ? " (earlier round)" : ""), c.sources, c.applied ? "applied " + fmt(c.applied) : ""].filter(Boolean).join(" · ") : roleName(c.role_id);
     const application = id ? `<section class="block"><span class="eyebrow">1 · From the application</span>
-        <dl class="kv">${kv("Location", c.location)}${kv("Email", c.email)}${kv("English, self-rated", c.english)}${kv("Headline", c.headline)}${kv("Referred by", c.referred_by)}${kv("Screening answers", c.screening)}${kv("Furthest stage", furthest)}${kv("Scores", c.scores)}${kv("Latest reply", c.latest_reply)}${kv("Last contact", c.last_contact)}</dl>
+        <dl class="kv">${kv("Location", c.location)}${kv("Email", c.email)}${kv("English, self-rated", c.english)}${kv("Headline", c.headline)}${kv("Referred by", c.referred_by)}${kv("Furthest stage", furthest)}${kv("Scores", c.scores)}${kv("Latest reply", c.latest_reply)}${kv("Last contact", c.last_contact)}</dl>
+        ${screeningBlock(c)}
         ${links.length ? `<div class="links"><span class="lbl">Links she or he gave</span><div class="chips">${links.join("")}</div>${/drive\.google\.com/.test(c.cv || "") ? `<span class="muted small">The CV sits in hello@'s Drive. If the link asks for access, hello@ needs to share the "Corner Careers — Applications" folder with you once.</span>` : ""}</div>` : ""}
         ${c.site_answer ? `<div class="answer"><span class="lbl">Written answer</span><p>${h(c.site_answer).replace(/\n+/g, "<br>")}</p></div>` : ""}</section>` : "";
     const callSeg = `${seg("yourcall", [["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"]], c.your_call || "")}<input type="hidden" name="your_call" value="${h(c.your_call || "")}">`;
@@ -340,8 +396,8 @@
         <label class="full"><span class="lbl">Notes</span><textarea name="notes">${h(c.notes)}</textarea></label>
         <div class="formfoot full"><span class="saved" id="csaved"></span><button type="submit" class="btn">${id ? "Save" : "Add"}</button></div>
       </form>${id ? leadBlock(c, role, lead) : ""}</section>`;
-    openRecord(id ? c.name : "New candidate", eyebrow, application + (id ? readBlock(c) : "") + form + (id ? scoreBlock(c) : ""));
-    if (id) bindScoreBlock(c);
+    openRecord(id ? c.name : "New candidate", eyebrow, application + (id ? readBlock(c) + screenSection(c) : "") + form + (id ? scoreBlock(c) : ""));
+    if (id) { bindScoreBlock(c); bindScreen($("#recbody"), async () => { forget(); await render(true); await openCandidate(id); }); }
     const f = $("#cform");
     bindSeg(f, "yourcall", (v) => { const cur = $('input[name="your_call"]', f); cur.value = cur.value === v ? "" : v; f.querySelectorAll('[data-seg="yourcall"] button').forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === cur.value)); });
     // After a save: everything is re-read (the Worker moves the stage when Your call changes, and keeps reached, hired_at and bounty_due),
@@ -361,6 +417,64 @@
       lf.addEventListener("submit", async (e) => { e.preventDefault(); await api("candidates/" + id, "PATCH", Object.fromEntries(new FormData(lf).entries())); await reopen(); });
     }
   }
+  // ---------- the message screen: one concern per shortlisted candidate and the LinkedIn message that checks it ----------
+  // Claude writes the concern and the message; Kostya edits if he wants, copies it into LinkedIn and marks it sent, which moves the
+  // candidate to "messaged". The same panel shows on the Screening view and in the candidate record.
+  const SENT = ["messaged", "replied", "screen booked", "screen done", "interview booked", "interview done", "work sample", "references", "offer", "hired"];
+  const wasSent = (c) => SENT.includes(c.stage || "");
+  const inScreening = (c) => (c.agent_call === "Shortlist" || c.your_call === "Shortlist") && c.your_call !== "Decline" && !CLOSED.includes(c.stage) && !isClosedRole(roleOf(c.role_id));
+  function screenPanel(c) {
+    if (!c.screen_concern && !c.screen_message) return `<p class="muted small">No concern written yet. Claude writes one for every shortlisted candidate.</p>`;
+    return `<div class="scrpanel" data-sid="${h(c.id)}">
+      <div class="scrcol"><span class="lbl">Concern to verify</span><p class="concern">${h(c.screen_concern)}</p></div>
+      <div class="scrcol"><span class="lbl">Message to send on LinkedIn</span><textarea class="scrmsg" rows="7" aria-label="Message to ${h(c.name)}">${h(c.screen_message)}</textarea>
+        <div class="pact"><button type="button" class="btn small" data-copy>Copy</button><button type="button" class="btn ghost small" data-savemsg hidden>Save the edit</button>
+          ${wasSent(c) ? `<span class="pill ok">sent${c.last_contact ? " " + h(fmt(c.last_contact)) : ""}</span>` : `<button type="button" class="btn ghost small" data-sent>Mark as sent</button>`}
+          ${c.linkedin ? `<a class="btn ghost small" href="${h(c.linkedin)}" target="_blank" rel="noopener">LinkedIn ↗</a>` : ""}
+          ${urlsIn(c.cv).filter((u) => /linkedin\.com\/hiring\/applicants/.test(u)).map((u) => `<a class="btn ghost small" href="${h(u)}" target="_blank" rel="noopener">Application ↗</a>`).join("")}</div>
+        ${c.latest_reply ? `<div class="answer"><span class="lbl">Latest reply</span><p>${h(c.latest_reply)}</p></div>` : ""}</div></div>`;
+  }
+  const screenSection = (c) => inScreening(c) || c.screen_concern ? `<section class="block"><span class="eyebrow">Message screen</span>${screenPanel(c)}</section>` : "";
+  function bindScreen(root, after) {
+    root.querySelectorAll(".scrpanel").forEach((p) => {
+      const id = p.dataset.sid, ta = $(".scrmsg", p), save = $("[data-savemsg]", p), copy = $("[data-copy]", p), sent = $("[data-sent]", p);
+      const orig = ta.value;
+      ta.addEventListener("input", () => { save.hidden = ta.value === orig; ta.dataset.dirty = ta.value === orig ? "" : "1"; });
+      copy.addEventListener("click", () => {
+        const ok = () => { copy.textContent = "Copied"; setTimeout(() => { copy.textContent = "Copy"; }, 1600); };
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(ta.value).then(ok, () => { ta.select(); copy.textContent = "Selected: press ⌘C"; });
+        else { ta.select(); copy.textContent = "Selected: press ⌘C"; }
+      });
+      save.addEventListener("click", async () => { save.disabled = true; await api("candidates/" + id, "PATCH", { screen_message: ta.value }); await after(); });
+      if (sent) sent.addEventListener("click", async () => {
+        sent.disabled = true;
+        const patch = { stage: "messaged", last_contact: today(), next_step: "Wait for the reply; nudge after 5 working days" };
+        if (ta.value !== orig) patch.screen_message = ta.value;
+        await api("candidates/" + id, "PATCH", patch); await after();
+      });
+    });
+  }
+  async function renderScreening(view) {
+    await need("candidates");
+    const all = state.candidates.filter(inScreening).filter(inRole);
+    const pick = { tosend: (c) => !wasSent(c), sent: wasSent, all: () => true }[state.screenFilter] || (() => true);
+    const list = all.filter(pick).sort((a, b) => (wasSent(a) - wasSent(b)) || a.role_id.localeCompare(b.role_id) || (CONF_RANK[a.confidence] ?? 3) - (CONF_RANK[b.confidence] ?? 3) || a.name.localeCompare(b.name));
+    const toSend = all.filter((c) => !wasSent(c)).length, noConcern = all.filter((c) => !c.screen_concern).length;
+    view.innerHTML = head("Screening", `One message per shortlisted candidate, asking the one thing we need to verify. ${toSend} to send · ${all.length - toSend} sent${noConcern ? ` · ${noConcern} without a concern yet` : ""}`,
+      seg("scrf", [["tosend", "To send"], ["sent", "Sent"], ["all", "All"]], state.screenFilter)) +
+      `<div class="toolbar">${roleSeg()}</div>
+      <p class="muted small">Everyone Claude or you shortlisted, unless you declined them. Edit the message if you want, copy it into LinkedIn (the Application button opens their application, where messaging is free), then mark it sent: the candidate moves to "messaged".</p>
+      ${list.length ? list.map((c) => `<article class="card scrcard"><div class="scrwho"><button type="button" class="linkbtn name" data-open="${h(c.id)}">${h(c.name)}</button>
+          <span class="muted small">${h(c.id)} · ${h(roleName(c.role_id))}${c.location ? " · " + h(c.location) : ""}</span>
+          <div class="chips">${callPill(c.agent_call)}${confWord(c.confidence)}${c.your_call ? `<span class="muted small">you:</span>${callPill(c.your_call)}` : ""}</div>
+          ${c.why ? `<p class="small">${h(c.why)}</p>` : ""}</div>${screenPanel(c)}</article>`).join("")
+        : `<div class="card empty">${state.screenFilter === "tosend" ? "Nothing left to send." : "Nobody here yet."}</div>`}`;
+    bindSeg(view, "scrf", (v) => { state.screenFilter = v; renderScreening(view); });
+    bindSeg(view, "role", (v) => { state.roleFilter = v; renderScreening(view); });
+    view.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => openCandidate(b.dataset.open)));
+    bindScreen(view, async () => { state.candidates = null; await renderScreening(view); });
+  }
+
   // ---------- interview scorecards: the AI recruiter drafts, people confirm or edit, Studio puts the scorers side by side ----------
   const SCORERS = [["ai", "AI recruiter"], ["kostya@cornerrenovation.com", "Kostya"], ["julia@cornerrenovation.com", "Yuliia"], ["julieta@cornerrenovation.com", "Julieta"]];
   const scorerName = (s) => (SCORERS.find(([k]) => k === s) || [s, String(s).replace(/@.*/, "").replace(/^\w/, (x) => x.toUpperCase())])[1];
