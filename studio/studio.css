@@ -370,6 +370,7 @@ details.q ul{margin:4px 0 0;padding-left:16px;display:flex;flex-direction:column
 .scr dl.qa dt{color:var(--muted);font-size:13px;line-height:1.45}
 .scr dl.qa dd{margin:0;font-weight:500;color:var(--ink);overflow-wrap:anywhere;line-height:1.45}
 .scr dl.qa dd.plain{grid-column:1/-1;font-weight:400;color:var(--text)}
+.scr dl.qa dd.long{font-weight:400;color:var(--text)}
 .scr .exp ul{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:4px}
 .scr .exp li{line-height:1.45}
 .scr .etitle{color:var(--ink);font-weight:500}
