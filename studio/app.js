@@ -26,7 +26,7 @@
   const whoName = (by) => !by ? "" : by === "claude" || /\.access$/.test(by) || /^u_/.test(by) ? "Claude" : by.replace(/@.*/, "").replace(/^\w/, (c) => c.toUpperCase());
   const state = { view: "week", boot: null, roleFilter: "all", role: null, filter: "all", candidates: null, results: null, outreach: null, templates: null, search: "", open: {},
     showClosed: false, justCreated: null, cards: null, cardStage: {}, cardEdit: null, srcFilter: "all", callFilter: "all", agentFilter: "all", confFilter: "all",
-    sort: { key: "", dir: 1 }, screenFilter: "tosend" };
+    sort: { key: "", dir: 1 }, screenFilter: "tosend", calGroup: "" };
   const store = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
 
   async function api(path, method, body) {
@@ -589,7 +589,49 @@
     });
   }
 
-  // ---------- calibration: how close the scorers are, per pair, across candidates ----------
+  // ---------- calibration, part 1: Claude's triage call against Your call on the same record ----------
+  // One measurement per role and scorecard version (the rules Claude read the record with). Rows are Claude's call, columns Your call.
+  // A miss is your Shortlist that Claude held or declined; noise is a Claude Shortlist you declined. Misses only show where Claude's
+  // Holds and Declines get a person's call too, so the block offers a fixed random sample of them.
+  const rulesOf = (c) => { const m = /v\d+(\.\d+)*/.exec((c.rules_version || "").split(" · ")[0]); return m ? m[0] : "no version"; };
+  const pickOrder = (id) => [...String(id)].reduce((s, ch) => (s * 31 + ch.charCodeAt(0)) >>> 0, 7);
+  function triageBlock() {
+    const groups = {}, C = ["Shortlist", "Hold", "Decline"];
+    (state.candidates || []).filter((c) => C.includes(c.agent_call) && !/DUPLICATE/.test(c.name || "")).forEach((c) => {
+      const k = c.role_id + "|" + rulesOf(c), g = groups[k] = groups[k] || { key: k, role: c.role_id, ver: rulesOf(c), all: [], done: [] };
+      g.all.push(c); if (C.includes(c.your_call)) g.done.push(c);
+    });
+    // newest decision first, so the block opens on the role being decided now
+    const last = (x) => x.done.reduce((m, c) => (c.updated_at || "") > m ? c.updated_at : m, "");
+    const list = Object.values(groups).filter((g) => g.done.length).sort((a, b) => last(b).localeCompare(last(a)) || b.done.length - a.done.length);
+    const eyebrow = `<span class="eyebrow">Triage · Claude's call vs Your call</span>`;
+    if (!list.length) return `<div class="group">${eyebrow}<div class="card empty">Nobody has set Your call on a record Claude read yet.</div></div>`;
+    const g = list.find((x) => x.key === state.calGroup) || list[0];
+    const n = (arr, a, y) => arr.filter((c) => (!a || c.agent_call === a) && (!y || c.your_call === y)).length;
+    const pct = (x, d) => d ? Math.round(100 * x / d) + "%" : "–";
+    const label = (x) => `${roleName(x.role)} · ${x.ver}`;
+    const rows = list.map((x) => { const d = x.done, agree = d.filter((c) => c.agent_call === c.your_call).length, sl = n(d, "Shortlist");
+      const miss = d.filter((c) => c.your_call === "Shortlist" && c.agent_call !== "Shortlist").length;
+      return `<tr${x === g ? ' class="here"' : ""}><td><span class="name">${h(label(x))}</span></td><td>${d.length} <span class="muted">${d.length >= 50 ? "· complete" : "of 50"}</span></td><td>${pct(agree, d.length)} <span class="muted">${agree}</span></td>
+        <td>${sl ? `${n(d, "Shortlist", "Shortlist")} of ${sl}` : "–"}</td><td>${miss}</td><td>${n(d, "Shortlist", "Decline")}</td><td>${C.map((a) => `${n(d, a)}/${n(x.all, a)}`).join(" · ")}</td></tr>`; });
+    const mx = C.map((a) => `<tr><th>${callPill(a)}</th>${C.map((y) => `<td class="${a === y ? "diag" : ""}">${n(g.done, a, y) || ""}</td>`).join("")}<td>${n(g.done, a)}</td><td class="muted">${n(g.all, a) - n(g.done, a)}</td></tr>`).join("");
+    const off = g.done.filter((c) => c.agent_call !== c.your_call).sort((a, b) => CALL_RANK[a.your_call] - CALL_RANK[b.your_call] || (a.name || "").localeCompare(b.name || ""));
+    const same = g.done.filter((c) => c.agent_call === c.your_call);
+    const open = g.all.filter((c) => !c.your_call && c.agent_call !== "Shortlist" && !CLOSED.includes(c.stage)).sort((a, b) => pickOrder(a.id) - pickOrder(b.id));
+    const sample = [...open.filter((c) => c.agent_call === "Hold").slice(0, 10), ...open.filter((c) => c.agent_call === "Decline").slice(0, 5)];
+    const row = (c) => `<tr class="clickable" data-id="${h(c.id)}"><td><span class="name">${h(c.name)}</span><br><span class="muted">${h(c.id)}</span></td>
+      <td>${callPill(c.agent_call)} ${confWord(c.confidence)}<br><span class="muted small">${h(c.why)}</span></td><td>${callPill(c.your_call)}</td><td>${h(c.your_reason) || '<span class="muted">no reason</span>'}</td></tr>`;
+    return `<div class="group">${eyebrow}${list.length > 1 ? seg("calgroup", list.map((x) => [x.key, label(x)]), g.key) : ""}
+      ${table(["Role · rules", "Decided", "Same call", "Claude's Shortlists kept", "Misses", "Noise", "Decided of Claude's Shortlist · Hold · Decline"], rows)}
+      <p class="muted small">One measurement per scorecard version: a new version starts a new row, so the current one stays the baseline. A measurement closes at 50 decided records. Misses can only appear where Claude's Holds and Declines also get Your call: ${n(g.done, "Hold") + n(g.done, "Decline")} of ${n(g.all, "Hold") + n(g.all, "Decline")} so far for ${h(label(g))}.</p></div>
+      <div class="group"><span class="eyebrow">${h(label(g))} · rows are Claude's call, columns Your call</span><div class="tablewrap"><table class="mx"><thead><tr><th></th>${C.map((y) => `<th>${h(y)}</th>`).join("")}<th>Decided</th><th>Not decided</th></tr></thead><tbody>${mx}</tbody></table></div></div>
+      <div class="group"><span class="eyebrow">Different calls · ${off.length}</span>${off.length ? table(["Candidate", "Claude", "Your call", "Your reason"], off.map(row)) : '<p class="muted">None.</p>'}</div>
+      ${same.length ? `<details class="group"><summary class="eyebrow">Same call · ${same.length}</summary>${table(["Candidate", "Claude", "Your call", "Your reason"], same.map(row))}</details>` : ""}
+      ${sample.length ? `<div class="group"><span class="eyebrow">Check for misses · ${sample.length} of Claude's Holds and Declines, picked at random</span>
+        <p class="muted small">Set Your call on these as you go. They stay the same picks until decided, then the next ones in line come up.</p>${table(["Candidate", "Claude", "Your call", "Your reason"], sample.map(row))}</div>` : ""}`;
+  }
+
+  // ---------- calibration, part 2: how close the scorers are, per pair, across candidates ----------
   async function renderCalibration(view) {
     await need("candidates", "cards");
     const all = state.cards || [], groups = {};
@@ -618,8 +660,8 @@
     const cname = (id) => (state.candidates.find((x) => x.id === id) || {}).name || id;
     const stageName = (cid, st) => { const r = rubricOf((state.candidates.find((x) => x.id === cid) || {}).role_id); return r ? ((r.stages.find(([x]) => x === st) || [st, st])[1]) : st; };
     const focus = list[0];
-    view.innerHTML = head("Calibration", "How close the scorers are on the same interviews. Every pair of cards on the same candidate and stage is compared criterion by criterion; a gap over one point is flagged. Only cards saved before the candidate's outcome was known count. This is the evidence for handing a stage over to the AI recruiter.") +
-      `<div class="strip four">${[[cards.length, "scorecards"], [cards.filter((k) => k.scorer === "ai").length, "AI recruiter drafts"], [cards.filter((k) => k.kind === "human").length, "people's cards"], [gapsList.length, "gaps over one point"]].map(([v, t]) => `<div class="kpi"><b>${h(v)}</b><span>${h(t)}</span></div>`).join("")}</div>
+    view.innerHTML = head("Calibration", "Two checks. Triage: Claude's call against Your call on the same record, per role and scorecard version. Interviews: how close the scorers are on the same interview, criterion by criterion; a gap over one point is flagged, and only cards saved before the outcome was known count. Together they are the evidence for handing a step over to the AI recruiter.") +
+      triageBlock() + `<h3 class="parthead">Interview scorecards</h3><div class="strip four">${[[cards.length, "scorecards"], [cards.filter((k) => k.scorer === "ai").length, "AI recruiter drafts"], [cards.filter((k) => k.kind === "human").length, "people's cards"], [gapsList.length, "gaps over one point"]].map(([v, t]) => `<div class="kpi"><b>${h(v)}</b><span>${h(t)}</span></div>`).join("")}</div>
       <div class="group"><span class="eyebrow">Scorer pairs</span>${list.length ? table(["Pair", "Shared cards", "Criteria compared", "Within 1 point", "Exact", "Mean difference", "Must-pass agree", "Decision agree"], list.map((p) =>
         `<tr><td><span class="name">${h(scorerName(p.b))} vs ${h(scorerName(p.a))}</span>${p.fromDraft ? `<br><span class="muted small">${p.fromDraft} of ${p.cards} started from the AI draft</span>` : ""}</td><td>${p.cards}</td><td>${p.n}</td><td>${pct(p.within, p.n)}</td><td>${pct(p.exact, p.n)}</td><td>${p.n ? (p.abs / p.n).toFixed(2) : "–"}</td><td>${p.mustN ? `${p.mustAgree} of ${p.mustN}` : "–"}</td><td>${p.decN ? `${p.decAgree} of ${p.decN}` : "–"}</td></tr>`))
         : `<div class="card empty">No two scorers have scored the same interview yet. The first pair appears when someone saves a card next to an AI draft.</div>`}
@@ -630,6 +672,7 @@
       ${practice.length ? `<p class="muted small">Not counted: ${practice.length} card${practice.length > 1 ? "s" : ""} saved after the outcome was known (${[...new Set(practice.map((k) => cname(k.candidate_id)))].map(h).join(", ")}). They test the rubric, not the scorers.</p>` : ""}
       <div class="group"><span class="eyebrow">AI drafts waiting for a person's card</span>${waiting.length ? table(["Candidate", "Stage", "AI weighted", "Decision rule"], waiting.map((k) => `<tr class="clickable" data-id="${h(k.candidate_id)}" data-stage="${h(k.stage)}"><td><span class="name">${h(cname(k.candidate_id))}</span><br><span class="muted">${h(roleName((state.candidates.find((x) => x.id === k.candidate_id) || {}).role_id))}</span></td><td>${h(stageName(k.candidate_id, k.stage))}</td><td>${k.weighted != null ? Number(k.weighted).toFixed(2) : "–"} <span class="muted">· ${k.scored} criteria</span></td><td>${decisionPill(k.decision)}</td></tr>`)) : '<p class="muted">None.</p>'}</div>`;
     view.querySelectorAll("tr.clickable").forEach((tr) => tr.addEventListener("click", () => { if (tr.dataset.stage) state.cardStage[tr.dataset.id] = tr.dataset.stage; openCandidate(tr.dataset.id); }));
+    bindSeg(view, "calgroup", (v) => { state.calGroup = v; renderCalibration(view); });
   }
 
   function openRecord(title, eyebrow, html) {

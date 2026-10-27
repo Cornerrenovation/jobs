@@ -388,3 +388,13 @@ details.q ul{margin:4px 0 0;padding-left:16px;display:flex;flex-direction:column
 .scrmsg{width:100%;font:14px/1.55 var(--f);padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--white);color:var(--ink);resize:vertical}
 .scrpanel .pact{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 @media (max-width:900px){.scrcard,.scrpanel{grid-template-columns:1fr}}
+/* Calibration: triage agreement */
+.parthead{font-size:17px;font-weight:600;margin:22px 0 2px}
+table.mx th,table.mx td{text-align:center;font-variant-numeric:tabular-nums}
+table.mx tbody th{text-align:left}
+table.mx td.diag{background:var(--ok-bg);font-weight:600}
+tr.here td{background:var(--warn-bg)}
+details.group>summary{cursor:pointer;list-style:none}
+details.group>summary::-webkit-details-marker{display:none}
+details.group>summary::before{content:"▸ "}
+details.group[open]>summary::before{content:"▾ "}
