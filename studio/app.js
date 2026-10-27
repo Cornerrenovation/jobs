@@ -352,7 +352,10 @@
     if (blindNow(c)) return `<section class="block read"><div class="readhead"><div><span class="eyebrow">2 · Claude's read</span><h3 class="muted">Hidden until you save Your call</h3></div><span class="cmeta">${h(c.calib_batch)}</span></div>
       ${c.first_lines ? `<div class="firstlines"><span class="lbl">First lines, word for word</span><p>${h(c.first_lines).replace(/\n+/g, "<br>")}</p></div>` : ""}
       <p class="muted small">This record is in a blind calibration batch: open the CV, set the CV check and Your call with a reason, and save. Claude's call shows after that and counts toward the agreement on the Calibration tab.</p></section>`;
-    const defs = criteriaFor(c.role_id), res = resultsFor(c.id);
+    // A role can carry two scorecard versions (Brand & Content: v0.3 bc-*, v0.4 bc4-*): show the set this record was read with,
+    // or the newest set when it hasn't been read yet.
+    const all = criteriaFor(c.role_id), res = resultsFor(c.id), newest = all.length ? all[all.length - 1].source : "";
+    const defs = res.length ? all.filter((d) => res.some((x) => x.criterion_id === d.id)) : all.filter((d) => d.source === newest);
     const row = (d) => { const r = res.find((x) => x.criterion_id === d.id); if (!r) return `<li class="crow"><span class="pill">not checked</span><div class="cbody"><span class="clabel">${h(d.label)}</span></div></li>`;
       const [word, kind] = kindOf(d, r); return `<li class="crow"><span class="pill ${kind}">${h(word)}</span><div class="cbody"><span class="clabel">${h(d.label)}</span>${r.evidence ? `<span class="ev">${h(r.evidence)}</span>` : ""}${r.field ? `<span class="cmeta">From ${h(r.field)}</span>` : ""}</div></li>`; };
     const ko = defs.filter((d) => d.kind === "knockout"), plus = defs.filter((d) => d.kind === "plus"), minus = defs.filter((d) => d.kind === "minus"), other = defs.filter((d) => !["knockout", "plus", "minus"].includes(d.kind));
