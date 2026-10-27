@@ -398,3 +398,9 @@ details.group>summary{cursor:pointer;list-style:none}
 details.group>summary::-webkit-details-marker{display:none}
 details.group>summary::before{content:"▸ "}
 details.group[open]>summary::before{content:"▾ "}
+/* v0.4: the hiring lead's CV / portfolio check and the first lines Claude decides on */
+.cvcheck{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:6px 0 10px}
+.cvcheck .seg button[data-v="Not pass"][aria-pressed="true"]{background:var(--bad-bg);color:var(--bad)}
+.cvcheck .seg button[data-v="Pass"][aria-pressed="true"]{background:var(--ok-bg);color:var(--ok)}
+.firstlines{background:var(--warn-bg);border-radius:10px;padding:10px 12px;margin:4px 0 8px}
+.firstlines p{margin:4px 0 0;font-size:14px;line-height:1.45}

@@ -26,7 +26,7 @@
   const whoName = (by) => !by ? "" : by === "claude" || /\.access$/.test(by) || /^u_/.test(by) ? "Claude" : by.replace(/@.*/, "").replace(/^\w/, (c) => c.toUpperCase());
   const state = { view: "week", boot: null, roleFilter: "all", role: null, filter: "all", candidates: null, results: null, outreach: null, templates: null, search: "", open: {},
     showClosed: false, justCreated: null, cards: null, cardStage: {}, cardEdit: null, srcFilter: "all", callFilter: "all", agentFilter: "all", confFilter: "all",
-    sort: { key: "", dir: 1 }, screenFilter: "tosend", calGroup: "" };
+    sort: { key: "", dir: 1 }, screenFilter: "tosend", calGroup: "", cvFilter: "all" };
   const store = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
 
   async function api(path, method, body) {
@@ -258,12 +258,13 @@
     const q = state.search.trim().toLowerCase();
     // Source and Your call filters (Yuliia's request, 18 Oct); options count within the chosen role
     const base = state.candidates.filter(inRole);
-    const callOf = (c) => c.your_call || "none", agentOf = (c) => c.agent_call || "none", confOf = (c) => c.confidence || "none";
+    const callOf = (c) => c.your_call || "none", agentOf = (c) => c.agent_call || "none", confOf = (c) => c.confidence || "none", cvOf = (c) => c.cv_check || "none";
     const count = (f) => { const m = {}; base.forEach((c) => { m[f(c)] = (m[f(c)] || 0) + 1; }); return m; };
-    const srcCounts = count(sourceOf), callCounts = count(callOf), agentCounts = count(agentOf), confCounts = count(confOf);
+    const srcCounts = count(sourceOf), callCounts = count(callOf), agentCounts = count(agentOf), confCounts = count(confOf), cvCounts = count(cvOf);
     if (state.srcFilter !== "all" && !srcCounts[state.srcFilter]) state.srcFilter = "all";
     const list = base.filter((c) => (state.srcFilter === "all" || sourceOf(c) === state.srcFilter) && (state.callFilter === "all" || callOf(c) === state.callFilter) &&
       (state.agentFilter === "all" || agentOf(c) === state.agentFilter) && (state.confFilter === "all" || confOf(c) === state.confFilter) &&
+      (state.cvFilter === "all" || cvOf(c) === state.cvFilter) &&
       (!q || [c.name, c.headline, c.location, c.sources, c.email, c.stage, c.your_call, c.agent_call].join(" ").toLowerCase().includes(q)));
     // Sorting: click a column header; click again to reverse. Calls sort Shortlist, Hold, Decline, then none; confidence High to Low.
     const SORTS = { name: (c) => (c.name || "").toLowerCase(), applied: (c) => c.applied || c.created_at || "", agent: (c) => CALL_RANK[c.agent_call] ?? 3,
@@ -275,10 +276,11 @@
     const callSel = `<select id="fcall" aria-label="Your call">${opt("all", "Your call: any", state.callFilter)}${[["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"], ["none", "No call yet"]].map(([v, l]) => opt(v, `Your call: ${l} (${callCounts[v] || 0})`, state.callFilter)).join("")}</select>`;
     const agentSel = `<select id="fagent" aria-label="Agent call">${opt("all", "Agent call: any", state.agentFilter)}${[["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"], ["none", "Not read yet"]].map(([v, l]) => opt(v, `Agent call: ${l} (${agentCounts[v] || 0})`, state.agentFilter)).join("")}</select>`;
     const confSel = `<select id="fconf" aria-label="Confidence">${opt("all", "Confidence: any", state.confFilter)}${[["High", "High"], ["Medium", "Medium"], ["Low", "Low"]].map(([v, l]) => opt(v, `Confidence: ${l} (${confCounts[v] || 0})`, state.confFilter)).join("")}</select>`;
+    const cvSel = `<select id="fcv" aria-label="CV check">${opt("all", "CV check: any", state.cvFilter)}${[["Pass", "Pass"], ["Not pass", "Not pass"], ["none", "Not checked"]].map(([v, l]) => opt(v, `CV check: ${l} (${cvCounts[v] || 0})`, state.cvFilter)).join("")}</select>`;
     const cols = [["Name", "name"], ["Role", ""], ["Source", ""], ["Applied", "applied"], ["Agent call", "agent"], ["Confidence", "conf"], ["Your call", "your"], ["Stage", "stage"], ["Next step", ""], ["Due", "due"]];
     const th = ([label, key]) => key ? `<th><button type="button" class="sorth" data-sort="${key}" aria-sort="${sk === key ? (sd > 0 ? "ascending" : "descending") : "none"}">${h(label)}<span class="arrow">${sk === key ? (sd > 0 ? "↑" : "↓") : "↕"}</span></button></th>` : `<th>${h(label)}</th>`;
     view.innerHTML = head("Candidates", `${list.length} of ${state.candidates.length}`, `<button type="button" class="btn" id="add">Add candidate</button>`) +
-      `<div class="toolbar"><input type="search" id="q" placeholder="Search name, headline, source, stage" value="${h(state.search)}">${srcSel}${agentSel}${confSel}${callSel}${roleSeg()}</div>
+      `<div class="toolbar"><input type="search" id="q" placeholder="Search name, headline, source, stage" value="${h(state.search)}">${srcSel}${agentSel}${confSel}${callSel}${cvSel}${roleSeg()}</div>
       ${list.length ? `<div class="tablewrap"><table><thead><tr>${cols.map(th).join("")}</tr></thead><tbody>${
         list.map((c) => `<tr class="clickable" data-id="${h(c.id)}"><td><span class="name">${h(c.name)}</span><br><span class="muted">${h(c.headline || c.location || "")}</span></td><td>${h(roleName(c.role_id))}</td><td>${h(c.sources)}${c.referred_by ? `<br><span class="muted">referred by ${h(c.referred_by)}</span>` : ""}</td><td>${h(fmt(c.applied))}</td><td>${callPill(c.agent_call)}</td><td>${confWord(c.confidence)}</td><td>${callPill(c.your_call)}</td><td>${pill(c.stage || "applied")}</td><td>${h(c.next_step)}</td><td>${h(fmt(c.due))}</td></tr>`).join("")}</tbody></table></div>`
         : `<div class="card empty">No candidates match. They arrive from the jobs site, LinkedIn and Work.ua through the daily check-in, or add one by hand.</div>`}`;
@@ -288,6 +290,7 @@
     bindSeg(view, "role", (v) => { state.roleFilter = v; renderCandidates(view); });
     $("#fsrc", view).addEventListener("change", (e) => { state.srcFilter = e.target.value; renderCandidates(view); });
     $("#fcall", view).addEventListener("change", (e) => { state.callFilter = e.target.value; renderCandidates(view); });
+    $("#fcv", view).addEventListener("change", (e) => { state.cvFilter = e.target.value; renderCandidates(view); });
     $("#fagent", view).addEventListener("change", (e) => { state.agentFilter = e.target.value; renderCandidates(view); });
     $("#fconf", view).addEventListener("change", (e) => { state.confFilter = e.target.value; renderCandidates(view); });
     view.querySelectorAll("[data-sort]").forEach((b) => b.addEventListener("click", () => {
@@ -355,6 +358,7 @@
     if (!c.agent_call && !res.length) return `<section class="block">${head}<p class="muted">The next robot run reads the application against the ${h(roleName(c.role_id))} scorecard: completeness, knockouts, markers, then a proposal.</p></section>`;
     return `<section class="block read">${head}
       ${c.why ? `<p class="why">${h(c.why)}</p>` : ""}
+      ${c.first_lines ? `<div class="firstlines"><span class="lbl">First lines, word for word</span><p>${h(c.first_lines).replace(/\n+/g, "<br>")}</p></div>` : ""}
       ${ko.length ? `<div class="critgroup"><span class="lbl">Knockouts · ${count(ko, (r) => r.result === "not met")} failed of ${ko.length}</span><ul class="critlist">${ko.map(row).join("")}</ul></div>` : ""}
       ${plus.length ? `<div class="critgroup"><span class="lbl">Markers for · ${count(plus, (r) => r.result === "met")} of ${plus.length}</span><ul class="critlist">${plus.map(row).join("")}</ul></div>` : ""}
       ${minus.length ? `<div class="critgroup"><span class="lbl">Red flags · ${count(minus, (r) => r.result === "met")} of ${minus.length}</span><ul class="critlist">${minus.map(row).join("")}</ul></div>` : ""}
@@ -378,6 +382,7 @@
         <dl class="kv">${kv("Location", c.location)}${kv("Email", c.email)}${kv("English, self-rated", c.english)}${kv("Headline", c.headline)}${kv("Referred by", c.referred_by)}${kv("Furthest stage", furthest)}${kv("Scores", c.scores)}${kv("Latest reply", c.latest_reply)}${kv("Last contact", c.last_contact)}</dl>
         ${screeningBlock(c)}
         ${links.length ? `<div class="links"><span class="lbl">Links she or he gave</span><div class="chips">${links.join("")}</div>${/drive\.google\.com/.test(c.cv || "") ? `<span class="muted small">The CV sits in hello@'s Drive. If the link asks for access, hello@ needs to share the "Corner Careers — Applications" folder with you once.</span>` : ""}</div>` : ""}
+        ${cvCheck(c)}
         ${c.site_answer ? `<div class="answer"><span class="lbl">Written answer</span><p>${h(c.site_answer).replace(/\n+/g, "<br>")}</p></div>` : ""}</section>` : "";
     const callSeg = `${seg("yourcall", [["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"]], c.your_call || "")}<input type="hidden" name="your_call" value="${h(c.your_call || "")}">`;
     const form = `<section class="block"><span class="eyebrow">${id ? "3 · Your call" : "New candidate"}</span>
@@ -397,7 +402,7 @@
         <div class="formfoot full"><span class="saved" id="csaved"></span><button type="submit" class="btn">${id ? "Save" : "Add"}</button></div>
       </form>${id ? leadBlock(c, role, lead) : ""}</section>`;
     openRecord(id ? c.name : "New candidate", eyebrow, application + (id ? readBlock(c) + screenSection(c) : "") + form + (id ? scoreBlock(c) : ""));
-    if (id) { bindScoreBlock(c); bindScreen($("#recbody"), async () => { forget(); await render(true); await openCandidate(id); }); }
+    if (id) { bindScoreBlock(c); bindScreen($("#recbody"), async () => { forget(); await render(true); await openCandidate(id); }); bindCvCheck($("#recbody"), () => render(true)); }
     const f = $("#cform");
     bindSeg(f, "yourcall", (v) => { const cur = $('input[name="your_call"]', f); cur.value = cur.value === v ? "" : v; f.querySelectorAll('[data-seg="yourcall"] button').forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === cur.value)); });
     // After a save: everything is re-read (the Worker moves the stage when Your call changes, and keeps reached, hired_at and bounty_due),
@@ -423,7 +428,18 @@
   const SENT = ["messaged", "replied", "screen booked", "screen done", "interview booked", "interview done", "work sample", "references", "offer", "hired"];
   const wasSent = (c) => SENT.includes(c.stage || "");
   // Your call decides when there is one; otherwise Claude's Shortlist counts.
-  const inScreening = (c) => (c.your_call ? c.your_call === "Shortlist" : c.agent_call === "Shortlist") && !CLOSED.includes(c.stage) && !isClosedRole(roleOf(c.role_id));
+  const inScreening = (c) => (c.your_call ? c.your_call === "Shortlist" : c.agent_call === "Shortlist") && c.cv_check !== "Not pass" && !CLOSED.includes(c.stage) && !isClosedRole(roleOf(c.role_id));
+  // The hiring lead's own look at the CV or portfolio as a work sample (scorecard v0.4, 27 Oct): Pass or Not pass, saved on the click.
+  // Only a person sets it; "Not pass" takes the candidate out of Screening.
+  const cvCheck = (c) => familyOf(roleOf(c.role_id)) !== "bc" ? "" : `<div class="cvcheck" data-cvc="${h(c.id)}"><span class="lbl">CV / portfolio · your look</span>${seg("cvc", [["Pass", "Pass"], ["Not pass", "Not pass"]], c.cv_check || "")}</div>`;
+  function bindCvCheck(root, after) {
+    root.querySelectorAll("[data-cvc]").forEach((el) => bindSeg(el, "cvc", async (v) => {
+      const id = el.dataset.cvc, c = (state.candidates || []).find((x) => x.id === id) || {}, next = c.cv_check === v ? "" : v;
+      el.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+      try { await api("candidates/" + id, "PATCH", { cv_check: next }); c.cv_check = next; } finally { el.querySelectorAll("button").forEach((b) => { b.disabled = false; b.setAttribute("aria-pressed", b.dataset.v === c.cv_check); }); }
+      if (after) await after();
+    }));
+  }
   function screenPanel(c) {
     if (!c.screen_concern && !c.screen_message) return `<p class="muted small">No concern written yet. Claude writes one for every shortlisted candidate.</p>`;
     return `<div class="scrpanel" data-sid="${h(c.id)}">
@@ -468,12 +484,13 @@
       ${list.length ? list.map((c) => `<article class="card scrcard"><div class="scrwho"><button type="button" class="linkbtn name" data-open="${h(c.id)}">${h(c.name)}</button>
           <span class="muted small">${h(c.id)} · ${h(roleName(c.role_id))}${c.location ? " · " + h(c.location) : ""}</span>
           <div class="chips">${callPill(c.agent_call)}${confWord(c.confidence)}${c.your_call ? `<span class="muted small">you:</span>${callPill(c.your_call)}` : ""}</div>
-          ${c.why ? `<p class="small">${h(c.why)}</p>` : ""}</div>${screenPanel(c)}</article>`).join("")
+          ${c.why ? `<p class="small">${h(c.why)}</p>` : ""}${cvCheck(c)}</div>${screenPanel(c)}</article>`).join("")
         : `<div class="card empty">${state.screenFilter === "tosend" ? "Nothing left to send." : "Nobody here yet."}</div>`}`;
     bindSeg(view, "scrf", (v) => { state.screenFilter = v; renderScreening(view); });
     bindSeg(view, "role", (v) => { state.roleFilter = v; renderScreening(view); });
     view.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => openCandidate(b.dataset.open)));
     bindScreen(view, async () => { state.candidates = null; await renderScreening(view); });
+    bindCvCheck(view, async () => { await renderScreening(view); });
   }
 
   // ---------- interview scorecards: the AI recruiter drafts, people confirm or edit, Studio puts the scorers side by side ----------
