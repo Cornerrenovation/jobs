@@ -28,7 +28,7 @@
   const whoName = (by) => !by ? "" : by === "claude" || /\.access$/.test(by) || /^u_/.test(by) ? "Claude" : by.replace(/@.*/, "").replace(/^\w/, (c) => c.toUpperCase());
   const state = { view: "week", boot: null, roleFilter: "all", role: null, filter: "all", candidates: null, results: null, outreach: null, templates: null, search: "", open: {},
     showClosed: false, justCreated: null, cards: null, cardStage: {}, cardEdit: null, srcFilter: "all", callFilter: "all", agentFilter: "all", confFilter: "all",
-    sort: { key: "", dir: 1 }, screenFilter: "tosend", calGroup: "", cvFilter: "all" };
+    sort: { key: "", dir: 1 }, screenFilter: "tosend", calGroup: "", cvFilter: "all", resBy: {} };
   const store = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
 
   async function api(path, method, body) {
@@ -55,11 +55,13 @@
   const leadOf = (r) => (r && (r.lead || r.owner)) || "the hiring lead";
   // Each view loads only what it shows; the caches are dropped when the data changes (see refresh) or after a save.
   async function need(...keys) {
-    const load = { candidates: "candidates", results: "criteria/results", cards: "scorecards", outreach: "outreach", templates: "templates" };
+    // Lists load light candidate rows and per-candidate criteria counts; a record fetches its full row and its own criteria when it
+    // opens (27 Oct: the full tables, about 3 MB and 6 MB, went over the Worker's CPU limit and Cloudflare answered with an error page).
+    const load = { candidates: "candidates?lite=1", summary: "criteria/results?summary=1", cards: "scorecards", outreach: "outreach", templates: "templates" };
     const missing = keys.filter((k) => !state[k]);
     (await Promise.all(missing.map((k) => api(load[k])))).forEach((v, i) => { state[missing[i]] = v; });
   }
-  const forget = () => { state.boot = null; state.candidates = null; state.results = null; state.cards = null; state.outreach = null; state.templates = null; };
+  const forget = () => { state.boot = null; state.candidates = null; state.summary = null; state.resBy = {}; state.cards = null; state.outreach = null; state.templates = null; };
 
   // ---------- shared candidate logic ----------
   const stageIdx = (s) => ORDER.indexOf(s || "");
@@ -75,11 +77,11 @@
     const all = state.boot.criteria || [], own = all.filter((k) => k.role_id === roleId);
     return own.length ? own : all.filter((k) => k.role_id === familyOf(roleOf(roleId)));
   }
-  const resultsFor = (cid) => (state.results || []).filter((x) => x.candidate_id === cid);
+  const resultsFor = (cid) => (state.resBy && state.resBy[cid]) || [];
   function matchSummary(c) {
-    const res = resultsFor(c.id), n = { met: 0, "not met": 0, unclear: 0 };
-    res.forEach((x) => { if (x.result in n) n[x.result]++; });
-    return res.length ? `${n.met} met · ${n["not met"]} not met · ${n.unclear} unclear` : "";
+    const rows = (state.summary || []).filter((x) => x.candidate_id === c.id).sort((a, b) => (b.at || "").localeCompare(a.at || ""));
+    const n = rows[0];  // the newest read
+    return n ? `${n.met} met · ${n.not_met} not met · ${n.unclear} unclear` : "";
   }
   // First-three calibration: the first three a role sends to its hiring lead wait for a yes or no with a reason before more go.
   function calibration(roleId) {
@@ -411,9 +413,13 @@
       <p class="muted small">Claude's reading of what she or he sent, against the scorecard, with the words it rests on. It informs your call; nobody is declined on it.</p></section>`;
   }
   async function openCandidate(id) {
-    if (id) await need("candidates", "results", "cards");
+    if (id) await need("candidates", "cards");
     const c = id ? state.candidates.find((x) => x.id === id) : { stage: "applied", role_id: state.roleFilter !== "all" && state.roleFilter !== "closed" ? state.roleFilter : (openRoles()[0] || {}).id };
     if (!c) { forget(); await render(true); notice(`There's no candidate ${id} in the studio.`, true); return; }
+    if (id) {  // the full row (CV, screening answers, written answer, first lines) and this candidate's criteria
+      const [full, res] = await Promise.all([api("candidates/" + encodeURIComponent(id)), api("criteria/results?candidate_id=" + encodeURIComponent(id))]);
+      Object.assign(c, full); state.resBy = state.resBy || {}; state.resBy[id] = res;
+    }
     const sel = (name, opts, val, labels) => `<select name="${name}">${opts.map((o, i) => `<option value="${h(o)}" ${o === (val || "") ? "selected" : ""}>${h(labels ? labels[i] : (o || "–"))}</option>`).join("")}</select>`;
     const kv = (k, v) => v ? `<dt>${h(k)}</dt><dd>${h(v)}</dd>` : "";
     const role = roleOf(c.role_id), lead = leadOf(role);
@@ -887,7 +893,7 @@
 
   // ---------- checklists ----------
   async function renderChecklists(view) {
-    await need("candidates", "results");
+    await need("candidates", "summary");
     const b = state.boot, steps = b.steps, total = steps.length;
     const doneSet = new Set(b.ticks.filter((t) => t.done).map((t) => t.role_id + "~" + t.step_id));
     const tickOf = (rid, sid) => b.ticks.find((t) => t.role_id === rid && t.step_id === sid);
