@@ -354,7 +354,9 @@
       <p class="muted small">This record is in a blind calibration batch: open the CV, set the CV check and Your call with a reason, and save. Claude's call shows after that and counts toward the agreement on the Calibration tab.</p></section>`;
     // A role can carry two scorecard versions (Brand & Content: v0.3 bc-*, v0.4 bc4-*): show the set this record was read with,
     // or the newest set when it hasn't been read yet.
-    const all = criteriaFor(c.role_id), res = resultsFor(c.id), newest = all.length ? all[all.length - 1].source : "";
+    const all = criteriaFor(c.role_id), newest = all.length ? all[all.length - 1].source : "";
+    const lastVer = (resultsFor(c.id).slice().sort((a, b) => (b.at || "").localeCompare(a.at || ""))[0] || {}).rules_version;
+    const res = resultsFor(c.id).filter((x) => x.rules_version === lastVer);
     const defs = res.length ? all.filter((d) => res.some((x) => x.criterion_id === d.id)) : all.filter((d) => d.source === newest);
     const row = (d) => { const r = res.find((x) => x.criterion_id === d.id); if (!r) return `<li class="crow"><span class="pill">not checked</span><div class="cbody"><span class="clabel">${h(d.label)}</span></div></li>`;
       const [word, kind] = kindOf(d, r); return `<li class="crow"><span class="pill ${kind}">${h(word)}</span><div class="cbody"><span class="clabel">${h(d.label)}</span>${r.evidence ? `<span class="ev">${h(r.evidence)}</span>` : ""}${r.field ? `<span class="cmeta">From ${h(r.field)}</span>` : ""}</div></li>`; };
