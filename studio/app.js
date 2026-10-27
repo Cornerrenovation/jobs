@@ -32,8 +32,10 @@
   const store = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
 
   async function api(path, method, body) {
-    const r = await fetch(API + path, { method: method || "GET", credentials: "same-origin",
-      headers: body ? { "content-type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
+    const payload = body ? JSON.stringify(body) : undefined;
+    // keepalive lets a save finish after the record (or the tab) is closed; browsers allow it for bodies under 64 KB
+    const r = await fetch(API + path, { method: method || "GET", credentials: "same-origin", keepalive: !!payload && payload.length < 60000,
+      headers: body ? { "content-type": "application/json" } : {}, body: payload });
     if (r.status === 401) { notice("Your sign-in expired. Reload the page to sign in again.", true); throw new Error("unauthorized"); }
     const j = await r.json().catch(() => ({}));
     if (r.status === 503) { notice(j.error === "login_not_configured" ? "Sign-in isn't switched on for the studio yet." : "The sign-in check didn't answer. Try again in a minute.", true); throw new Error(j.error || "unavailable"); }
@@ -331,9 +333,12 @@
   function cvBlock(c) {
     let d = null; try { d = c.cv_struct ? JSON.parse(c.cv_struct) : null; } catch (e) { d = null; }
     const cvLinks = urlsIn(c.cv).filter((u) => /linkedin\.com\/hiring\/applicants|drive\.google\.com|docs\.google\.com/.test(u));
-    if (!d && !c.first_lines && !cvLinks.length && !c.cv_file) return "";
+    // Kostya, 27 Oct: every Brand & Content and TA candidate he shortlisted, and every Claude Shortlist he hasn't called, gets Open CV
+    const owed = !c.cv_file && ["bc", "ta"].includes(familyOf(roleOf(c.role_id))) && (c.your_call === "Shortlist" || (!c.your_call && c.agent_call === "Shortlist"));
+    if (!d && !c.first_lines && !cvLinks.length && !c.cv_file && !owed) return "";
     const roles = (d && d.roles) || [];
     return `<div class="cvblock"><div class="cvhead"><span class="lbl">CV</span>${d && d.file ? `<span class="cmeta">${h(d.file)}</span>` : ""}<div class="chips">${cvOpen(c)}${cvLinks.map((u) => linkChip(u)).join("")}</div></div>
+      ${owed ? `<p class="muted small">Open CV is added at the next robot run: 12:00 daily, and 14:00, 17:00 and 20:00 on weekdays.</p>` : ""}
       ${roles.length ? `<ul class="roles">${roles.map((r) => `<li>${tagPill(r.when === "earlier" ? "" : r.when)}<div class="rbody"><div class="rhead"><span class="etitle">${h(r.title)}</span>${r.employer ? ` <span class="muted">·</span> <span class="eorg">${h(r.employer)}</span>` : ""}${r.dates ? ` <span class="cmeta">${h(r.dates)}</span>` : ""}</div>${r.what ? (r.when === "earlier" ? `<span class="small">${h(r.what)}</span>` : `<q>${h(r.what)}</q>`) : r.when !== "earlier" ? `<span class="muted small">No line under this role in the CV</span>` : ""}</div></li>`).join("")}</ul>`
         : firstLinesHtml(c)}
       ${d && (d.languages || d.education || (d.portfolio || []).length || d.other) ? `<dl class="qa">${d.languages ? `<dt>Languages</dt><dd>${h(d.languages)}</dd>` : ""}${d.education ? `<dt>Education</dt><dd>${h(d.education)}</dd>` : ""}${(d.portfolio || []).length ? `<dt>Portfolio</dt><dd>${d.portfolio.map((u) => /^https?:/.test(u) ? linkChip(u) : h(u)).join(" ")}</dd>` : ""}${d.other ? `<dt>Also</dt><dd class="long">${h(d.other)}</dd>` : ""}</dl>` : ""}</div>`;
@@ -451,8 +456,27 @@
     f.addEventListener("submit", async (e) => {
       e.preventDefault();
       const data = Object.fromEntries(new FormData(e.target).entries());
-      if (id) await api("candidates/" + id, "PATCH", data); else await api("candidates", "POST", data);
-      await reopen();
+      if (!id) { await api("candidates", "POST", data); await reopen(); return; }
+      // An existing record saves in the background: the change shows at once (the record stays where it is and can be closed
+      // straight away), the request runs on, and the list behind redraws from the server when it answers. The stage moves the way
+      // the Worker moves it when Your call changes, so a second Save doesn't send a stale stage back.
+      const before = { ...c }, wasBlind = blindNow(c), saved = $("#csaved");
+      if ((data.your_call || "") !== (c.your_call || "") && ["applied", "triaged", "confirmed", "declined"].includes(data.stage || "applied"))
+        data.stage = data.your_call === "Decline" ? "declined" : data.your_call === "Shortlist" ? "confirmed" : c.agent_call ? "triaged" : "applied";
+      Object.assign(c, data);
+      const stageSel = f.querySelector('select[name="stage"]'); if (stageSel) stageSel.value = c.stage || "applied";
+      delete f.dataset.dirty;
+      saved.textContent = "Saving…";
+      render(true);
+      api("candidates/" + id, "PATCH", data).then(async () => {
+        if (saved.isConnected) saved.textContent = "Saved";
+        const rb = $("#recbody .block.read");
+        if (wasBlind && rb && $("#recdlg").open && $("#rectitle").textContent === c.name) rb.outerHTML = readBlock(c);  // a blind record shows Claude's read now
+        forget(); await render(true);
+      }).catch(async (err) => {
+        Object.assign(c, before); if (saved.isConnected) saved.textContent = "Not saved";
+        await render(true); notice(`${c.name}: not saved (${err && err.message || err}). Open the record and save again.`, true);
+      });
     });
     const send = $("#sendlead");
     if (send) send.addEventListener("click", async () => { send.disabled = true; try { await api("candidates/" + id, "PATCH", { sent_to_lead: new Date().toISOString() }); await reopen(); } catch (e) { send.disabled = false; } });
