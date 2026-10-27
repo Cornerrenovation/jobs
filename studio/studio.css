@@ -421,3 +421,4 @@ ul.roles q{display:block;quotes:none;border-left:3px solid var(--warn-bg);paddin
 .cvblock dl.qa dt{color:var(--muted);font-size:13px}
 .cvblock dl.qa dd{margin:0}
 @media (max-width:560px){ul.roles li{grid-template-columns:1fr}}
+.chip.cvopen{background:var(--ink);color:var(--card);border-color:var(--ink);font-weight:600}

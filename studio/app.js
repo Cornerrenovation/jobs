@@ -326,12 +326,14 @@
       : `<li>${tagPill("")}<div class="rbody">${h(r.head)}</div></li>`).join("")}</ul></div>`;
   }
   // The CV as data (cv_struct, 27 Oct): the file and its link, the roles newest first, then languages, education and portfolio.
+  // The CV file Studio keeps (LinkedIn's own links expire after 24 hours): one click, opens inline under the candidate's name.
+  const cvOpen = (c, cls) => c.cv_file ? `<a class="${cls || "chip link cvopen"}" href="${API}cv/${encodeURIComponent(c.id)}" target="_blank" rel="noopener" title="${h(c.cv_file)}">Open CV ↗</a>` : "";
   function cvBlock(c) {
     let d = null; try { d = c.cv_struct ? JSON.parse(c.cv_struct) : null; } catch (e) { d = null; }
     const cvLinks = urlsIn(c.cv).filter((u) => /linkedin\.com\/hiring\/applicants|drive\.google\.com|docs\.google\.com/.test(u));
-    if (!d && !c.first_lines && !cvLinks.length) return "";
+    if (!d && !c.first_lines && !cvLinks.length && !c.cv_file) return "";
     const roles = (d && d.roles) || [];
-    return `<div class="cvblock"><div class="cvhead"><span class="lbl">CV</span>${d && d.file ? `<span class="cmeta">${h(d.file)}</span>` : ""}<div class="chips">${cvLinks.map((u) => linkChip(u)).join("")}</div></div>
+    return `<div class="cvblock"><div class="cvhead"><span class="lbl">CV</span>${d && d.file ? `<span class="cmeta">${h(d.file)}</span>` : ""}<div class="chips">${cvOpen(c)}${cvLinks.map((u) => linkChip(u)).join("")}</div></div>
       ${roles.length ? `<ul class="roles">${roles.map((r) => `<li>${tagPill(r.when === "earlier" ? "" : r.when)}<div class="rbody"><div class="rhead"><span class="etitle">${h(r.title)}</span>${r.employer ? ` <span class="muted">·</span> <span class="eorg">${h(r.employer)}</span>` : ""}${r.dates ? ` <span class="cmeta">${h(r.dates)}</span>` : ""}</div>${r.what ? (r.when === "earlier" ? `<span class="small">${h(r.what)}</span>` : `<q>${h(r.what)}</q>`) : r.when !== "earlier" ? `<span class="muted small">No line under this role in the CV</span>` : ""}</div></li>`).join("")}</ul>`
         : firstLinesHtml(c)}
       ${d && (d.languages || d.education || (d.portfolio || []).length || d.other) ? `<dl class="qa">${d.languages ? `<dt>Languages</dt><dd>${h(d.languages)}</dd>` : ""}${d.education ? `<dt>Education</dt><dd>${h(d.education)}</dd>` : ""}${(d.portfolio || []).length ? `<dt>Portfolio</dt><dd>${d.portfolio.map((u) => /^https?:/.test(u) ? linkChip(u) : h(u)).join(" ")}</dd>` : ""}${d.other ? `<dt>Also</dt><dd class="long">${h(d.other)}</dd>` : ""}</dl>` : ""}</div>`;
@@ -485,6 +487,7 @@
       <div class="scrcol"><span class="lbl">Message to send on LinkedIn</span><textarea class="scrmsg" rows="7" aria-label="Message to ${h(c.name)}">${h(c.screen_message)}</textarea>
         <div class="pact"><button type="button" class="btn small" data-copy>Copy</button><button type="button" class="btn ghost small" data-savemsg hidden>Save the edit</button>
           ${wasSent(c) ? `<span class="pill ok">sent${c.last_contact ? " " + h(fmt(c.last_contact)) : ""}</span>` : `<button type="button" class="btn ghost small" data-sent>Mark as sent</button>`}
+          ${cvOpen(c, "btn small")}
           ${c.linkedin ? `<a class="btn ghost small" href="${h(c.linkedin)}" target="_blank" rel="noopener">LinkedIn ↗</a>` : ""}
           ${urlsIn(c.cv).filter((u) => /linkedin\.com\/hiring\/applicants/.test(u)).map((u) => `<a class="btn ghost small" href="${h(u)}" target="_blank" rel="noopener">Application ↗</a>`).join("")}</div>
         ${c.latest_reply ? `<div class="answer"><span class="lbl">Latest reply</span><p>${h(c.latest_reply)}</p></div>` : ""}</div></div>`;
