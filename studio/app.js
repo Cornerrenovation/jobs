@@ -422,7 +422,8 @@
   // candidate to "messaged". The same panel shows on the Screening view and in the candidate record.
   const SENT = ["messaged", "replied", "screen booked", "screen done", "interview booked", "interview done", "work sample", "references", "offer", "hired"];
   const wasSent = (c) => SENT.includes(c.stage || "");
-  const inScreening = (c) => (c.agent_call === "Shortlist" || c.your_call === "Shortlist") && c.your_call !== "Decline" && !CLOSED.includes(c.stage) && !isClosedRole(roleOf(c.role_id));
+  // Your call decides when there is one; otherwise Claude's Shortlist counts.
+  const inScreening = (c) => (c.your_call ? c.your_call === "Shortlist" : c.agent_call === "Shortlist") && !CLOSED.includes(c.stage) && !isClosedRole(roleOf(c.role_id));
   function screenPanel(c) {
     if (!c.screen_concern && !c.screen_message) return `<p class="muted small">No concern written yet. Claude writes one for every shortlisted candidate.</p>`;
     return `<div class="scrpanel" data-sid="${h(c.id)}">
@@ -463,7 +464,7 @@
     view.innerHTML = head("Screening", `One message per shortlisted candidate, asking the one thing we need to verify. ${toSend} to send · ${all.length - toSend} sent${noConcern ? ` · ${noConcern} without a concern yet` : ""}`,
       seg("scrf", [["tosend", "To send"], ["sent", "Sent"], ["all", "All"]], state.screenFilter)) +
       `<div class="toolbar">${roleSeg()}</div>
-      <p class="muted small">Everyone Claude or you shortlisted, unless you declined them. Edit the message if you want, copy it into LinkedIn (the Application button opens their application, where messaging is free), then mark it sent: the candidate moves to "messaged".</p>
+      <p class="muted small">Everyone you shortlisted, and everyone Claude shortlisted that you haven't called yet. Edit the message if you want, copy it into LinkedIn (the Application button opens their application, where messaging is free), then mark it sent: the candidate moves to "messaged".</p>
       ${list.length ? list.map((c) => `<article class="card scrcard"><div class="scrwho"><button type="button" class="linkbtn name" data-open="${h(c.id)}">${h(c.name)}</button>
           <span class="muted small">${h(c.id)} · ${h(roleName(c.role_id))}${c.location ? " · " + h(c.location) : ""}</span>
           <div class="chips">${callPill(c.agent_call)}${confWord(c.confidence)}${c.your_call ? `<span class="muted small">you:</span>${callPill(c.your_call)}` : ""}</div>
