@@ -338,6 +338,8 @@ details.more .inner{margin-top:10px}
 .sctable .pill{margin-top:4px}
 .sc{font-size:20px;font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums;line-height:1}
 .scnote{display:block;font-size:12.5px;color:var(--text);margin-top:4px;line-height:1.45}
+/* The AI card's summary carries the answers per question, one per line (27 Oct). */
+.scsum{white-space:pre-line}
 details.q{margin-top:4px;font-size:12.5px}
 details.q summary{cursor:pointer;color:var(--muted);font-family:var(--m);font-size:11px}
 details.q ul{margin:4px 0 0;padding-left:16px;display:flex;flex-direction:column;gap:4px;font-style:italic}
