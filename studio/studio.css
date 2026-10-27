@@ -422,3 +422,12 @@ ul.roles q{display:block;quotes:none;border-left:3px solid var(--warn-bg);paddin
 .cvblock dl.qa dd{margin:0}
 @media (max-width:560px){ul.roles li{grid-template-columns:1fr}}
 .chip.cvopen{background:var(--ink);color:var(--card);border-color:var(--ink);font-weight:600}
+/* Candidates table, compact (27 Oct): two-line headline and next step, so Next step and Due fit without scrolling */
+.clamp2{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+td.cname{min-width:170px;max-width:260px}
+td.cname .name{display:block}
+td.csrc{max-width:150px}
+td.cnext{min-width:140px;max-width:220px}
+td.nowrap{white-space:nowrap}
+.tablewrap.cands table{min-width:0}
+.tablewrap.cands th,.tablewrap.cands td{padding:12px 10px}

@@ -283,12 +283,14 @@
     const agentSel = `<select id="fagent" aria-label="Agent call">${opt("all", "Agent call: any", state.agentFilter)}${[["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"], ["none", "Not read yet"]].concat(agentCounts.blind ? [["blind", "Hidden, blind batch"]] : []).map(([v, l]) => opt(v, `Agent call: ${l} (${agentCounts[v] || 0})`, state.agentFilter)).join("")}</select>`;
     const confSel = `<select id="fconf" aria-label="Confidence">${opt("all", "Confidence: any", state.confFilter)}${[["High", "High"], ["Medium", "Medium"], ["Low", "Low"]].map(([v, l]) => opt(v, `Confidence: ${l} (${confCounts[v] || 0})`, state.confFilter)).join("")}</select>`;
     const cvSel = `<select id="fcv" aria-label="CV check">${opt("all", "CV check: any", state.cvFilter)}${[["Pass", "Pass"], ["Not pass", "Not pass"], ["none", "Not checked"]].map(([v, l]) => opt(v, `CV check: ${l} (${cvCounts[v] || 0})`, state.cvFilter)).join("")}</select>`;
-    const cols = [["Name", "name"], ["Role", ""], ["Source", ""], ["Applied", "applied"], ["Agent call", "agent"], ["Confidence", "conf"], ["Your call", "your"], ["Stage", "stage"], ["Next step", ""], ["Due", "due"]];
+    // Compact (Kostya, 27 Oct): role sits above the source, confidence under Claude's call, long text clamps to two lines,
+    // so Next step and Due fit without scrolling sideways
+    const cols = [["Name", "name"], ["Role · source", ""], ["Applied", "applied"], ["Claude", "agent"], ["Your call", "your"], ["Stage", "stage"], ["Next step", ""], ["Due", "due"]];
     const th = ([label, key]) => key ? `<th><button type="button" class="sorth" data-sort="${key}" aria-sort="${sk === key ? (sd > 0 ? "ascending" : "descending") : "none"}">${h(label)}<span class="arrow">${sk === key ? (sd > 0 ? "↑" : "↓") : "↕"}</span></button></th>` : `<th>${h(label)}</th>`;
     view.innerHTML = head("Candidates", `${list.length} of ${state.candidates.length}`, `<button type="button" class="btn" id="add">Add candidate</button>`) +
       `<div class="toolbar"><input type="search" id="q" placeholder="Search name, headline, source, stage" value="${h(state.search)}">${srcSel}${agentSel}${confSel}${callSel}${cvSel}${roleSeg()}</div>
-      ${list.length ? `<div class="tablewrap"><table><thead><tr>${cols.map(th).join("")}</tr></thead><tbody>${
-        list.map((c) => `<tr class="clickable" data-id="${h(c.id)}"><td><span class="name">${h(c.name)}</span><br><span class="muted">${h(c.headline || c.location || "")}</span></td><td>${h(roleName(c.role_id))}</td><td>${h(c.sources)}${c.referred_by ? `<br><span class="muted">referred by ${h(c.referred_by)}</span>` : ""}</td><td>${h(fmt(c.applied))}</td><td>${blindNow(c) ? pill("blind") : callPill(c.agent_call)}</td><td>${blindNow(c) ? "" : confWord(c.confidence)}</td><td>${callPill(c.your_call)}</td><td>${pill(c.stage || "applied")}</td><td>${h(c.next_step)}</td><td>${h(fmt(c.due))}</td></tr>`).join("")}</tbody></table></div>`
+      ${list.length ? `<div class="tablewrap cands"><table><thead><tr>${cols.map(th).join("")}</tr></thead><tbody>${
+        list.map((c) => `<tr class="clickable" data-id="${h(c.id)}"><td class="cname"><span class="name">${h(c.name)}</span><span class="muted clamp2">${h(c.headline || c.location || "")}</span></td><td class="csrc"><span class="muted small">${h(roleName(c.role_id))}</span><br>${h(sourceShort(c.sources))}${c.referred_by ? `<br><span class="muted">referred by ${h(c.referred_by)}</span>` : ""}</td><td class="nowrap">${h(fmt(c.applied))}</td><td>${blindNow(c) ? pill("blind") : callPill(c.agent_call)}${blindNow(c) || !c.confidence ? "" : `<br>${confWord(c.confidence)}`}</td><td>${callPill(c.your_call)}</td><td>${pill(c.stage || "applied")}</td><td class="cnext"><span class="clamp2" title="${h(c.next_step)}">${h(c.next_step)}</span></td><td class="nowrap">${h(fmt(c.due))}</td></tr>`).join("")}</tbody></table></div>`
         : `<div class="card empty">No candidates match. They arrive from the jobs site, LinkedIn and Work.ua through the daily check-in, or add one by hand.</div>`}`;
     const qel = $("#q", view);
     qel.addEventListener("input", (e) => { state.search = e.target.value; renderCandidates(view); qel.focus(); });
@@ -312,6 +314,20 @@
     return `<a class="chip link" href="${h(u)}" target="_blank" rel="noopener" title="${h(u)}">${h(label)} ↗</a>`;
   }
   const urlsIn = (text) => (String(text || "").match(/https?:\/\/[^\s,;]+/g) || []);
+  // Platform and country only: "LinkedIn Denmark, LinkedIn message" reads "LinkedIn Denmark"; the channel detail stays in the record
+  function sourceShort(src) {
+    const out = [];
+    for (let p of String(src || "").split(/\s*,\s*/).map((x) => x.trim()).filter(Boolean)) {
+      if (/^via\b/i.test(p)) continue;
+      if (/^linkedin (message|application|inmail)$/i.test(p)) p = "LinkedIn";
+      else if (/^email\b/i.test(p)) p = "Email";
+      else if (/^jobs? site$/i.test(p)) p = "Jobs site";
+      if (p === "LinkedIn" && out.some((o) => /^LinkedIn /.test(o))) continue;
+      if (/^LinkedIn /.test(p)) { const i = out.indexOf("LinkedIn"); if (i >= 0) out.splice(i, 1); }
+      if (!out.includes(p)) out.push(p);
+    }
+    return out.join(", ");
+  }
   // First lines as rows: "Now: <title>, <employer> (<dates>): <first bullet>", "Before: …", "Also now: …" (scorecard v0.4, word for word).
   function parseLines(text) {
     return String(text || "").split(/\n+/).map((l) => l.trim()).filter(Boolean).map((l) => {
