@@ -402,5 +402,22 @@ details.group[open]>summary::before{content:"▾ "}
 .cvcheck{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:6px 0 10px}
 .cvcheck .seg button[data-v="Not pass"][aria-pressed="true"]{background:var(--bad-bg);color:var(--bad)}
 .cvcheck .seg button[data-v="Pass"][aria-pressed="true"]{background:var(--ok-bg);color:var(--ok)}
-.firstlines{background:var(--warn-bg);border-radius:10px;padding:10px 12px;margin:4px 0 8px}
-.firstlines p{margin:4px 0 0;font-size:14px;line-height:1.45}
+.firstlines{margin:4px 0 8px}
+.firstlines>.lbl{display:block;margin-bottom:6px}
+
+/* The CV as data: roles newest first, the first lines quoted word for word */
+.cvblock{display:flex;flex-direction:column;gap:8px;padding:12px 14px;background:var(--bg);border:1px solid var(--line);border-radius:10px;margin-top:4px}
+.cvhead{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.cvhead .chips{margin-left:auto}
+ul.roles{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+ul.roles li{display:grid;grid-template-columns:64px 1fr;gap:10px;align-items:start}
+ul.roles li>.pill{justify-self:start;margin-top:1px}
+ul.roles .rbody{display:flex;flex-direction:column;gap:3px;min-width:0}
+ul.roles .rhead{line-height:1.4}
+ul.roles .etitle{color:var(--ink);font-weight:600}
+ul.roles .eorg{color:var(--text)}
+ul.roles q{display:block;quotes:none;border-left:3px solid var(--warn-bg);padding:2px 0 2px 10px;color:var(--ink);line-height:1.45;overflow-wrap:anywhere}
+.cvblock dl.qa{display:grid;grid-template-columns:minmax(100px,140px) 1fr;gap:4px 14px;margin:2px 0 0}
+.cvblock dl.qa dt{color:var(--muted);font-size:13px}
+.cvblock dl.qa dd{margin:0}
+@media (max-width:560px){ul.roles li{grid-template-columns:1fr}}

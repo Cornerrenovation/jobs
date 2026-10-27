@@ -304,10 +304,38 @@
   const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch (e) { return u; } };
   function linkChip(u, forcedLabel) {
     const host = hostOf(u);
-    const label = forcedLabel || (/linkedin\.com\/hiring\/applicants/.test(u) ? "LinkedIn application" : /linkedin\.com/.test(host) ? "LinkedIn" :/drive\.google\.com|docs\.google\.com/.test(host) ? "CV · in hello@'s Drive" : /instagram\.com/.test(host) ? "Instagram · " + (u.match(/instagram\.com\/([^/?]+)/) || [])[1] : /behance|dribbble|framer|notion|figma|vimeo|youtube/.test(host) ? host : host);
+    const label = forcedLabel || (/linkedin\.com\/hiring\/applicants/.test(u) ? "CV on LinkedIn · application" : /linkedin\.com/.test(host) ? "LinkedIn" :/drive\.google\.com|docs\.google\.com/.test(host) ? "CV · in hello@'s Drive" : /instagram\.com/.test(host) ? "Instagram · " + (u.match(/instagram\.com\/([^/?]+)/) || [])[1] : /behance|dribbble|framer|notion|figma|vimeo|youtube/.test(host) ? host : host);
     return `<a class="chip link" href="${h(u)}" target="_blank" rel="noopener" title="${h(u)}">${h(label)} ↗</a>`;
   }
   const urlsIn = (text) => (String(text || "").match(/https?:\/\/[^\s,;]+/g) || []);
+  // First lines as rows: "Now: <title>, <employer> (<dates>): <first bullet>", "Before: …", "Also now: …" (scorecard v0.4, word for word).
+  function parseLines(text) {
+    return String(text || "").split(/\n+/).map((l) => l.trim()).filter(Boolean).map((l) => {
+      const m = l.match(/^(Now|Before|Also now)\s*:\s*(.+?)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)\s*:\s*([\s\S]*)$/i);
+      if (!m) return { tag: "", head: l, dates: "", line: "" };
+      const head = m[2], i = head.indexOf(", ");
+      return { tag: m[1], title: i > 0 ? head.slice(0, i) : head, employer: i > 0 ? head.slice(i + 2) : "", dates: m[3], line: m[4].trim() };
+    });
+  }
+  const tagPill = (t) => t ? `<span class="pill ${/^now|also/i.test(t) ? "ok" : ""}">${h(t.toLowerCase())}</span>` : `<span class="rtag-empty"></span>`;
+  function firstLinesHtml(c) {
+    const rows = parseLines(c.first_lines);
+    if (!rows.length) return "";
+    return `<div class="firstlines"><span class="lbl">First lines, word for word from the CV</span><ul class="roles">${rows.map((r) => r.tag
+      ? `<li>${tagPill(r.tag)}<div class="rbody"><div class="rhead"><span class="etitle">${h(r.title)}</span>${r.employer ? ` <span class="muted">·</span> <span class="eorg">${h(r.employer)}</span>` : ""}${r.dates ? ` <span class="cmeta">${h(r.dates)}</span>` : ""}</div>${r.line && r.line !== "(no bullet)" ? `<q>${h(r.line)}</q>` : `<span class="muted small">No line under this role</span>`}</div></li>`
+      : `<li>${tagPill("")}<div class="rbody">${h(r.head)}</div></li>`).join("")}</ul></div>`;
+  }
+  // The CV as data (cv_struct, 27 Oct): the file and its link, the roles newest first, then languages, education and portfolio.
+  function cvBlock(c) {
+    let d = null; try { d = c.cv_struct ? JSON.parse(c.cv_struct) : null; } catch (e) { d = null; }
+    const cvLinks = urlsIn(c.cv).filter((u) => /linkedin\.com\/hiring\/applicants|drive\.google\.com|docs\.google\.com/.test(u));
+    if (!d && !c.first_lines && !cvLinks.length) return "";
+    const roles = (d && d.roles) || [];
+    return `<div class="cvblock"><div class="cvhead"><span class="lbl">CV</span>${d && d.file ? `<span class="cmeta">${h(d.file)}</span>` : ""}<div class="chips">${cvLinks.map((u) => linkChip(u)).join("")}</div></div>
+      ${roles.length ? `<ul class="roles">${roles.map((r) => `<li>${tagPill(r.when === "earlier" ? "" : r.when)}<div class="rbody"><div class="rhead"><span class="etitle">${h(r.title)}</span>${r.employer ? ` <span class="muted">·</span> <span class="eorg">${h(r.employer)}</span>` : ""}${r.dates ? ` <span class="cmeta">${h(r.dates)}</span>` : ""}</div>${r.what ? (r.when === "earlier" ? `<span class="small">${h(r.what)}</span>` : `<q>${h(r.what)}</q>`) : r.when !== "earlier" ? `<span class="muted small">No line under this role in the CV</span>` : ""}</div></li>`).join("")}</ul>`
+        : firstLinesHtml(c)}
+      ${d && (d.languages || d.education || (d.portfolio || []).length || d.other) ? `<dl class="qa">${d.languages ? `<dt>Languages</dt><dd>${h(d.languages)}</dd>` : ""}${d.education ? `<dt>Education</dt><dd>${h(d.education)}</dd>` : ""}${(d.portfolio || []).length ? `<dt>Portfolio</dt><dd>${d.portfolio.map((u) => /^https?:/.test(u) ? linkChip(u) : h(u)).join(" ")}</dd>` : ""}${d.other ? `<dt>Also</dt><dd class="long">${h(d.other)}</dd>` : ""}</dl>` : ""}</div>`;
+  }
   // Screening answers as a structured block. LinkedIn imports join their parts with " · ": question-and-answer pairs, LinkedIn's own
   // match, the experience lines (title — company • years) and whether a resume is attached. Notes from the jobs site, Work.ua and the
   // robots' CV reads are "Label: text" segments. Anything else stays as written.
@@ -336,6 +364,7 @@
   }
   function screeningBlock(c) {
     const s = parseScreening(c.screening);
+    if (c.cv_struct || c.first_lines) s.notes = s.notes.filter(([l]) => !/^CV( \(LinkedIn resume\))?$/.test(l));
     if (!s.qa.length && !s.exp.length && !s.match && !s.resume && !s.notes.length) return "";
     const expRow = (e) => { const [title, rest] = e.split(/\s+—\s+/); const [org, years] = String(rest || "").split(/\s+•\s+/);
       return `<li><span class="etitle">${h(title)}</span>${org ? ` <span class="muted">·</span> <span class="eorg">${h(org)}</span>` : ""}${years ? ` <span class="cmeta">${h(years)}</span>` : ""}</li>`; };
@@ -350,7 +379,6 @@
     : (r.result === "met" ? ["yes", "ok"] : r.result === "not met" ? ["no", ""] : ["unclear", "warn"]);
   function readBlock(c) {
     if (blindNow(c)) return `<section class="block read"><div class="readhead"><div><span class="eyebrow">2 · Claude's read</span><h3 class="muted">Hidden until you save Your call</h3></div><span class="cmeta">${h(c.calib_batch)}</span></div>
-      ${c.first_lines ? `<div class="firstlines"><span class="lbl">First lines, word for word</span><p>${h(c.first_lines).replace(/\n+/g, "<br>")}</p></div>` : ""}
       <p class="muted small">This record is in a blind calibration batch: open the CV, set the CV check and Your call with a reason, and save. Claude's call shows after that and counts toward the agreement on the Calibration tab.</p></section>`;
     // A role can carry two scorecard versions (Brand & Content: v0.3 bc-*, v0.4 bc4-*): show the set this record was read with,
     // or the newest set when it hasn't been read yet.
@@ -368,7 +396,6 @@
     if (!c.agent_call && !res.length) return `<section class="block">${head}<p class="muted">The next robot run reads the application against the ${h(roleName(c.role_id))} scorecard: completeness, knockouts, markers, then a proposal.</p></section>`;
     return `<section class="block read">${head}
       ${c.why ? `<p class="why">${h(c.why)}</p>` : ""}
-      ${c.first_lines ? `<div class="firstlines"><span class="lbl">First lines, word for word</span><p>${h(c.first_lines).replace(/\n+/g, "<br>")}</p></div>` : ""}
       ${ko.length ? `<div class="critgroup"><span class="lbl">Knockouts · ${count(ko, (r) => r.result === "not met")} failed of ${ko.length}</span><ul class="critlist">${ko.map(row).join("")}</ul></div>` : ""}
       ${plus.length ? `<div class="critgroup"><span class="lbl">Markers for · ${count(plus, (r) => r.result === "met")} of ${plus.length}</span><ul class="critlist">${plus.map(row).join("")}</ul></div>` : ""}
       ${minus.length ? `<div class="critgroup"><span class="lbl">Red flags · ${count(minus, (r) => r.result === "met")} of ${minus.length}</span><ul class="critlist">${minus.map(row).join("")}</ul></div>` : ""}
@@ -386,11 +413,12 @@
     const furthest = id && reachedIdx(c) > stageIdx(c.stage || "applied") ? stageWord(reachedOf(c)) : "";
     const links = [];
     if (c.linkedin) links.push(linkChip(c.linkedin, "LinkedIn"));
-    urlsIn(c.cv).forEach((u) => links.push(linkChip(u)));
+    urlsIn(c.cv).filter((u) => !/linkedin\.com\/hiring\/applicants|drive\.google\.com|docs\.google\.com/.test(u)).forEach((u) => links.push(linkChip(u)));
     const eyebrow = id ? [c.id, roleName(c.role_id) + (isClosedRole(role) ? " (earlier round)" : ""), c.sources, c.applied ? "applied " + fmt(c.applied) : ""].filter(Boolean).join(" · ") : roleName(c.role_id);
     const application = id ? `<section class="block"><span class="eyebrow">1 · From the application</span>
         <dl class="kv">${kv("Location", c.location)}${kv("Email", c.email)}${kv("English, self-rated", c.english)}${kv("Headline", c.headline)}${kv("Referred by", c.referred_by)}${kv("Furthest stage", furthest)}${kv("Scores", c.scores)}${kv("Latest reply", c.latest_reply)}${kv("Last contact", c.last_contact)}</dl>
         ${screeningBlock(c)}
+        ${cvBlock(c)}
         ${links.length ? `<div class="links"><span class="lbl">Links she or he gave</span><div class="chips">${links.join("")}</div>${/drive\.google\.com/.test(c.cv || "") ? `<span class="muted small">The CV sits in hello@'s Drive. If the link asks for access, hello@ needs to share the "Corner Careers — Applications" folder with you once.</span>` : ""}</div>` : ""}
         ${cvCheck(c)}
         ${c.site_answer ? `<div class="answer"><span class="lbl">Written answer</span><p>${h(c.site_answer).replace(/\n+/g, "<br>")}</p></div>` : ""}</section>` : "";
@@ -622,6 +650,8 @@
   // Holds and Declines get a person's call too, so the block offers a fixed random sample of them.
   const rulesOf = (c) => { const m = /v\d+(\.\d+)*/.exec((c.rules_version || "").split(" · ")[0]); return m ? m[0] : "no version"; };
   const pickOrder = (id) => [...String(id)].reduce((s, ch) => (s * 31 + ch.charCodeAt(0)) >>> 0, 7);
+  // Claude never judges CV design; your "Not pass" on the CV check makes the effective call a Decline (scorecard v0.4, K1).
+  const claudeCall = (c) => c.cv_check === "Not pass" && c.agent_call ? "Decline" : c.agent_call;
   function triageBlock() {
     const groups = {}, C = ["Shortlist", "Hold", "Decline"];
     (state.candidates || []).filter((c) => C.includes(c.agent_call) && !/DUPLICATE/.test(c.name || "")).forEach((c) => {
@@ -634,29 +664,29 @@
     const eyebrow = `<span class="eyebrow">Triage · Claude's call vs Your call</span>`;
     if (!list.length) return `<div class="group">${eyebrow}<div class="card empty">Nobody has set Your call on a record Claude read yet.</div></div>`;
     const g = list.find((x) => x.key === state.calGroup) || list[0];
-    const n = (arr, a, y) => arr.filter((c) => (!a || c.agent_call === a) && (!y || c.your_call === y)).length;
+    const n = (arr, a, y) => arr.filter((c) => (!a || claudeCall(c) === a) && (!y || c.your_call === y)).length;
     const pct = (x, d) => d ? Math.round(100 * x / d) + "%" : "–";
     const label = (x) => `${roleName(x.role)} · ${x.ver}`;
-    const rows = list.map((x) => { const d = x.done, agree = d.filter((c) => c.agent_call === c.your_call).length, sl = n(d, "Shortlist");
-      const miss = d.filter((c) => c.your_call === "Shortlist" && c.agent_call !== "Shortlist").length;
+    const rows = list.map((x) => { const d = x.done, agree = d.filter((c) => claudeCall(c) === c.your_call).length, sl = n(d, "Shortlist");
+      const miss = d.filter((c) => c.your_call === "Shortlist" && claudeCall(c) !== "Shortlist").length;
       return `<tr${x === g ? ' class="here"' : ""}><td><span class="name">${h(label(x))}</span></td><td>${d.length} <span class="muted">${d.length >= 50 ? "· complete" : "of 50"}</span></td><td>${pct(agree, d.length)} <span class="muted">${agree}</span></td>
         <td>${sl ? `${n(d, "Shortlist", "Shortlist")} of ${sl}` : "–"}</td><td>${miss}</td><td>${n(d, "Shortlist", "Decline")}</td><td>${C.map((a) => `${n(d, a)}/${n(x.all, a)}`).join(" · ")}</td></tr>`; });
     const mx = C.map((a) => `<tr><th>${callPill(a)}</th>${C.map((y) => `<td class="${a === y ? "diag" : ""}">${n(g.done, a, y) || ""}</td>`).join("")}<td>${n(g.done, a)}</td><td class="muted">${n(g.all, a) - n(g.done, a)}</td></tr>`).join("");
     const off = g.done.filter((c) => c.agent_call !== c.your_call).sort((a, b) => CALL_RANK[a.your_call] - CALL_RANK[b.your_call] || (a.name || "").localeCompare(b.name || ""));
-    const same = g.done.filter((c) => c.agent_call === c.your_call);
-    const open = g.all.filter((c) => !c.your_call && !c.calib_batch && c.agent_call !== "Shortlist" && !CLOSED.includes(c.stage)).sort((a, b) => pickOrder(a.id) - pickOrder(b.id));
+    const same = g.done.filter((c) => claudeCall(c) === c.your_call);
+    const open = g.all.filter((c) => !c.your_call && !c.calib_batch && claudeCall(c) !== "Shortlist" && !CLOSED.includes(c.stage)).sort((a, b) => pickOrder(a.id) - pickOrder(b.id));
     const batches = {};
     (state.candidates || []).filter((c) => c.calib_batch).forEach((c) => { (batches[c.calib_batch] = batches[c.calib_batch] || []).push(c); });
     const sample = Object.keys(batches).length ? [] : [...open.filter((c) => c.agent_call === "Hold").slice(0, 10), ...open.filter((c) => c.agent_call === "Decline").slice(0, 5)];
-    const batchHtml = Object.entries(batches).map(([name, m]) => { const d = m.filter((c) => C.includes(c.your_call)), agree = d.filter((c) => c.agent_call === c.your_call).length;
-      const miss = d.filter((c) => c.your_call === "Shortlist" && c.agent_call !== "Shortlist").length, left = m.filter((c) => !c.your_call).sort((a, b) => pickOrder(a.id) - pickOrder(b.id));
+    const batchHtml = Object.entries(batches).map(([name, m]) => { const d = m.filter((c) => C.includes(c.your_call)), agree = d.filter((c) => claudeCall(c) === c.your_call).length;
+      const miss = d.filter((c) => c.your_call === "Shortlist" && claudeCall(c) !== "Shortlist").length, left = m.filter((c) => !c.your_call).sort((a, b) => pickOrder(a.id) - pickOrder(b.id));
       return `<div class="group"><span class="eyebrow">Blind batch · ${h(name)} · ${d.length} of ${m.length} decided${d.length ? ` · same call ${agree} of ${d.length} (${pct(agree, d.length)}) · misses ${miss} · noise ${n(d, "Shortlist", "Decline")}` : ""}</span>
         ${left.length ? `<p class="muted small">Claude's call stays hidden on these until you save yours. Open one, look at the CV, set the CV check and Your call with a reason.</p><div class="chips">${left.map((c) => `<button type="button" class="chip linkbtn" data-bopen="${h(c.id)}">${h(c.name)}</button>`).join("")}</div>` : `<p class="muted small">All decided.</p>`}</div>`; }).join("");
     const row = (c) => `<tr class="clickable" data-id="${h(c.id)}"><td><span class="name">${h(c.name)}</span><br><span class="muted">${h(c.id)}</span></td>
-      <td>${callPill(c.agent_call)} ${confWord(c.confidence)}<br><span class="muted small">${h(c.why)}</span></td><td>${callPill(c.your_call)}</td><td>${h(c.your_reason) || '<span class="muted">no reason</span>'}</td></tr>`;
+      <td>${callPill(claudeCall(c))}${c.cv_check === "Not pass" ? ' <span class="muted small">your CV check</span>' : ""} ${confWord(c.confidence)}<br><span class="muted small">${h(c.why)}</span></td><td>${callPill(c.your_call)}</td><td>${h(c.your_reason) || '<span class="muted">no reason</span>'}</td></tr>`;
     return `${batchHtml}<div class="group">${eyebrow}${list.length > 1 ? seg("calgroup", list.map((x) => [x.key, label(x)]), g.key) : ""}
       ${table(["Role · rules", "Decided", "Same call", "Claude's Shortlists kept", "Misses", "Noise", "Decided of Claude's Shortlist · Hold · Decline"], rows)}
-      <p class="muted small">One measurement per scorecard version: a new version starts a new row, so the current one stays the baseline. A measurement closes at 50 decided records. Misses can only appear where Claude's Holds and Declines also get Your call: ${n(g.done, "Hold") + n(g.done, "Decline")} of ${n(g.all, "Hold") + n(g.all, "Decline")} so far for ${h(label(g))}.</p></div>
+      <p class="muted small">One measurement per scorecard version: a new version starts a new row, so the current one stays the baseline. Your CV check "Not pass" counts as Claude\'s Decline, since only you judge the CV\'s design. A measurement closes at 50 decided records. Misses can only appear where Claude's Holds and Declines also get Your call: ${n(g.done, "Hold") + n(g.done, "Decline")} of ${n(g.all, "Hold") + n(g.all, "Decline")} so far for ${h(label(g))}.</p></div>
       <div class="group"><span class="eyebrow">${h(label(g))} · rows are Claude's call, columns Your call</span><div class="tablewrap"><table class="mx"><thead><tr><th></th>${C.map((y) => `<th>${h(y)}</th>`).join("")}<th>Decided</th><th>Not decided</th></tr></thead><tbody>${mx}</tbody></table></div></div>
       <div class="group"><span class="eyebrow">Different calls · ${off.length}</span>${off.length ? table(["Candidate", "Claude", "Your call", "Your reason"], off.map(row)) : '<p class="muted">None.</p>'}</div>
       ${same.length ? `<details class="group"><summary class="eyebrow">Same call · ${same.length}</summary>${table(["Candidate", "Claude", "Your call", "Your reason"], same.map(row))}</details>` : ""}
