@@ -340,7 +340,7 @@
     if (!d && !c.first_lines && !cvLinks.length && !c.cv_file && !owed) return "";
     const roles = (d && d.roles) || [];
     return `<div class="cvblock"><div class="cvhead"><span class="lbl">CV</span>${d && d.file ? `<span class="cmeta">${h(d.file)}</span>` : ""}<div class="chips">${cvOpen(c)}${cvLinks.map((u) => linkChip(u)).join("")}</div></div>
-      ${owed ? `<p class="muted small">Open CV is added at the next robot run: 12:00 daily, and 14:00, 17:00 and 20:00 on weekdays.</p>` : ""}
+      ${owed ? `<p class="muted small">Open CV is added at the next robot run: 14:00 daily, and 17:00 and 20:00 on weekdays.</p>` : ""}
       ${roles.length ? `<ul class="roles">${roles.map((r) => `<li>${tagPill(r.when === "earlier" ? "" : r.when)}<div class="rbody"><div class="rhead"><span class="etitle">${h(r.title)}</span>${r.employer ? ` <span class="muted">·</span> <span class="eorg">${h(r.employer)}</span>` : ""}${r.dates ? ` <span class="cmeta">${h(r.dates)}</span>` : ""}</div>${r.what ? (r.when === "earlier" ? `<span class="small">${h(r.what)}</span>` : `<q>${h(r.what)}</q>`) : r.when !== "earlier" ? `<span class="muted small">No line under this role in the CV</span>` : ""}</div></li>`).join("")}</ul>`
         : firstLinesHtml(c)}
       ${d && (d.languages || d.education || (d.portfolio || []).length || d.other) ? `<dl class="qa">${d.languages ? `<dt>Languages</dt><dd>${h(d.languages)}</dd>` : ""}${d.education ? `<dt>Education</dt><dd>${h(d.education)}</dd>` : ""}${(d.portfolio || []).length ? `<dt>Portfolio</dt><dd>${d.portfolio.map((u) => /^https?:/.test(u) ? linkChip(u) : h(u)).join(" ")}</dd>` : ""}${d.other ? `<dt>Also</dt><dd class="long">${h(d.other)}</dd>` : ""}</dl>` : ""}</div>`;
@@ -773,8 +773,10 @@
   }
 
   function openRecord(title, eyebrow, html) {
-    const d = $("#recdlg"); $("#rectitle").textContent = title; $("#receyebrow").textContent = eyebrow; $("#recbody").innerHTML = html; $("#recbody").scrollTop = 0;
+    const d = $("#recdlg"), body = $("#recbody"); $("#rectitle").textContent = title; $("#receyebrow").textContent = eyebrow; body.innerHTML = html;
     if (!d.open) (d.showModal ? d.showModal() : d.setAttribute("open", ""));
+    // Back to the top once the dialog is shown: a closed dialog ignores scrollTop, so the next record used to open where the last one was left
+    body.scrollTop = 0; requestAnimationFrame(() => { body.scrollTop = 0; });
   }
   // Closing a record opened from a link leaves the address at the list, so a reload doesn't open it again.
   const leaveLink = () => { if (/^#candidates\//.test(location.hash)) history.replaceState(null, "", "#candidates"); };
