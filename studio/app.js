@@ -335,8 +335,8 @@
   function cvBlock(c) {
     let d = null; try { d = c.cv_struct ? JSON.parse(c.cv_struct) : null; } catch (e) { d = null; }
     const cvLinks = urlsIn(c.cv).filter((u) => /linkedin\.com\/hiring\/applicants|drive\.google\.com|docs\.google\.com/.test(u));
-    // Kostya, 27 Oct: every Brand & Content and TA candidate he shortlisted, and every Claude Shortlist he hasn't called, gets Open CV
-    const owed = !c.cv_file && ["bc", "ta"].includes(familyOf(roleOf(c.role_id))) && (c.your_call === "Shortlist" || (!c.your_call && c.agent_call === "Shortlist"));
+    // Kostya, 27 Oct: every Brand & Content and TA Shortlist and Hold (his, or Claude's he hasn't called) gets Open CV
+    const owed = !c.cv_file && ["bc", "ta"].includes(familyOf(roleOf(c.role_id))) && (["Shortlist", "Hold"].includes(c.your_call) || (!c.your_call && ["Shortlist", "Hold"].includes(c.agent_call)));
     if (!d && !c.first_lines && !cvLinks.length && !c.cv_file && !owed) return "";
     const roles = (d && d.roles) || [];
     return `<div class="cvblock"><div class="cvhead"><span class="lbl">CV</span>${d && d.file ? `<span class="cmeta">${h(d.file)}</span>` : ""}<div class="chips">${cvOpen(c)}${cvLinks.map((u) => linkChip(u)).join("")}</div></div>
