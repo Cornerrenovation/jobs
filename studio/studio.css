@@ -340,6 +340,15 @@ details.more .inner{margin-top:10px}
 .scnote{display:block;font-size:12.5px;color:var(--text);margin-top:4px;line-height:1.45}
 /* The AI card's summary carries the answers per question, one per line (27 Oct). */
 .scsum{white-space:pre-line}
+/* The interview script on the card (27 Oct): a Markdown prep sheet. */
+.mdoc h3{font-size:17px;margin:20px 0 6px}
+.mdoc h4,.mdoc h5,.mdoc h6{font-size:15px;margin:16px 0 6px}
+.mdoc p{margin:6px 0;line-height:1.5;font-size:14px}
+.mdoc ul,.mdoc ol{margin:6px 0 8px 20px;padding:0;font-size:14px;line-height:1.5}
+.mdoc .tablewrap{margin:8px 0}
+.mdoc table{font-size:13px;min-width:560px}
+.mdoc th,.mdoc td{padding:8px 10px}
+.mdoc code{font-family:var(--m);font-size:12.5px}
 details.q{margin-top:4px;font-size:12.5px}
 details.q summary{cursor:pointer;color:var(--muted);font-family:var(--m);font-size:11px}
 details.q ul{margin:4px 0 0;padding-left:16px;display:flex;flex-direction:column;gap:4px;font-style:italic}

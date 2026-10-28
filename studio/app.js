@@ -468,7 +468,7 @@
         <label class="full"><span class="lbl">Notes</span><textarea name="notes">${h(c.notes)}</textarea></label>
         <div class="formfoot full"><span class="saved" id="csaved"></span><button type="submit" class="btn">${id ? "Save" : "Add"}</button></div>
       </form>${id ? leadBlock(c, role, lead) : ""}</section>`;
-    openRecord(id ? c.name : "New candidate", eyebrow, application + (id ? readBlock(c) + screenSection(c) : "") + form + (id ? scoreBlock(c) : ""));
+    openRecord(id ? c.name : "New candidate", eyebrow, (id && scriptDue(c) ? scriptBlock(c) : "") + application + (id ? readBlock(c) + screenSection(c) : "") + form + (id ? (scriptDue(c) ? "" : scriptBlock(c)) + scoreBlock(c) : ""));
     if (id) { bindScoreBlock(c); bindScreen($("#recbody"), async () => { forget(); await render(true); await openCandidate(id); }); bindCvCheck($("#recbody"), () => render(true)); }
     const f = $("#cform");
     bindSeg(f, "yourcall", (v) => { const cur = $('input[name="your_call"]', f); cur.value = cur.value === v ? "" : v; f.querySelectorAll('[data-seg="yourcall"] button').forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === cur.value)); });
@@ -539,6 +539,44 @@
         ${c.latest_reply ? `<div class="answer"><span class="lbl">Latest reply</span><p>${h(c.latest_reply)}</p></div>` : ""}</div></div>`;
   }
   const screenSection = (c) => blindNow(c) ? "" : inScreening(c) || c.screen_concern ? `<section class="block"><span class="eyebrow">Message screen</span>${screenPanel(c)}</section>` : "";
+  // The interview script (27 Oct): the candidate's prep sheet in Markdown, written before the call and filled with the answers after it.
+  // Rendered safely: everything is escaped first, then a small subset is turned on (headings, tables, lists, bold, code, http links).
+  const mdInline = (t) => h(t).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>').replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1");
+  function mdToHtml(md) {
+    const lines = String(md || "").replace(/\r/g, "").split("\n"), out = [];
+    const isRow = (l) => /^\s*\|.*\|\s*$/.test(l), isItem = (l) => /^\s*([-*]|\d+\.)\s+/.test(l), isHead = (l) => /^#{1,6}\s/.test(l);
+    const cells = (l) => l.trim().replace(/\\\|/g, "\u0001").replace(/^\||\|$/g, "").split("|").map((x) => x.trim().replace(/\u0001/g, "|"));
+    let i = 0;
+    while (i < lines.length) {
+      const l = lines[i];
+      if (!l.trim()) { i++; continue; }
+      const m = l.match(/^(#{1,6})\s+(.*)$/);
+      if (m) { const n = Math.min(m[1].length + 2, 6); out.push(`<h${n}>${mdInline(m[2])}</h${n}>`); i++; continue; }
+      if (isRow(l)) {
+        const rows = []; while (i < lines.length && isRow(lines[i])) rows.push(lines[i++]);
+        const [head, ...rest] = rows.filter((r) => !/^\s*\|[\s:|-]+\|\s*$/.test(r));
+        out.push(`<div class="tablewrap"><table><thead><tr>${cells(head).map((x) => `<th>${mdInline(x)}</th>`).join("")}</tr></thead><tbody>${rest.map((r) => `<tr>${cells(r).map((x) => `<td>${mdInline(x)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
+        continue;
+      }
+      if (isItem(l)) {
+        const ordered = /^\s*\d+\./.test(l), items = [];
+        while (i < lines.length && isItem(lines[i])) { items.push(lines[i++].replace(/^\s*([-*]|\d+\.)\s+/, "")); while (i < lines.length && /^\s{2,}\S/.test(lines[i]) && !isItem(lines[i])) items[items.length - 1] += " " + lines[i++].trim(); }
+        out.push(`<${ordered ? "ol" : "ul"}>${items.map((t) => `<li>${mdInline(t)}</li>`).join("")}</${ordered ? "ol" : "ul"}>`);
+        continue;
+      }
+      const para = []; while (i < lines.length && lines[i].trim() && !isHead(lines[i]) && !isRow(lines[i]) && !isItem(lines[i])) para.push(lines[i++].trim());
+      out.push(`<p>${mdInline(para.join(" "))}</p>`);
+    }
+    return out.join("");
+  }
+  const scriptDue = (c) => /^(interview|screen) booked$/.test(c.stage || "");
+  function scriptBlock(c) {
+    if (!c.interview_sheet) return "";
+    const md = c.interview_sheet.replace(/^\s*#\s+([^\n]+)\n/, ""), title = (c.interview_sheet.match(/^\s*#\s+([^\n]+)/) || [0, "Interview script"])[1];
+    return `<section class="block" id="scriptblock"><span class="eyebrow">Interview script</span>
+      <details class="fold plain mdoc"${scriptDue(c) ? " open" : ""}><summary>${h(title)}</summary>${mdToHtml(md)}</details></section>`;
+  }
   function bindScreen(root, after) {
     root.querySelectorAll(".scrpanel").forEach((p) => {
       const id = p.dataset.sid, ta = $(".scrmsg", p), save = $("[data-savemsg]", p), copy = $("[data-copy]", p), sent = $("[data-sent]", p);
