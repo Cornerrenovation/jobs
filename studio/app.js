@@ -469,7 +469,7 @@
         <div class="formfoot full"><span class="saved" id="csaved"></span><button type="submit" class="btn">${id ? "Save" : "Add"}</button></div>
       </form>${id ? leadBlock(c, role, lead) : ""}</section>`;
     openRecord(id ? c.name : "New candidate", eyebrow, (id && scriptDue(c) ? scriptBlock(c) : "") + application + (id ? readBlock(c) + screenSection(c) : "") + form + (id ? (scriptDue(c) ? "" : scriptBlock(c)) + scoreBlock(c) : ""));
-    if (id) { bindScoreBlock(c); bindScreen($("#recbody"), async () => { forget(); await render(true); await openCandidate(id); }); bindCvCheck($("#recbody"), () => render(true)); }
+    if (id) { bindScoreBlock(c); bindScreen($("#recbody"), async () => { forget(); await render(true); await openCandidate(id); }); bindReply($("#recbody"), async () => { forget(); await render(true); await openCandidate(id); }); bindCvCheck($("#recbody"), () => render(true)); }
     const f = $("#cform");
     bindSeg(f, "yourcall", (v) => { const cur = $('input[name="your_call"]', f); cur.value = cur.value === v ? "" : v; f.querySelectorAll('[data-seg="yourcall"] button').forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === cur.value)); });
     // After a save: everything is re-read (the Worker moves the stage when Your call changes, and keeps reached, hired_at and bounty_due),
@@ -540,11 +540,38 @@
     return `<div class="convo"><span class="lbl">Conversation · ${list.length} message${list.length > 1 ? "s" : ""}${n ? ` · ${n} from ${h(first)}` : " · no reply yet"}</span>
       ${list.map((m) => `<div class="msg ${m.direction === "in" ? "in" : "out"}"><div class="mmeta">${m.direction === "in" ? h(first) : "You"} · ${h(CHANNEL[m.channel] || m.channel)} · ${h(atWord(m.at))}</div><div class="mbody">${linkify(m.body)}</div></div>`).join("")}</div>`;
   }
+  // The reply draft (28 Oct): Claude drafts the next message to someone who replied (reply_draft) with the step it suggests and why
+  // (reply_note). Kostya edits it, sends it himself in the same channel and marks it sent: it joins the conversation and the draft clears.
+  const replyChannel = (c) => (msgsOf(c).filter((m) => m.direction === "in").pop() || {}).channel || (c.linkedin ? "linkedin" : "email");
+  const replyHtml = (c) => !c.reply_draft ? "" : `<div class="replydraft" data-rid="${h(c.id)}"><span class="lbl">Your reply · on ${h(CHANNEL[replyChannel(c)] || replyChannel(c))} · drafted by Claude, nothing is sent</span>
+      ${c.reply_note ? `<p class="rnote">${linkify(c.reply_note)}</p>` : ""}
+      <textarea class="scrmsg rmsg" rows="${Math.min(18, Math.max(5, c.reply_draft.split("\n").reduce((n, l) => n + 1 + Math.floor(l.length / 85), 0)))}" aria-label="Reply to ${h(c.name)}">${h(c.reply_draft)}</textarea>
+      <div class="pact"><button type="button" class="btn small" data-rcopy>Copy</button><button type="button" class="btn ghost small" data-rsave hidden>Save the edit</button>
+        <button type="button" class="btn ghost small" data-rsent>Mark reply sent</button></div></div>`;
+  function bindReply(root, after) {
+    root.querySelectorAll(".replydraft").forEach((p) => {
+      const id = p.dataset.rid, ta = $(".rmsg", p), save = $("[data-rsave]", p), copy = $("[data-rcopy]", p), sent = $("[data-rsent]", p), orig = ta.value;
+      ta.addEventListener("input", () => { save.hidden = ta.value === orig; ta.dataset.dirty = ta.value === orig ? "" : "1"; });
+      copy.addEventListener("click", () => {
+        const ok = () => { copy.textContent = "Copied"; setTimeout(() => { copy.textContent = "Copy"; }, 1600); };
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(ta.value).then(ok, () => { ta.select(); copy.textContent = "Selected: press ⌘C"; });
+        else { ta.select(); copy.textContent = "Selected: press ⌘C"; }
+      });
+      save.addEventListener("click", async () => { save.disabled = true; await api("candidates/" + id, "PATCH", { reply_draft: ta.value }); await after(); });
+      sent.addEventListener("click", async () => {
+        sent.disabled = true;
+        const c = (state.candidates || []).find((x) => x.id === id) || { id }, at = new Date().toISOString();
+        await api("messages/upsert", "POST", [{ candidate_id: id, channel: replyChannel(c), direction: "out", author: "Kostya", at, body: ta.value, ext_id: "studio|" + at }]);
+        await api("candidates/" + id, "PATCH", { reply_draft: "", reply_note: "", last_contact: today() });
+        state.msgs = null; await after();
+      });
+    });
+  }
   async function loadMsgs() {
     if (!state.msgs) { state.msgs = await api("messages"); state.msgsBy = {}; for (const m of state.msgs) (state.msgsBy[m.candidate_id] = state.msgsBy[m.candidate_id] || []).push(m); }
   }
   function screenPanel(c) {
-    if (!c.screen_concern && !c.screen_message) return `<p class="muted small">No concern written yet. Claude writes one for every shortlisted candidate.</p>${convoHtml(c)}`;
+    if (!c.screen_concern && !c.screen_message) return `<p class="muted small">No concern written yet. Claude writes one for every shortlisted candidate.</p>${convoHtml(c)}${replyHtml(c)}`;
     return `<div class="scrpanel" data-sid="${h(c.id)}">
       <div class="scrcol"><span class="lbl">Concern to verify</span><p class="concern">${h(c.screen_concern)}</p></div>
       <div class="scrcol"><span class="lbl">Message to send on LinkedIn</span><textarea class="scrmsg" rows="7" aria-label="Message to ${h(c.name)}">${h(c.screen_message)}</textarea>
@@ -553,7 +580,7 @@
           ${cvOpen(c, "btn small")}
           ${c.linkedin ? `<a class="btn ghost small" href="${h(c.linkedin)}" target="_blank" rel="noopener">LinkedIn ↗</a>` : ""}
           ${urlsIn(c.cv).filter((u) => /linkedin\.com\/hiring\/applicants/.test(u)).map((u) => `<a class="btn ghost small" href="${h(u)}" target="_blank" rel="noopener">Application ↗</a>`).join("")}</div>
-        ${c.latest_reply && !repliedAt(c) ? `<div class="answer"><span class="lbl">Latest reply</span><p>${h(c.latest_reply)}</p></div>` : ""}</div>${convoHtml(c)}</div>`;
+        ${c.latest_reply && !repliedAt(c) ? `<div class="answer"><span class="lbl">Latest reply</span><p>${h(c.latest_reply)}</p></div>` : ""}</div>${convoHtml(c)}${replyHtml(c)}</div>`;
   }
   const screenSection = (c) => blindNow(c) ? "" : inScreening(c) || c.screen_concern ? `<section class="block"><span class="eyebrow">Message screen</span>${screenPanel(c)}</section>` : "";
   // The interview script (27 Oct): the candidate's prep sheet in Markdown, written before the call and filled with the answers after it.
@@ -618,8 +645,8 @@
     const all = state.candidates.filter(inScreening).filter(inRole);
     const pick = { tosend: (c) => !wasSent(c), sent: wasSent, replied: hasReply, all: () => true }[state.screenFilter] || (() => true);
     const list = all.filter(pick).sort((a, b) => (state.screenFilter === "replied" ? repliedAt(b).localeCompare(repliedAt(a)) : 0) || (wasSent(a) - wasSent(b)) || a.role_id.localeCompare(b.role_id) || (CONF_RANK[a.confidence] ?? 3) - (CONF_RANK[b.confidence] ?? 3) || a.name.localeCompare(b.name));
-    const toSend = all.filter((c) => !wasSent(c)).length, noConcern = all.filter((c) => !c.screen_concern).length, replied = all.filter(hasReply).length;
-    view.innerHTML = head("Screening", `One message per shortlisted candidate, asking the one thing we need to verify. ${toSend} to send · ${all.length - toSend} sent · ${replied} replied${noConcern ? ` · ${noConcern} without a concern yet` : ""}`,
+    const toSend = all.filter((c) => !wasSent(c)).length, noConcern = all.filter((c) => !c.screen_concern).length, replied = all.filter(hasReply).length, drafts = all.filter((c) => c.reply_draft).length;
+    view.innerHTML = head("Screening", `One message per shortlisted candidate, asking the one thing we need to verify. ${toSend} to send · ${all.length - toSend} sent · ${replied} replied${drafts ? ` · ${drafts} repl${drafts > 1 ? "ies" : "y"} drafted` : ""}${noConcern ? ` · ${noConcern} without a concern yet` : ""}`,
       seg("scrf", [["tosend", "To send"], ["sent", "Sent"], ["replied", `Replied · ${replied}`], ["all", "All"]], state.screenFilter)) +
       `<div class="toolbar">${roleSeg()}</div>
       <p class="muted small">Everyone you shortlisted, and everyone Claude shortlisted that you haven't called yet. Edit the message if you want, copy it into LinkedIn (the Application button opens their application, where messaging is free), then mark it sent: the candidate moves to "messaged".</p>
@@ -632,6 +659,7 @@
     bindSeg(view, "role", (v) => { state.roleFilter = v; renderScreening(view); });
     view.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => openCandidate(b.dataset.open)));
     bindScreen(view, async () => { state.candidates = null; await renderScreening(view); });
+    bindReply(view, async () => { state.candidates = null; await renderScreening(view); });
     bindCvCheck(view, async () => { await renderScreening(view); });
   }
 
