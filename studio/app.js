@@ -350,16 +350,19 @@
   const cvOpen = (c, cls) => c.cv_file ? `<a class="${cls || "chip link cvopen"}" href="${API}cv/${encodeURIComponent(c.id)}" target="_blank" rel="noopener" title="${h(c.cv_file)}">Open CV ↗</a>` : "";
   function cvBlock(c) {
     let d = null; try { d = c.cv_struct ? JSON.parse(c.cv_struct) : null; } catch (e) { d = null; }
+    if (!d || typeof d !== "object" || Array.isArray(d)) d = null;
     const cvLinks = urlsIn(c.cv).filter((u) => /linkedin\.com\/hiring\/applicants|drive\.google\.com|docs\.google\.com/.test(u));
     // Kostya, 27 Oct: every Brand & Content and TA Shortlist and Hold (his, or Claude's he hasn't called) gets Open CV
     const owed = !c.cv_file && ["bc", "ta"].includes(familyOf(roleOf(c.role_id))) && (["Shortlist", "Hold"].includes(c.your_call) || (!c.your_call && ["Shortlist", "Hold"].includes(c.agent_call)));
     if (!d && !c.first_lines && !cvLinks.length && !c.cv_file && !owed) return "";
-    const roles = (d && d.roles) || [];
+    // A robot once wrote a lone string where a list belongs (30 Oct: "portfolio" as text kept nine records from opening), so take either
+    const list = (x) => (Array.isArray(x) ? x : x ? [x] : []);
+    const roles = list(d && d.roles).filter((r) => r && typeof r === "object"), portfolio = list(d && d.portfolio).map(String);
     return `<div class="cvblock"><div class="cvhead"><span class="lbl">CV</span>${d && d.file ? `<span class="cmeta">${h(d.file)}</span>` : ""}<div class="chips">${cvOpen(c)}${cvLinks.map((u) => linkChip(u)).join("")}</div></div>
       ${owed ? `<p class="muted small">Open CV is added at the next robot run: 14:00 daily, and 17:00 and 20:00 on weekdays.</p>` : ""}
       ${roles.length ? `<ul class="roles">${roles.map((r) => `<li>${tagPill(r.when === "earlier" ? "" : r.when)}<div class="rbody"><div class="rhead"><span class="etitle">${h(r.title)}</span>${r.employer ? ` <span class="muted">·</span> <span class="eorg">${h(r.employer)}</span>` : ""}${r.dates ? ` <span class="cmeta">${h(r.dates)}</span>` : ""}</div>${r.what ? (r.when === "earlier" ? `<span class="small">${h(r.what)}</span>` : `<q>${h(r.what)}</q>`) : r.when !== "earlier" ? `<span class="muted small">No line under this role in the CV</span>` : ""}</div></li>`).join("")}</ul>`
         : firstLinesHtml(c)}
-      ${d && (d.languages || d.education || (d.portfolio || []).length || d.other) ? `<dl class="qa">${d.languages ? `<dt>Languages</dt><dd>${h(d.languages)}</dd>` : ""}${d.education ? `<dt>Education</dt><dd>${h(d.education)}</dd>` : ""}${(d.portfolio || []).length ? `<dt>Portfolio</dt><dd>${d.portfolio.map((u) => /^https?:/.test(u) ? linkChip(u) : h(u)).join(" ")}</dd>` : ""}${d.other ? `<dt>Also</dt><dd class="long">${h(d.other)}</dd>` : ""}</dl>` : ""}</div>`;
+      ${d && (d.languages || d.education || portfolio.length || d.other) ? `<dl class="qa">${d.languages ? `<dt>Languages</dt><dd>${h(d.languages)}</dd>` : ""}${d.education ? `<dt>Education</dt><dd>${h(d.education)}</dd>` : ""}${portfolio.length ? `<dt>Portfolio</dt><dd>${portfolio.map((u) => /^https?:/.test(u) ? linkChip(u) : h(u)).join(" ")}</dd>` : ""}${d.other ? `<dt>Also</dt><dd class="long">${h(d.other)}</dd>` : ""}</dl>` : ""}</div>`;
   }
   // Screening answers as a structured block. LinkedIn imports join their parts with " · ": question-and-answer pairs, LinkedIn's own
   // match, the experience lines (title — company • years) and whether a resume is attached. Notes from the jobs site, Work.ua and the
