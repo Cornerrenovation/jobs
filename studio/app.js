@@ -930,7 +930,7 @@
     else if (!o.replied && !o.message1_sent) acts.push(["Message 1 sent", { message1_sent: t, step: "3", status: "messaged", next_action: "follow-up-1", due: addWorkDays(t, 3) }]);
     else if (!o.replied && !o.followup1_sent) acts.push(["Follow-up 1 sent", { followup1_sent: t, step: "4", status: "followed up", next_action: "follow-up-2", due: addWorkDays(t, 5) }]);
     else if (!o.replied && !o.followup2_sent) acts.push(["Follow-up 2 sent", { followup2_sent: t, status: "closed", next_action: "sequence ended, no answer", due: t }]);
-    if ((o.invite_sent || connected) && !o.replied) acts.push(["Replied", { replied: t, status: "replied", next_action: "Kostya replies", due: t }]);
+    if ((o.invite_sent || connected) && !o.replied) acts.push(["Replied", { replied: t, status: "replied", next_action: "Kostya replies", due: t }, `Record a reply from ${o.name}? It stops the sequence; Open takes it off again.`]);
     if (connected) acts.push(["Call booked", { call_booked: t, status: "call booked", next_action: "the call", due: "" }, `Record a booked call for ${o.name}? It stops the sequence. Add the time in Open.`]);
     return acts;
   }
@@ -987,9 +987,10 @@
       const o = list.find((x) => x.id === b.dataset.open);
       openDrawer(o.name, `<dl class="kv"><dt>Company</dt><dd>${h(o.company)}</dd><dt>LinkedIn</dt><dd><a href="${h(o.linkedin)}" target="_blank" rel="noopener">${h((o.linkedin || "").replace(/^https?:\/\/(www\.)?/, ""))}</a></dd><dt>Hook</dt><dd>${h(o.hook)}</dd><dt>Dates</dt><dd>${["invite_sent", "accepted", "message1_sent", "followup1_sent", "followup2_sent", "replied"].filter((k) => o[k]).map((k) => `${k.replace(/_/g, " ")}: ${h(fmt(o[k]))}`).join(" · ") || "–"}</dd>${o.candidate_id ? `<dt>Record</dt><dd><button type="button" class="linkbtn" data-cand="${h(o.candidate_id)}">${h(o.candidate_id)}</button></dd>` : ""}</dl>
         <form class="form" id="oform"><label class="full"><span class="lbl">Latest reply</span><textarea name="latest_reply">${h(o.latest_reply)}</textarea></label>
+          <label class="full"><span class="lbl">Replied on</span><input type="date" name="replied" value="${h(o.replied)}"></label>
           <label><span class="lbl">Call booked on</span><input type="date" name="call_booked" value="${h(o.call_booked)}"></label><label><span class="lbl">Call at</span><input type="datetime-local" name="call_at" value="${h(localInput(o.call_at))}"></label>
           <label class="full"><span class="lbl">Next action</span><input name="next_action" value="${h(o.next_action)}"></label>
-          <label class="full"><span class="lbl">Notes</span><textarea name="notes">${h(o.notes)}</textarea></label><p class="muted small full">Clear "Call booked on" when a call is cancelled: the sequence buttons come back.</p><div class="formfoot full"><button type="submit" class="btn">Save</button></div></form>`);
+          <label class="full"><span class="lbl">Notes</span><textarea name="notes">${h(o.notes)}</textarea></label><p class="muted small full">Clear "Call booked on" when a call is cancelled, or "Replied on" when a reply was recorded by mistake: the row goes back to where its dates say.</p><div class="formfoot full"><button type="submit" class="btn">Save</button></div></form>`);
       document.querySelectorAll(".drawer [data-cand]").forEach((x) => x.addEventListener("click", () => { closeDrawer(); openCandidate(x.dataset.cand); }));
       const init = Object.fromEntries(new FormData($("#oform")).entries());
       $("#oform").addEventListener("submit", async (e) => {
@@ -999,15 +1000,19 @@
         if (f.call_at) f.call_at = new Date(f.call_at).toISOString();
         const booked = "call_booked" in f ? f.call_booked : o.call_booked;
         if (f.call_at && !booked) f.call_booked = today();  // a time on a row with no booking is a new booking
-        const nowBooked = "call_booked" in f ? f.call_booked : o.call_booked, said = "next_action" in f;
+        const nowBooked = "call_booked" in f ? f.call_booked : o.call_booked, nowReplied = "replied" in f ? f.replied : o.replied, said = "next_action" in f;
+        // a row with no invite was connected before: going back keeps that
+        const back = (x) => ({ ...o, ...f, ...x, status: o.invite_sent ? o.status : "already connected" });
         if (nowBooked && !o.call_booked) {
           const at = f.call_at || o.call_at;
           Object.assign(f, { status: "call booked", due: at ? localDay(new Date(at)) : "", next_action: said ? f.next_action : "the call" });
-        }
-        if (!nowBooked && o.call_booked) {
-          // a cancelled call: the row goes back to where its dates say (a row with no invite was connected before)
-          const back = { ...o, ...f, call_booked: "", status: o.invite_sent ? o.status : "already connected" };
-          Object.assign(f, { call_at: "", status: statusOut(back), next_action: said ? f.next_action : nextOut(back), due: dueOut(back) });
+        } else if (!nowBooked && o.call_booked) {  // a cancelled call: the row goes back to where its dates say
+          const b2 = back({ call_booked: "" });
+          Object.assign(f, { call_at: "", status: statusOut(b2), next_action: said ? f.next_action : nextOut(b2), due: dueOut(b2) });
+        } else if (!nowBooked && nowReplied && !o.replied) Object.assign(f, { status: "replied", next_action: said ? f.next_action : "Kostya replies", due: today() });
+        else if (!nowBooked && !nowReplied && o.replied) {  // a reply recorded by mistake
+          const b2 = back({ replied: "" });
+          Object.assign(f, { status: statusOut(b2), next_action: said ? f.next_action : nextOut(b2), due: dueOut(b2) });
         }
         if (!Object.keys(f).length) { closeDrawer(); return; }
         await api("outreach/" + o.id, "PATCH", f); state.outreach = null; closeDrawer(); renderOutreach(view);
