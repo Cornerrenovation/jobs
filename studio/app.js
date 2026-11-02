@@ -908,15 +908,19 @@
   // replied or booked a call: the booking link in message 1 lets them book without writing back.
   const connectedOut = (o) => !!(o.accepted || o.status === "already connected" || o.message1_sent || o.replied || o.call_booked);
   const answeredOut = (o) => !!(o.replied || o.call_booked);
-  const doneOut = (o) => !!o.call_booked || ["withdrawn", "closed"].includes(o.status);
-  // The status the dates say, for when a booked call is taken off again
+  // The outreach run stops a person who applied by writing Next action "applied: …"; changing that text in the drawer resumes them
+  const appliedOut = (o) => /^applied:/i.test(o.next_action || "");
+  const doneOut = (o) => !!o.call_booked || appliedOut(o) || ["withdrawn", "closed"].includes(o.status);
+  // The status, next step and due date the dates say, for when a booked call is taken off again
   const statusOut = (o) => o.replied ? "replied" : o.followup2_sent ? "closed" : o.followup1_sent ? "followed up" : o.message1_sent ? "messaged"
     : o.accepted ? "accepted" : o.invite_sent ? "invited" : o.status === "already connected" ? "already connected" : "queued";
   const nextOut = (o) => o.replied ? "Kostya replies" : o.followup2_sent ? "sequence ended, no answer" : o.followup1_sent ? "follow-up-2" : o.message1_sent ? "follow-up-1"
     : o.accepted || o.status === "already connected" ? "message-1" : o.invite_sent ? "wait for acceptance" : "invite";
+  const dueOut = (o) => o.replied ? today() : o.followup2_sent ? o.followup2_sent : o.followup1_sent ? addWorkDays(o.followup1_sent, 5) : o.message1_sent ? addWorkDays(o.message1_sent, 3)
+    : o.accepted || o.status === "already connected" ? today() : o.invite_sent ? addWorkDays(o.invite_sent, 10) : "";
   function nextActions(o) {  // [label, patch, confirm question]
     const t = today(), acts = [];
-    if (o.call_booked) return acts;  // the drawer takes a booking off again
+    if (o.call_booked || appliedOut(o)) return acts;  // the drawer takes a booking (or an application) off again
     const connected = connectedOut(o);
     if (!o.invite_sent && !connected) acts.push(["Invite sent", { invite_sent: t, step: "1", status: "invited", next_action: "wait for acceptance", due: addWorkDays(t, 10) }]);
     else if (!connected) {
@@ -987,16 +991,25 @@
           <label class="full"><span class="lbl">Next action</span><input name="next_action" value="${h(o.next_action)}"></label>
           <label class="full"><span class="lbl">Notes</span><textarea name="notes">${h(o.notes)}</textarea></label><p class="muted small full">Clear "Call booked on" when a call is cancelled: the sequence buttons come back.</p><div class="formfoot full"><button type="submit" class="btn">Save</button></div></form>`);
       document.querySelectorAll(".drawer [data-cand]").forEach((x) => x.addEventListener("click", () => { closeDrawer(); openCandidate(x.dataset.cand); }));
+      const init = Object.fromEntries(new FormData($("#oform")).entries());
       $("#oform").addEventListener("submit", async (e) => {
         e.preventDefault();
-        const f = Object.fromEntries(new FormData(e.target).entries());
+        // Send only what the person changed, so a save never rewrites a field (or what a robot wrote while the drawer was open)
+        const f = Object.fromEntries(Object.entries(Object.fromEntries(new FormData(e.target).entries())).filter(([k, v]) => v !== init[k]));
         if (f.call_at) f.call_at = new Date(f.call_at).toISOString();
-        if (f.call_at && !f.call_booked) f.call_booked = today();
-        if (f.call_booked && !o.call_booked) Object.assign(f, { status: "call booked", due: f.call_at ? localDay(new Date(f.call_at)) : "", next_action: f.next_action !== o.next_action ? f.next_action : "the call" });
-        if (!f.call_booked && o.call_booked) {
-          const back = { ...o, ...f, call_booked: "" };
-          Object.assign(f, { call_at: "", status: statusOut(back), next_action: f.next_action !== o.next_action ? f.next_action : nextOut(back) });
+        const booked = "call_booked" in f ? f.call_booked : o.call_booked;
+        if (f.call_at && !booked) f.call_booked = today();  // a time on a row with no booking is a new booking
+        const nowBooked = "call_booked" in f ? f.call_booked : o.call_booked, said = "next_action" in f;
+        if (nowBooked && !o.call_booked) {
+          const at = f.call_at || o.call_at;
+          Object.assign(f, { status: "call booked", due: at ? localDay(new Date(at)) : "", next_action: said ? f.next_action : "the call" });
         }
+        if (!nowBooked && o.call_booked) {
+          // a cancelled call: the row goes back to where its dates say (a row with no invite was connected before)
+          const back = { ...o, ...f, call_booked: "", status: o.invite_sent ? o.status : "already connected" };
+          Object.assign(f, { call_at: "", status: statusOut(back), next_action: said ? f.next_action : nextOut(back), due: dueOut(back) });
+        }
+        if (!Object.keys(f).length) { closeDrawer(); return; }
         await api("outreach/" + o.id, "PATCH", f); state.outreach = null; closeDrawer(); renderOutreach(view);
       });
     }));
