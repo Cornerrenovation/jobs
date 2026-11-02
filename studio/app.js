@@ -904,43 +904,84 @@
 
   // ---------- outreach ----------
   const addWorkDays = (from, n) => { const d = new Date(from + "T12:00:00"); let k = 0; while (k < n) { d.setDate(d.getDate() + 1); if (d.getDay() % 6) k++; } return d.toISOString().slice(0, 10); };
+  // A prospect counts as accepted once anything after the invite happened (or they were connected before), and as answered once they
+  // replied or booked a call: the booking link in message 1 lets them book without writing back.
+  const connectedOut = (o) => !!(o.accepted || o.status === "already connected" || (o.invite_sent && (o.message1_sent || o.replied || o.call_booked)));
+  const answeredOut = (o) => !!(o.replied || o.call_booked);
+  const doneOut = (o) => !!o.call_booked || ["withdrawn", "closed"].includes(o.status);
   function nextActions(o) {
     const t = today(), acts = [];
-    if (o.replied) return [];
-    if (!o.invite_sent) acts.push(["Invite sent", { invite_sent: t, step: "1", status: "invited", next_action: "wait for acceptance", due: addWorkDays(t, 10) }]);
-    else if (!o.accepted) acts.push(["Accepted", { accepted: t, step: "2", status: "accepted", next_action: "message-1", due: addWorkDays(t, 1) }],
+    if (doneOut(o)) return acts;
+    const connected = connectedOut(o);
+    if (!o.invite_sent && !connected) acts.push(["Invite sent", { invite_sent: t, step: "1", status: "invited", next_action: "wait for acceptance", due: addWorkDays(t, 10) }]);
+    else if (!connected) acts.push(["Accepted", { accepted: t, step: "2", status: "accepted", next_action: "message-1", due: addWorkDays(t, 1) }],
       ["Withdrawn", { status: "withdrawn", next_action: "", due: "" }]);
-    else if (!o.message1_sent) acts.push(["Message 1 sent", { message1_sent: t, step: "3", status: "messaged", next_action: "follow-up-1", due: addWorkDays(t, 3) }]);
-    else if (!o.followup1_sent) acts.push(["Follow-up 1 sent", { followup1_sent: t, step: "4", status: "followed up", next_action: "follow-up-2", due: addWorkDays(t, 5) }]);
-    else if (!o.followup2_sent) acts.push(["Follow-up 2 sent", { followup2_sent: t, status: "closed", next_action: "", due: "" }]);
-    if (o.invite_sent) acts.push(["Replied", { replied: t, status: "replied", next_action: "Kostya replies", due: t }]);
+    else if (!o.replied && !o.message1_sent) acts.push(["Message 1 sent", { message1_sent: t, step: "3", status: "messaged", next_action: "follow-up-1", due: addWorkDays(t, 3) }]);
+    else if (!o.replied && !o.followup1_sent) acts.push(["Follow-up 1 sent", { followup1_sent: t, step: "4", status: "followed up", next_action: "follow-up-2", due: addWorkDays(t, 5) }]);
+    else if (!o.replied && !o.followup2_sent) acts.push(["Follow-up 2 sent", { followup2_sent: t, status: "closed", next_action: "", due: "" }]);
+    if ((o.invite_sent || connected) && !o.replied) acts.push(["Replied", { replied: t, status: "replied", next_action: "Kostya replies", due: t }]);
+    if (connected) acts.push(["Call booked", { call_booked: t, status: "call booked", next_action: "the call", due: "" }]);
     return acts;
   }
-  const shortStatus = (s) => (s || "queued").replace(/^queued.*/, "queued");
+  // call_at is the event's start with its offset; the drawer edits it as local time
+  const localInput = (iso) => { const d = new Date(iso || ""); if (!iso || isNaN(d)) return ""; const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
+  const stepCell = (date, title) => date ? `<td class="step done"${title ? ` title="${h(title)}"` : ""}>${h(fmt(date))}</td>` : '<td class="step none">–</td>';
   async function renderOutreach(view) {
     await need("outreach", "templates");
-    const list = state.outreach;
-    const counts = {}; list.forEach((o) => { const k = shortStatus(o.status); counts[k] = (counts[k] || 0) + 1; });
-    const due = list.filter((o) => o.due && o.due <= today() && !o.replied).length;
-    const unapproved = state.templates.filter((t) => t.approved !== "Yes").length;
-    const groups = {}; list.forEach((o) => { const g = (o.campaign || "") + (o.batch ? " · batch " + o.batch : ""); (groups[g] = groups[g] || []).push(o); });
-    view.innerHTML = head("Outreach", `${list.length} prospects · ${due} due today or earlier · ${Object.entries(counts).map(([k, n]) => `${n} ${k}`).join(", ")}`) +
+    if (!state.outreach || !state.templates) return;  // a refresh cleared the data while it loaded; that refresh renders again
+    const list = state.outreach, t = today();
+    const due = list.filter((o) => o.due && o.due <= t && !doneOut(o) && !answeredOut(o)).length;
+    const unapproved = state.templates.filter((x) => x.approved !== "Yes").length;
+    // The tracker: everyone invited, then how many accepted, answered and booked a call. Each step counts everyone who got that far.
+    const invited = list.filter((o) => o.invite_sent), acc = invited.filter(connectedOut), ans = invited.filter(answeredOut), calls = invited.filter((o) => o.call_booked);
+    const before = list.filter((o) => !o.invite_sent && o.status === "already connected").length, queued = list.filter((o) => !o.invite_sent && o.status !== "already connected").length;
+    const pct = (a, b) => (b ? Math.round(100 * a / b) + "%" : "–");
+    const steps = [
+      ["Invited", invited.length, [queued && `${queued} queued`, before && `${before} connected before, not counted`].filter(Boolean).join(" · ") || "connection requests sent", "", ""],
+      ["Accepted", acc.length, `${invited.filter((o) => !connectedOut(o) && o.status !== "withdrawn").length} waiting`, pct(acc.length, invited.length), "of invited"],
+      ["Replied", ans.length, `${acc.filter((o) => !answeredOut(o) && o.message1_sent && !doneOut(o)).length} messaged, no answer yet`, pct(ans.length, acc.length), "of accepted"],
+      ["Call booked", calls.length, `${calls.filter((o) => o.call_at && new Date(o.call_at) >= new Date()).length} coming up`, pct(calls.length, ans.length), "of replied"]];
+    const top = invited.length || 1;
+    const funnel = steps.map(([title, n, note, conv, of], i) => `<div class="stage"><div class="stagerow static"><span class="sname">${h(title)}<small>${h(note)}</small></span>
+      <span class="sbar"><span style="width:${n ? Math.max(2, Math.round(100 * n / top)) : 0}%"></span></span>
+      <span class="snum">${n}<small>${i ? `${pct(n, invited.length)} of invited` : "sent"}</small></span>
+      <span class="sconv">${i ? `<b>${conv}</b><small>${of}</small>` : ""}</span></div></div>`).join("");
+    const rank = (o) => o.call_booked ? 0 : answeredOut(o) ? 1 : connectedOut(o) ? 2 : o.invite_sent ? 3 : 4;
+    const groups = {}; list.forEach((o) => { const g = o.campaign || "No campaign"; (groups[g] = groups[g] || []).push(o); });
+    const nextCell = (o) => {
+      if (o.call_booked) return '<span class="muted">the call</span>';
+      if (doneOut(o)) return `<span class="muted">${h(o.status)}</span>`;
+      const late = o.due && o.due <= t && !answeredOut(o);
+      return `${h(o.next_action)}${o.due ? `<br><span class="muted">${late ? `<b>due ${h(fmt(o.due))}</b>` : `due ${h(fmt(o.due))}`}</span>` : ""}`;
+    };
+    const callCell = (o) => !o.call_booked ? '<td class="step none">–</td>'
+      : `<td class="step done">${h(o.call_at ? fmtTime(o.call_at) : fmt(o.call_booked))}${o.candidate_id ? `<small><button type="button" class="linkbtn" data-cand="${h(o.candidate_id)}">${h(o.candidate_id)}</button></small>` : ""}</td>`;
+    view.innerHTML = head("Outreach", `${list.length} prospects · ${due} due today or earlier`) +
       (unapproved ? `<div class="card note"><b>${unapproved} of ${state.templates.length} templates aren't approved yet.</b> Nothing is sent until they are. <button type="button" class="linkbtn" data-go="templates">Review templates</button></div>` : "") +
-      `<p class="muted">Sequence: invite with a note → message 1 after acceptance → follow-up at +3 and +5 working days. Pressing a button records today's date and sets the next action.</p>
-      ${Object.entries(groups).map(([g, rows]) => `<div class="group"><span class="eyebrow">${h(g)}</span>${table(["Prospect", "Hook", "Status", "Next action", "Due", "Latest reply", "Actions"],
-        rows.map((o) => `<tr><td><span class="name">${o.linkedin ? `<a href="${h(o.linkedin)}" target="_blank" rel="noopener">${h(o.name)}</a>` : h(o.name)}</span><br><span class="muted">${h(o.company || o.location || "")}</span></td>
-          <td class="wrapcell">${h(o.hook)}</td><td>${pill(shortStatus(o.status), o.replied ? "ok" : ["withdrawn", "closed"].includes(o.status) ? "" : "warn")}</td>
-          <td>${h(o.next_action)}</td><td>${o.due && o.due <= today() && !o.replied ? `<b>${h(fmt(o.due))}</b>` : h(fmt(o.due))}</td><td class="wrapcell">${h(o.latest_reply)}</td>
+      `<div class="funnel">${funnel}</div>
+      <p class="muted">Sequence: connection request (with a note while the month's free notes last) → message 1 with the booking link within a working day of acceptance → follow-ups at +3 and +5 working days. A reply or a booked call stops it. The outreach run sends these on weekdays at 11:00 and fills in the dates; the buttons are for corrections.</p>
+      ${Object.entries(groups).sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0])).map(([g, rows]) => `<div class="group"><span class="eyebrow">${h(g)}</span>${table(["Prospect", "Invited", "Accepted", "Message 1", "Follow-ups", "Replied", "Call booked", "Next", ""],
+        rows.slice().sort((a, b) => rank(a) - rank(b) || String(a.id).localeCompare(String(b.id))).map((o) => `<tr class="trk"><td><span class="name">${o.linkedin ? `<a href="${h(o.linkedin)}" target="_blank" rel="noopener">${h(o.name)}</a>` : h(o.name)}</span><br><span class="muted">${h(o.company || o.location || "")}</span></td>
+          ${o.invite_sent ? stepCell(o.invite_sent) : `<td class="step none">${o.status === "already connected" ? "connected before" : "queued"}</td>`}${stepCell(o.accepted)}${stepCell(o.message1_sent)}
+          ${o.followup1_sent ? `<td class="step done">${[o.followup1_sent, o.followup2_sent].filter(Boolean).map((d) => h(fmt(d))).join(" · ")}</td>` : '<td class="step none">–</td>'}
+          ${stepCell(o.replied, o.latest_reply)}${callCell(o)}<td>${nextCell(o)}</td>
           <td class="actions">${nextActions(o).map(([label, patch]) => `<button type="button" class="btn ghost small" data-id="${h(o.id)}" data-patch='${h(JSON.stringify(patch))}'>${h(label)}</button>`).join("")}<button type="button" class="btn ghost small" data-open="${h(o.id)}">Open</button></td></tr>`))}</div>`).join("") || '<div class="card empty">No prospects queued.</div>'}`;
     view.querySelectorAll("[data-go]").forEach((b) => b.addEventListener("click", () => setView(b.dataset.go)));
+    view.querySelectorAll("[data-cand]").forEach((b) => b.addEventListener("click", () => openCandidate(b.dataset.cand)));
     view.querySelectorAll("button[data-patch]").forEach((b) => b.addEventListener("click", async () => {
       b.disabled = true; await api("outreach/" + b.dataset.id, "PATCH", JSON.parse(b.dataset.patch)); state.outreach = null; renderOutreach(view);
     }));
     view.querySelectorAll("button[data-open]").forEach((b) => b.addEventListener("click", () => {
       const o = list.find((x) => x.id === b.dataset.open);
-      openDrawer(o.name, `<dl class="kv"><dt>Company</dt><dd>${h(o.company)}</dd><dt>LinkedIn</dt><dd><a href="${h(o.linkedin)}" target="_blank" rel="noopener">${h((o.linkedin || "").replace(/^https?:\/\/(www\.)?/, ""))}</a></dd><dt>Hook</dt><dd>${h(o.hook)}</dd><dt>Dates</dt><dd>${["invite_sent", "accepted", "message1_sent", "followup1_sent", "followup2_sent", "replied"].filter((k) => o[k]).map((k) => `${k.replace(/_/g, " ")}: ${fmt(o[k])}`).join(" · ") || "–"}</dd></dl>
-        <form class="form" id="oform"><label class="full"><span class="lbl">Latest reply</span><textarea name="latest_reply">${h(o.latest_reply)}</textarea></label><label class="full"><span class="lbl">Notes</span><textarea name="notes">${h(o.notes)}</textarea></label><div class="formfoot full"><button type="submit" class="btn">Save</button></div></form>`);
-      $("#oform").addEventListener("submit", async (e) => { e.preventDefault(); await api("outreach/" + o.id, "PATCH", Object.fromEntries(new FormData(e.target).entries())); state.outreach = null; closeDrawer(); renderOutreach(view); });
+      openDrawer(o.name, `<dl class="kv"><dt>Company</dt><dd>${h(o.company)}</dd><dt>LinkedIn</dt><dd><a href="${h(o.linkedin)}" target="_blank" rel="noopener">${h((o.linkedin || "").replace(/^https?:\/\/(www\.)?/, ""))}</a></dd><dt>Hook</dt><dd>${h(o.hook)}</dd><dt>Dates</dt><dd>${["invite_sent", "accepted", "message1_sent", "followup1_sent", "followup2_sent", "replied", "call_booked"].filter((k) => o[k]).map((k) => `${k.replace(/_/g, " ")}: ${fmt(o[k])}`).join(" · ") || "–"}</dd>${o.candidate_id ? `<dt>Record</dt><dd><button type="button" class="linkbtn" data-cand="${h(o.candidate_id)}">${h(o.candidate_id)}</button></dd>` : ""}</dl>
+        <form class="form" id="oform"><label class="full"><span class="lbl">Latest reply</span><textarea name="latest_reply">${h(o.latest_reply)}</textarea></label><label class="full"><span class="lbl">Call at</span><input type="datetime-local" name="call_at" value="${h(localInput(o.call_at))}"></label><label class="full"><span class="lbl">Notes</span><textarea name="notes">${h(o.notes)}</textarea></label><div class="formfoot full"><button type="submit" class="btn">Save</button></div></form>`);
+      document.querySelectorAll(".drawer [data-cand]").forEach((x) => x.addEventListener("click", () => { closeDrawer(); openCandidate(x.dataset.cand); }));
+      $("#oform").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const f = Object.fromEntries(new FormData(e.target).entries());
+        if (f.call_at) { f.call_at = new Date(f.call_at).toISOString(); if (!o.call_booked) Object.assign(f, { call_booked: today(), status: "call booked", next_action: "the call", due: "" }); }
+        await api("outreach/" + o.id, "PATCH", f); state.outreach = null; closeDrawer(); renderOutreach(view);
+      });
     }));
   }
 
