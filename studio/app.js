@@ -28,15 +28,19 @@
   const whoName = (by) => !by ? "" : by === "claude" || /\.access$/.test(by) || /^u_/.test(by) ? "Claude" : by.replace(/@.*/, "").replace(/^\w/, (c) => c.toUpperCase());
   const state = { view: "week", boot: null, roleFilter: "all", role: null, filter: "all", candidates: null, results: null, outreach: null, templates: null, search: "", open: {},
     showClosed: false, justCreated: null, cards: null, cardStage: {}, cardEdit: null, srcFilter: "all", callFilter: "all", agentFilter: "all", confFilter: "all",
-    sort: { key: "", dir: 1 }, screenFilter: "tosend", calGroup: "", cvFilter: "all", resBy: {} };
+    sort: { key: "", dir: 1 }, screenFilter: "tosend", calGroup: "", cvFilter: "all", resBy: {}, wsBy: {} };
   const store = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
 
-  async function api(path, method, body) {
+  // missing: what to return on a 404 instead of an error (a route an older Worker doesn't have yet; the caller hides what it would show)
+  async function api(path, method, body, missing) {
     const payload = body ? JSON.stringify(body) : undefined;
     // keepalive lets a save finish after the record (or the tab) is closed; browsers allow it for bodies under 64 KB
-    const r = await fetch(API + path, { method: method || "GET", credentials: "same-origin", keepalive: !!payload && payload.length < 60000,
-      headers: body ? { "content-type": "application/json" } : {}, body: payload });
+    return send(path, { method: method || "GET", keepalive: !!payload && payload.length < 60000, headers: body ? { "content-type": "application/json" } : {}, body: payload }, missing);
+  }
+  async function send(path, init, missing) {  // any body (a file upload sends its bytes), the same sign-in and error handling as api()
+    const r = await fetch(API + path, { credentials: "same-origin", ...init });
     if (r.status === 401) { notice("Your sign-in expired. Reload the page to sign in again.", true); throw new Error("unauthorized"); }
+    if (r.status === 404 && missing !== undefined) return missing;
     const j = await r.json().catch(() => ({}));
     if (r.status === 503) { notice(j.error === "login_not_configured" ? "Sign-in isn't switched on for the studio yet." : "The sign-in check didn't answer. Try again in a minute.", true); throw new Error(j.error || "unavailable"); }
     if (!r.ok || j.error) { notice(j.error || ("Request failed: " + r.status), true); throw new Error(j.error || r.status); }
@@ -290,7 +294,7 @@
     view.innerHTML = head("Candidates", `${list.length} of ${state.candidates.length}`, `<button type="button" class="btn" id="add">Add candidate</button>`) +
       `<div class="toolbar"><input type="search" id="q" placeholder="Search name, headline, source, stage" value="${h(state.search)}">${srcSel}${agentSel}${confSel}${callSel}${cvSel}${roleSeg()}</div>
       ${list.length ? `<div class="tablewrap cands"><table><thead><tr>${cols.map(th).join("")}</tr></thead><tbody>${
-        list.map((c) => `<tr class="clickable" data-id="${h(c.id)}"><td class="cname"><span class="name">${h(c.name)}</span><span class="muted clamp2">${h(c.headline || c.location || "")}</span></td><td class="csrc"><span class="muted small">${h(roleName(c.role_id))}</span><br>${h(sourceShort(c.sources))}${c.referred_by ? `<br><span class="muted">referred by ${h(c.referred_by)}</span>` : ""}</td><td class="nowrap">${h(fmt(c.applied))}</td><td>${blindNow(c) ? pill("blind") : callPill(c.agent_call)}${blindNow(c) || !c.confidence ? "" : `<br>${confWord(c.confidence)}`}</td><td>${callPill(c.your_call)}</td><td>${pill(c.stage || "applied")}</td><td class="cnext"><span class="clamp2" title="${h(c.next_step)}">${h(c.next_step)}</span></td><td class="nowrap">${h(fmt(c.due))}</td></tr>`).join("")}</tbody></table></div>`
+        list.map((c) => `<tr class="clickable" data-id="${h(c.id)}"><td class="cname"><span class="name">${h(c.name)}</span><span class="muted clamp2">${h(c.headline || c.location || "")}</span></td><td class="csrc"><span class="muted small">${h(roleName(c.role_id))}</span><br>${h(sourceShort(c.sources))}${c.referred_by ? `<br><span class="muted">referred by ${h(c.referred_by)}</span>` : ""}</td><td class="nowrap">${h(fmt(c.applied))}</td><td>${blindNow(c) ? pill("blind") : callPill(c.agent_call)}${blindNow(c) || !c.confidence ? "" : `<br>${confWord(c.confidence)}`}</td><td>${callPill(c.your_call)}</td><td>${pill(c.stage || "applied")}${c.ws_file ? `<br><span class="wsflag" title="${h(c.ws_file)}">Work sample</span>` : ""}</td><td class="cnext"><span class="clamp2" title="${h(c.next_step)}">${h(c.next_step)}</span></td><td class="nowrap">${h(fmt(c.due))}</td></tr>`).join("")}</tbody></table></div>`
         : `<div class="card empty">No candidates match. They arrive from the jobs site, LinkedIn and Work.ua through the daily check-in, or add one by hand.</div>`}`;
     const qel = $("#q", view);
     qel.addEventListener("input", (e) => { state.search = e.target.value; renderCandidates(view); qel.focus(); });
@@ -432,12 +436,14 @@
       <p class="muted small">Claude's reading of what she or he sent, against the scorecard, with the words it rests on. It informs your call; nobody is declined on it.</p></section>`;
   }
   async function openCandidate(id) {
+    if (wsLive) await wsLive.flush();  // a call note still in its field is saved before any record is read (again)
     if (id) await need("candidates", "cards");
     const c = id ? state.candidates.find((x) => x.id === id) : { stage: "applied", role_id: state.roleFilter !== "all" && state.roleFilter !== "closed" ? state.roleFilter : (openRoles()[0] || {}).id };
     if (!c) { forget(); await render(true); notice(`There's no candidate ${id} in the studio.`, true); return; }
     if (id) {  // the full row (CV, screening answers, written answer, first lines) and this candidate's criteria
-      const [full, res, msgs] = await Promise.all([api("candidates/" + encodeURIComponent(id)), api("criteria/results?candidate_id=" + encodeURIComponent(id)), api("messages?candidate_id=" + encodeURIComponent(id))]);
-      Object.assign(c, full); state.resBy = state.resBy || {}; state.resBy[id] = res; state.msgsBy = state.msgsBy || {}; state.msgsBy[id] = msgs;
+      const [full, res, msgs, ws] = await Promise.all([api("candidates/" + encodeURIComponent(id)), api("criteria/results?candidate_id=" + encodeURIComponent(id)), api("messages?candidate_id=" + encodeURIComponent(id)),
+        wsLoad(id)]);
+      Object.assign(c, full); state.resBy = state.resBy || {}; state.resBy[id] = res; state.msgsBy = state.msgsBy || {}; state.msgsBy[id] = msgs; state.wsBy[id] = ws;
     }
     const sel = (name, opts, val, labels) => `<select name="${name}">${opts.map((o, i) => `<option value="${h(o)}" ${o === (val || "") ? "selected" : ""}>${h(labels ? labels[i] : (o || "–"))}</option>`).join("")}</select>`;
     const kv = (k, v) => v ? `<dt>${h(k)}</dt><dd>${h(v)}</dd>` : "";
@@ -471,8 +477,8 @@
         <label class="full"><span class="lbl">Notes</span><textarea name="notes">${h(c.notes)}</textarea></label>
         <div class="formfoot full"><span class="saved" id="csaved"></span><button type="submit" class="btn">${id ? "Save" : "Add"}</button></div>
       </form>${id ? leadBlock(c, role, lead) : ""}</section>`;
-    openRecord(id ? c.name : "New candidate", eyebrow, (id && scriptDue(c) ? scriptBlock(c) : "") + application + (id ? readBlock(c) + screenSection(c) : "") + form + (id ? (scriptDue(c) ? "" : scriptBlock(c)) + scoreBlock(c) : ""));
-    if (id) { bindScoreBlock(c); bindScreen($("#recbody"), async () => { forget(); await render(true); await openCandidate(id); }); bindReply($("#recbody"), async () => { forget(); await render(true); await openCandidate(id); }); bindCvCheck($("#recbody"), () => render(true)); }
+    openRecord(id ? c.name : "New candidate", eyebrow, (id && scriptDue(c) ? scriptBlock(c) : "") + application + (id ? readBlock(c) + screenSection(c) : "") + form + (id ? (scriptDue(c) ? "" : scriptBlock(c)) + scoreBlock(c) + wsBlock(c) : ""), id);
+    if (id) { bindScoreBlock(c); bindWsBlock(c); bindScreen($("#recbody"), async () => { forget(); await render(true); await openCandidate(id); }); bindReply($("#recbody"), async () => { forget(); await render(true); await openCandidate(id); }); bindCvCheck($("#recbody"), () => render(true)); }
     const f = $("#cform");
     bindSeg(f, "yourcall", (v) => { const cur = $('input[name="your_call"]', f); cur.value = cur.value === v ? "" : v; f.querySelectorAll('[data-seg="yourcall"] button').forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === cur.value)); });
     // After a save: everything is re-read (the Worker moves the stage when Your call changes, and keeps reached, hired_at and bounty_due),
@@ -775,7 +781,230 @@
       const mine = cardsFor(c.id).find((k) => k.stage === edit.stage && k.scorer === state.boot.who);
       await api("scorecards", "POST", { candidate_id: c.id, stage: edit.stage, items, must_pass: d.must_pass, must_pass_note: d.must_pass_note, summary: d.summary,
         started_from: edit.mode === "edit" ? (mine && mine.started_from) || "blank" : edit.mode });
-      state.cards = await api("scorecards"); state.cardEdit = null; again();
+      state.cards = await api("scorecards"); state.cardEdit = null; again(); wsScoreRefresh(c);
+    });
+  }
+
+  // ---------- the work sample (5 Nov): the test assignment the candidate sent back, what doesn't hold in it, and the questions for the call ----------
+  // A person or a robot stores the file (or the link to a Google Doc); the Worker then moves an earlier stage to "work sample". The AI
+  // recruiter scores it on a worksample card (block 4) and writes the flaws and the questions. People tick a question as asked and note
+  // what they heard: ticks and notes are people's only, and a robot's new list keeps them.
+  const WS_FLAWS = [["not delivered", "Asked in the brief, not delivered"], ["evidence", "Evidence that doesn't hold"], ["judgement", "Judgement calls to probe"],
+    ["against earlier interview", "Against the earlier interview"], ["ours", "Ours, not the candidate's"]];
+  const WS_MAX = 20_000_000;
+  const WS_TYPES = { pdf: "application/pdf", doc: "application/msword", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    odt: "application/vnd.oasis.opendocument.text", rtf: "application/rtf", txt: "text/plain", md: "text/markdown", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" };
+  // { meta, flaws, questions }; null when the Worker doesn't have the route yet (the block stays hidden); a failed read shows in the block
+  const wsLoad = (id) => api("worksample/" + encodeURIComponent(id), "GET", null, null).catch((e) => ({ failed: String((e && e.message) || e) }));
+  const wsOf = (c) => state.wsBy[c.id];
+  const wsHas = (w) => !!(w && !w.failed && (w.meta || (w.flaws || []).length || (w.questions || []).length));
+  const wsInRubric = (c) => { const rub = rubricOf(c.role_id); return !!(rub && rub.stages.some(([st]) => st === "worksample")); };
+  const wsShown = (c) => wsHas(wsOf(c)) || reachedIdx(c) >= stageIdx("work sample") || wsInRubric(c);
+  const wsWhen = (s) => !s ? "" : /T\d{2}:\d{2}/.test(s) ? fmtTime(s) : fmt(s);
+  // The type comes from the file's extension through this list, never from the browser's own guess: an .html or .svg sent as itself would
+  // open as a page on Studio's address (5 Nov review). The Worker keeps the same list and serves anything else as a plain download.
+  const wsType = (f) => WS_TYPES[((f.name.match(/\.([a-z0-9]+)$/i) || [])[1] || "").toLowerCase()] || "application/octet-stream";
+  // Header values must be Latin-1, and file names are often Ukrainian ("МЕБЕЛЬ.pdf"): sent percent-encoded as UTF-8, the Worker decodes them
+  const headerSafe = (s) => encodeURIComponent(s);
+  // A flaw named in a question's "probes": its first sentence, or its first 60 characters
+  const wsShort = (t) => { const first = String(t || "").trim().split(/(?<=[.?!])\s/)[0].replace(/\.$/, "");
+    return first.length <= 70 ? first : first.slice(0, 60).replace(/\s+\S*$/, "") + "…"; };
+  // The score in one line, from the worksample cards block 4 already loaded. Like block 4, the cards stay folded for someone who
+  // hasn't scored this stage yet, so they can score blind first.
+  function wsScoreHtml(c) {
+    const cards = cardsFor(c.id).filter((k) => k.stage === "worksample").sort((a, b) => scorerRank(a.scorer) - scorerRank(b.scorer));
+    const go = rubricOf(c.role_id) ? `<button type="button" class="linkbtn small" data-wsgo>Work sample tab in block 4</button>` : "";
+    const one = (k) => `<span class="wsscorer">${h(scorerName(k.scorer))} <b>${k.weighted != null ? Number(k.weighted).toFixed(2) : "–"}</b>${decisionPill(k.decision)}${k.must_pass === "fail" ? pill("must-pass fail", "bad") : ""}</span>`;
+    const ai = cards.filter((k) => k.scorer === "ai"), people = cards.filter((k) => k.scorer !== "ai");
+    const known = ["hired", "declined", "not now"].includes(c.stage) || isClosedRole(roleOf(c.role_id));
+    const line = `<div class="wsscores">${ai.map(one).join("")}${people.length ? people.map(one).join("") : '<span class="muted small">no person\'s card yet</span>'}</div>`;
+    const body = !cards.length ? `<span class="muted">No card yet.</span>`
+      : !known && !cards.some((k) => k.scorer === state.boot.who) ? `<details class="fold plain"><summary>${cards.length} card${cards.length > 1 ? "s" : ""}, folded until you score this stage</summary>${line}</details>` : line;
+    return `<div class="wsscore" id="wsscore"><span class="lbl">Score</span>${body}${go}</div>`;
+  }
+  function wsFlawsHtml(flaws) {
+    if (!flaws.length) return "";
+    const fixed = WS_FLAWS.map(([g]) => g), groups = WS_FLAWS.concat(flaws.some((f) => !fixed.includes(f.grp)) ? [["", "Other"]] : []);
+    return `<div class="wsgroup"><h4 class="wsh">What's missing or doesn't hold <span class="muted">· ${flaws.length}</span></h4>${groups.map(([g, label]) => {
+      const list = flaws.filter((f) => g ? f.grp === g : !fixed.includes(f.grp));
+      return list.length ? `<div class="wsgrp"><span class="lbl">${h(label)} · ${list.length}</span><ul class="wslist">${list.map((f) =>
+        `<li class="wsflaw"><span class="wstext">${h(f.text)}</span>${f.evidence ? `<q class="wsev">${h(f.evidence)}</q>` : ""}</li>`).join("")}</ul></div>` : "";
+    }).join("")}</div>`;
+  }
+  function wsQuestionsHtml(qs, flaws) {
+    if (!qs.length) return "";
+    const blocks = []; qs.forEach((q) => { if (!blocks.includes(q.grp || "")) blocks.push(q.grp || ""); });  // the call's blocks, in the list's order
+    const probe = (key) => { const f = flaws.find((x) => x.key === key); return f ? wsShort(f.text) : key; };
+    let n = 0;
+    return `<form class="wsgroup" data-wsq><h4 class="wsh">Questions for the call <span class="muted" data-wscount>· ${qs.filter((q) => q.asked).length} of ${qs.length} asked</span></h4>${blocks.map((g) =>
+      `<div class="wsgrp">${g ? `<span class="lbl">${h(g)}</span>` : ""}<ul class="wsqs">${qs.filter((q) => (q.grp || "") === g).map((q) => {
+        n++; const refs = String(q.ref || "").split(",").map((s) => s.trim()).filter(Boolean);
+        return `<li class="wsq${q.asked ? " asked" : ""}" data-key="${h(q.key)}"><div class="wsqhead"><span class="wsn">${n}</span><span class="wstext">${h(q.text)}</span></div>
+          ${refs.length ? `<span class="wsprobe">probes: ${refs.map((r) => h(probe(r))).join("; ")}</span>` : ""}
+          <div class="wsqctl"><label class="wsask"><input type="checkbox" class="tick"${q.asked ? " checked" : ""} aria-label="Question ${n} asked"><span>asked</span></label>
+            <textarea class="wsnote" rows="${q.call_note ? 3 : 1}" placeholder="What she or he said" aria-label="Note on question ${n}">${h(q.call_note)}</textarea></div>
+          <span class="saved" data-wssaved hidden></span></li>`; }).join("")}</ul></div>`).join("")}</form>`;
+  }
+  function wsBlock(c) {
+    const w = wsOf(c);
+    if (w == null || !wsShown(c)) return "";
+    if (w.failed) return `<section class="block" id="wsblock"><span class="eyebrow">5 · Work sample</span><p class="muted small">The work sample didn't load (${h(w.failed)}). Close the record and open it again.</p></section>`;
+    const m = w.meta || {}, flaws = w.flaws || [], qs = w.questions || [], items = flaws.concat(qs);
+    const hasFile = Number(m.size) > 0, link = /^https?:\/\/\S+$/i.test(m.link || "") ? m.link : "";
+    // the host exactly: "docs.google.com.evil.example" is not a Google Doc (5 Nov review)
+    const linkLabel = (u) => { const host = hostOf(u); return host === "docs.google.com" ? "Google Doc" : host === "drive.google.com" ? "Google Drive" : host; };
+    const latest = items.slice().sort((a, b) => (b.updated_at || b.created_at || "").localeCompare(a.updated_at || a.created_at || ""))[0];
+    const facts = [m.filename, m.stored_at ? `stored ${fmt(m.stored_at)}${m.by ? " by " + whoName(m.by) : ""}` : ""].filter(Boolean);
+    const head = `<div class="readhead"><div><span class="eyebrow">5 · Work sample</span><h3>${w.meta ? (m.received_at ? "Received " + h(wsWhen(m.received_at)) : "Received") : '<span class="muted">Nothing received yet</span>'}${m.source ? ` <span class="muted">· ${h(m.source)}</span>` : ""}</h3></div>
+      ${latest ? `<span class="cmeta">Flaws and questions · ${h(whoName(latest.by) || "–")}${latest.updated_at || latest.created_at ? " · " + h(fmt(latest.updated_at || latest.created_at)) : ""}</span>` : ""}</div>`;
+    const file = w.meta ? `<div class="wsfile"><div class="chips">${hasFile ? `<a class="chip link cvopen" href="${API}worksample/${encodeURIComponent(c.id)}/file" target="_blank" rel="noopener" title="${h(m.filename || c.ws_file)}">Open work sample ↗</a>` : ""}${link ? linkChip(link, linkLabel(link)) : ""}</div>
+        ${c.ws_file ? `<span class="cmeta">${h(c.ws_file)}</span>` : ""}${facts.length ? `<span class="cmeta">${h(facts.join(" · "))}</span>` : ""}</div>`
+      : `<p class="muted small">When the candidate sends the completed test assignment, upload the file here or add the link to their Google Doc. The robots do the same when it arrives on LinkedIn or by email.</p>`;
+    const upload = `<details class="fold plain wsup"${w.meta ? "" : " open"}><summary>${w.meta ? "Replace the file or the link" : "Upload the file or add a link"}</summary>
+      <form class="wsform" data-wsup>
+        <label><span class="lbl">Received</span><input type="date" name="received" value="${h(today())}"></label>
+        <label><span class="lbl">Channel</span><input name="source" value="${h(m.source || "")}" placeholder="LinkedIn, email…" list="wschannels"></label>
+        <datalist id="wschannels"><option value="LinkedIn"><option value="Email"><option value="Work.ua"><option value="Telegram"></datalist>
+        <div class="wsrow"><input type="file" name="file" accept=".pdf,.doc,.docx,.odt,.rtf,.txt,.md,.pptx,.xlsx,.png,.jpg,.jpeg" aria-label="Work sample file"><button type="button" class="btn small" data-wsact="file">Upload</button></div>
+        <div class="wsrow"><input type="url" name="link" placeholder="https://docs.google.com/…" aria-label="Link to the work sample"><button type="button" class="btn ghost small" data-wsact="link">Add link</button></div>
+        <span class="saved" data-wsupsaved></span>
+        <p class="muted small">PDF, Word or a Google Doc link, up to 20 MB. Storing one moves an earlier stage to "work sample"; it never moves a stage back.${hasFile ? ' <button type="button" class="linkbtn" data-wsdel>Remove the stored file</button> (the link stays).' : ""}</p>
+      </form></details>`;
+    return `<section class="block" id="wsblock">${head}${file}
+      ${wsScoreHtml(c)}
+      ${wsFlawsHtml(flaws)}
+      ${wsQuestionsHtml(qs, flaws)}
+      ${w.meta && !items.length ? `<p class="muted small">No flaws or questions yet. The AI recruiter writes them when it scores the document.</p>` : ""}
+      ${upload}
+      <p class="muted small">The AI recruiter reads the document against the brief the candidate got and the role's review guide. The flaws and questions prepare the call; nobody is declined on them. Ticks and notes are yours: a robot's new list keeps them.</p></section>`;
+  }
+  // The open record's call notes (5 Nov review). A note saves when it loses focus, and whatever is still unsaved goes before any record is
+  // read (again) and when the record closes: an upload or a link used to redraw the record from a read made before the note went, so the
+  // field came back with the old note and without focus. Typing that lands while the record is being read again is carried over the redraw.
+  let wsLive = null, wsCarry = null;  // wsLive: { cid, flush() → Promise, unsaved() → { key: text }, focused() → { key, start, end } | null }
+  $("#recdlg").addEventListener("close", () => { if (wsLive) wsLive.flush(); });
+  function bindWsGo(c) {
+    const b = $("#wsblock [data-wsgo]");
+    if (b) b.addEventListener("click", () => {
+      const sb = $("#scoreblock"); if (!sb) return;
+      state.cardStage[c.id] = "worksample"; state.cardEdit = null;
+      sb.outerHTML = scoreBlock(c); bindScoreBlock(c);
+      $("#scoreblock").scrollIntoView({ block: "start", behavior: "smooth" });
+    });
+  }
+  function wsScoreRefresh(c) { const el = $("#wsscore"); if (el) { el.outerHTML = wsScoreHtml(c); bindWsGo(c); } }
+  function bindWsBlock(c) {
+    const el = $("#wsblock"), carry = wsCarry && wsCarry.cid === c.id ? wsCarry : null;
+    wsLive = null; wsCarry = null;
+    if (!el) return;
+    const id = c.id, w = wsOf(c) || {}, path = "worksample/" + encodeURIComponent(id);
+    // After a file or a link: everything is re-read (the Worker may have moved the stage, and Your call's form must not send the old one
+    // back), and the record reopens at this block, or at the note being typed.
+    const reopen = async () => {
+      forget(); await render(true); await openCandidate(id);
+      requestAnimationFrame(() => { const t = document.activeElement, b = $("#wsblock");
+        if (t && t.matches && t.matches("textarea.wsnote")) t.scrollIntoView({ block: "center" }); else if (b) b.scrollIntoView({ block: "start" }); });
+    };
+    bindWsGo(c);
+    // Questions: a tick saves on the click, a note when it loses focus; each sends only what changed and the record stays where it is.
+    const form = $("form[data-wsq]", el), sent = {};
+    const qName = (li) => "question " + (($(".wsn", li) || {}).textContent || li.dataset.key);
+    const patch = async (li, body) => {
+      const mark = $("[data-wssaved]", li);
+      mark.hidden = false; mark.classList.remove("bad"); mark.textContent = "Saving…";
+      try {
+        await api(`${path}/questions/${encodeURIComponent(li.dataset.key)}`, "PATCH", body);
+        const q = (w.questions || []).find((x) => x.key === li.dataset.key); if (q) Object.assign(q, body);
+        mark.textContent = "Saved"; setTimeout(() => { if (mark.textContent === "Saved") mark.hidden = true; }, 1600);
+        return true;
+      } catch (e) {
+        const msg = (e && e.message) || String(e);
+        mark.textContent = `Not saved (${msg}). Try again.`; mark.classList.add("bad");
+        // With the record closed (or another one open) the mark can't be seen, and api() names HTTP errors only, not a dropped network:
+        // say it at the top of the page, with the note's words (5 Nov review)
+        if (!li.isConnected || !$("#recdlg").open || e instanceof TypeError) {
+          const t = String(body.call_note || "");
+          notice("call_note" in body ? `${c.name}: the call note on ${qName(li)} wasn't saved (${msg}). Opening a record sends it again; reloading the page loses it. The note: "${t.length > 300 ? t.slice(0, 300) + "…" : t}"`
+            : `${c.name}: the tick on ${qName(li)} wasn't saved (${msg}). Open the record and tick it again.`, true);
+        }
+        return false;
+      }
+    };
+    const clean = () => { if (form && [...form.querySelectorAll("li.wsq")].every((li) => $("textarea.wsnote", li).value === sent[li.dataset.key])) delete form.dataset.dirty; };
+    const saveNote = async (li) => {
+      const key = li.dataset.key, v = $("textarea.wsnote", li).value, before = sent[key];
+      if (v === before) return;
+      sent[key] = v;
+      if (!(await patch(li, { call_note: v }))) sent[key] = before;
+      clean();
+    };
+    if (form) {
+      form.addEventListener("submit", (e) => e.preventDefault());
+      const count = () => { const k = $("[data-wscount]", form); if (k) k.textContent = `· ${form.querySelectorAll("input.tick:checked").length} of ${form.querySelectorAll("input.tick").length} asked`; };
+      const fit = (ta) => { ta.style.height = "auto"; ta.style.height = ta.scrollHeight + 2 + "px"; };
+      const items = [...form.querySelectorAll("li.wsq")];
+      items.forEach((li) => {
+        const cb = $("input.tick", li), ta = $("textarea.wsnote", li), key = li.dataset.key;
+        sent[key] = ta.value;
+        cb.addEventListener("change", async () => {
+          const v = cb.checked ? 1 : 0;
+          cb.disabled = true;
+          if (!(await patch(li, { asked: v }))) cb.checked = !v;
+          cb.disabled = false; li.classList.toggle("asked", cb.checked); count(); clean();
+        });
+        ta.addEventListener("input", () => fit(ta));
+        ta.addEventListener("change", () => saveNote(li));
+        ta.addEventListener("blur", () => saveNote(li));  // also a note carried over a redraw and left without more typing
+        // typing that landed while the record was being read again: back in its field, still to be saved
+        if (carry && carry.values[key] != null && carry.values[key] !== ta.value) { ta.value = carry.values[key]; fit(ta); form.dataset.dirty = "1"; }
+      });
+      const back = carry && carry.focus && items.find((li) => li.dataset.key === carry.focus.key);
+      if (back) { const ta = $("textarea.wsnote", back); ta.focus({ preventScroll: true }); try { ta.setSelectionRange(carry.focus.start, carry.focus.end); } catch (e) {} }
+      wsLive = { cid: id,
+        flush: () => form.isConnected ? Promise.all(items.map(saveNote)) : Promise.resolve(),
+        unsaved: () => Object.fromEntries(items.map((li) => [li.dataset.key, $("textarea.wsnote", li).value]).filter(([k, v]) => v !== sent[k])),
+        focused: () => { const t = document.activeElement, li = t && t.matches && t.matches("textarea.wsnote") && form.contains(t) ? t.closest("li.wsq") : null;
+          return li ? { key: li.dataset.key, start: t.selectionStart, end: t.selectionEnd } : null; } };
+    }
+    // The file or the link
+    const up = $("form[data-wsup]", el);
+    if (!up) return;
+    const mark = $("[data-wsupsaved]", up), fileIn = $('input[name="file"]', up), linkIn = $('input[name="link"]', up);
+    const say = (t, bad) => { mark.textContent = t; mark.classList.toggle("bad", !!bad); };
+    const busy = (on) => up.querySelectorAll("button").forEach((b) => { b.disabled = on; });
+    const got = () => ({ received: $('input[name="received"]', up).value || today(), source: $('input[name="source"]', up).value.trim() });
+    const upload = async () => {
+      const f = fileIn.files[0];
+      if (!f) return say("Choose the file first.", true);
+      if (!f.size) return say("That file is empty.", true);
+      if (f.size > WS_MAX) return say("The file is over 20 MB.", true);
+      const { received, source } = got(), headers = { "content-type": wsType(f), "x-filename": headerSafe(f.name), "x-received-at": received };
+      if (source) headers["x-source"] = headerSafe(source);
+      busy(true); say("Uploading…");
+      try { await send(path + "/file", { method: "PUT", headers, body: f }); delete up.dataset.dirty; await reopen(); }
+      catch (e) { busy(false); say(`Not stored (${(e && e.message) || e}).`, true); }
+    };
+    const addLink = async () => {
+      const link = linkIn.value.trim();
+      if (!/^https?:\/\/\S+$/i.test(link)) return say("The link has to start with https://", true);
+      const { received, source } = got(), body = { link, received_at: received };
+      if (source) body.source = source;
+      busy(true); say("Saving…");
+      try { await api(path + "/meta", "PUT", body); delete up.dataset.dirty; await reopen(); }
+      catch (e) { busy(false); say(`Not saved (${(e && e.message) || e}).`, true); }
+    };
+    const linkBtn = $('[data-wsact="link"]', up);
+    $('[data-wsact="file"]', up).addEventListener("click", upload);
+    linkBtn.addEventListener("click", addLink);
+    // Enter in the link field adds the link: the form has no submit button, so the browser wouldn't submit it (5 Nov review)
+    linkIn.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); if (!linkBtn.disabled) addLink(); } });
+    up.addEventListener("submit", (e) => { e.preventDefault(); (linkIn.value.trim() || !fileIn.files[0] ? addLink : upload)(); });
+    const del = $("[data-wsdel]", up);
+    if (del) del.addEventListener("click", async () => {
+      if (!confirm(`Remove the stored work sample file for ${c.name}? The link, if there is one, stays.`)) return;
+      busy(true);
+      try { await api(path + "/file", "DELETE"); await reopen(); } catch (e) { busy(false); say(`Not removed (${(e && e.message) || e}).`, true); }
     });
   }
 
@@ -874,7 +1103,10 @@
     view.querySelectorAll("[data-bopen]").forEach((b) => b.addEventListener("click", () => openCandidate(b.dataset.bopen)));
   }
 
-  function openRecord(title, eyebrow, html) {
+  function openRecord(title, eyebrow, html, cid) {
+    // Typing in a call note since openCandidate saved the notes: the same record's new form takes it over (bindWsBlock); for another record it is sent.
+    if (wsLive) { if (cid && wsLive.cid === cid) wsCarry = { cid, values: wsLive.unsaved(), focus: wsLive.focused() }; else wsLive.flush(); }
+    wsLive = null;
     const d = $("#recdlg"), body = $("#recbody"); $("#rectitle").textContent = title; $("#receyebrow").textContent = eyebrow; body.innerHTML = html;
     if (!d.open) (d.showModal ? d.showModal() : d.setAttribute("open", ""));
     // Back to the top once the dialog is shown: a closed dialog ignores scrollTop, so the next record used to open where the last one was left
