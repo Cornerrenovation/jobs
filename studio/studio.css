@@ -135,19 +135,14 @@ tr.trk td.step small{display:block;font-weight:400;margin-top:2px}
 .srow:hover{border-color:var(--line)}
 .srow .name{font-weight:600;color:var(--ink)}
 
-.stage.leadrow{background:transparent;border-style:dashed;margin:-2px 0 0 28px}
 .stagerow.static{cursor:default}.stagerow.static:hover{background:none}
-.stage.leadrow .sname{font-size:14.5px}.stage.leadrow .snum{font-size:20px}
-.stage.leadrow .sbar span{background:var(--accent)}
-@media (max-width:900px){.stage.leadrow{margin-left:12px}}
 
-/* Candidate record: criteria with evidence, the hiring lead, referral fields */
+/* Candidate record: criteria with evidence, referral fields */
 .hint{font-size:12.5px;color:var(--muted);line-height:1.4;margin-top:2px}
 .hint b{color:var(--ink);font-weight:600}
 .fieldnote{display:flex;flex-direction:column;gap:4px;font-size:13.5px;color:var(--text);padding-top:1px}
 .fieldnote .lbl,.prow .lbl{font-family:var(--m);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 .fieldnote>span:last-child{padding:9px 0}
-.leadbox{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:10px}
 ul.critlist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
 .crow{display:grid;grid-template-columns:92px 1fr;gap:10px;align-items:start;padding:9px 0;border-top:1px solid var(--line)}
 .crow:first-child{border-top:none;padding-top:2px}
@@ -156,8 +151,6 @@ ul.critlist{list-style:none;margin:0;padding:0;display:flex;flex-direction:colum
 .clabel{color:var(--ink);font-weight:500;line-height:1.4}
 .cbody .ev{color:var(--text);font-style:italic;overflow-wrap:anywhere}
 .cmeta{font-family:var(--m);font-size:11px;color:var(--muted)}
-.leadbox p{font-size:14px}
-.leadbox .form{margin-top:2px}
 
 /* Checklists: re-contact first */
 details.fold.pool>summary{font-size:16px}
@@ -303,6 +296,12 @@ dialog .dhead{display:flex;justify-content:space-between;gap:12px;align-items:fl
 .docbody code{font-family:var(--m);font-size:.9em;background:var(--code);padding:1px 5px;border-radius:4px}
 .docbody blockquote{margin:0;padding:4px 14px;border-left:3px solid var(--line)}
 .docbody table{min-width:560px}
+/* a document that came as an HTML page (the sourcing playbook): its header and sections keep the dialog's rhythm */
+.docbody header,.docbody section{display:flex;flex-direction:column;gap:10px;min-width:0}
+.docbody section{margin-top:16px}
+.docbody section>*,.docbody header>*,.docbody .card>*{margin:0}
+.docbody section>div:not([class]){display:flex;flex-direction:column;gap:6px}
+.docbody .card{display:flex;flex-direction:column;gap:8px;min-width:0}
 @media (prefers-reduced-motion:reduce){.bar span{transition:none}}
 
 /* The candidate record: a pop-up with three blocks */
@@ -500,3 +499,36 @@ label.wsask{flex-direction:row;align-items:center;gap:6px;flex:none;padding-top:
 .wsform>.saved,.wsform>p{grid-column:1/-1}
 .wsform>.saved:empty{display:none}
 @media (max-width:560px){.wsup .wsform{grid-template-columns:1fr}.wsqctl,.wsprobe,.wsq .saved{padding-left:0}.wsscore .linkbtn{margin-left:0}}
+
+/* Decisions (12 Nov): three steps in the record, each row with the name of the person who makes the call */
+ul.dsteps{list-style:none;margin:0;padding:4px 14px;background:var(--bg);border:1px solid var(--line);border-radius:8px;display:flex;flex-direction:column}
+.dstep{display:flex;flex-direction:column;gap:8px;padding:12px 0;border-top:1px solid var(--line);min-width:0}
+.dstep:first-child{border-top:none}
+.drow{display:grid;grid-template-columns:130px max-content minmax(0,1fr) max-content;gap:8px 12px;align-items:center;min-width:0}
+.dwho{font-weight:600;color:var(--ink);font-size:14px;overflow-wrap:anywhere}
+.drow.ro .dreason{font-size:14px;color:var(--text);overflow-wrap:anywhere}
+.dact{display:flex;gap:8px;align-items:center;justify-content:flex-end}
+@media (max-width:720px){.drow{grid-template-columns:1fr}.dact{justify-content:flex-start}}
+
+/* Onboarding (12 Nov): a plan per person, one line per task, comments under the task */
+.onbtasks li.step{flex-direction:column;align-items:stretch;gap:8px;padding:10px 14px}
+.onbrow{display:flex;gap:12px;align-items:center;min-width:0}
+.onbrow .seg{flex:none}
+/* the status reads at a glance down the list: to do is quiet, doing is the app's black, done is green (as Pass on the CV check) */
+.onbrow .seg button[data-v="todo"][aria-pressed="true"]{background:var(--bg-2);color:var(--text)}
+.onbrow .seg button[data-v="done"][aria-pressed="true"]{background:var(--ok-bg);color:var(--ok)}
+.onbmain{flex:1;min-width:0;display:flex;gap:6px 10px;align-items:baseline;flex-wrap:wrap}
+.onbmain .stitle{font-size:15px;line-height:1.35;text-decoration:none;cursor:default;overflow-wrap:anywhere}
+.onbmain a.stitle{cursor:pointer}
+.onbmain a.stitle:hover{text-decoration:underline;text-underline-offset:3px}
+.onbtask.done .onbmain a.stitle:hover{text-decoration:line-through underline}
+.onbc{display:inline-flex;gap:6px;align-items:center;flex:none;font-family:var(--m);font-size:12px}
+.onbc[aria-expanded="true"]{border-color:var(--ink)}
+.onbtasks .what p{white-space:pre-line;max-width:72ch}
+.onbthread{display:flex;flex-direction:column;gap:10px;padding:10px 12px;background:var(--bg);border:1px solid var(--line);border-radius:8px}
+.onbmsg{display:flex;flex-direction:column;gap:2px;min-width:0}
+.onbmsg p{font-size:14px;line-height:1.5;white-space:pre-line;overflow-wrap:anywhere}
+.onbform{display:flex;gap:8px;align-items:center}
+.onbform input{flex:1;min-width:0}
+.onb .kv{margin-top:10px}
+@media (max-width:640px){.onbrow{flex-wrap:wrap;justify-content:space-between}.onbmain{flex-basis:100%;order:-1}}
