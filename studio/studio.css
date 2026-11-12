@@ -4,6 +4,9 @@
   --bg:#e4e4dd; --bg-2:#d9d9d1; --card:#f4f4ef; --white:#fff; --ink:#1c1c1c; --text:#333; --muted:#5f5f5a;
   --line:rgba(106,100,100,.22); --accent:#9a7446; --ok:#3f7f41; --ok-bg:rgba(63,127,65,.12); --warn:#9a6a1a; --warn-bg:rgba(154,106,26,.12);
   --bad:#9e3233; --bad-bg:rgba(158,50,51,.10); --code:#efefe9;
+  /* the four kinds of onboarding task, in the same logic as ok / warn / bad: an ink for the word, the same hue at 12% behind it */
+  --call:#34588a; --call-bg:rgba(52,88,138,.12); --watch:#6b4a8c; --watch-bg:rgba(107,74,140,.12);
+  --read:#1f5c66; --read-bg:rgba(31,92,102,.12); --do:#6f4c22; --do-bg:rgba(154,116,70,.16);
   --f:"Red Hat Display",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
   --m:"Red Hat Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
   color-scheme:light;
@@ -524,11 +527,52 @@ ul.dsteps{list-style:none;margin:0;padding:4px 14px;background:var(--bg);border:
 .onbtask.done .onbmain a.stitle:hover{text-decoration:line-through underline}
 .onbc{display:inline-flex;gap:6px;align-items:center;flex:none;font-family:var(--m);font-size:12px}
 .onbc[aria-expanded="true"]{border-color:var(--ink)}
-.onbtasks .what p{white-space:pre-line;max-width:72ch}
-.onbthread{display:flex;flex-direction:column;gap:10px;padding:10px 12px;background:var(--bg);border:1px solid var(--line);border-radius:8px}
+.onbthread{display:flex;flex-direction:column;gap:10px}
 .onbmsg{display:flex;flex-direction:column;gap:2px;min-width:0}
 .onbmsg p{font-size:14px;line-height:1.5;white-space:pre-line;overflow-wrap:anywhere}
 .onbform{display:flex;gap:8px;align-items:center}
 .onbform input{flex:1;min-width:0}
 .onb .kv{margin-top:10px}
-@media (max-width:640px){.onbrow{flex-wrap:wrap;justify-content:space-between}.onbmain{flex-basis:100%;order:-1}}
+/* second round (12 Nov, evening): a name per day, a colour per kind of task, the answer inside the opened task, what is new */
+.onb .phase h3 b{font-weight:500;color:var(--ink)}
+.onb .phase h3 span{margin-left:auto}
+.pill.kind-call{background:var(--call-bg);color:var(--call)}.pill.kind-watch{background:var(--watch-bg);color:var(--watch)}
+.pill.kind-read{background:var(--read-bg);color:var(--read)}.pill.kind-do{background:var(--do-bg);color:var(--do)}
+.onbrow .seg button:disabled{cursor:default}
+.onba{flex:none}
+.onba[aria-expanded="true"]{border-color:var(--ink)}
+.onba.passed{color:var(--ok)}.onba.notyet{color:var(--warn)}
+.onbc{position:relative}
+.onbdot{position:absolute;top:-4px;right:-4px;width:11px;height:11px;border-radius:99px;background:var(--call);border:2px solid var(--card)}
+.onbopen{display:flex;flex-direction:column;gap:14px;padding:12px 14px;background:var(--bg);border:1px solid var(--line);border-radius:8px;min-width:0}
+.onbbrief,.onbtext{font-size:14px;line-height:1.5;white-space:pre-line;overflow-wrap:anywhere;max-width:76ch}
+.onbans{display:flex;flex-direction:column;gap:8px;min-width:0}
+.onbans textarea[name="answer"]{min-height:132px}
+.onbtext{padding:10px 12px;background:var(--card);border:1px solid var(--line);border-radius:8px;max-width:none}
+.onbverdict{display:flex;gap:8px 10px;align-items:baseline;flex-wrap:wrap;font-size:14px}
+.onbverdict .pill{flex:none}
+.onbkey ol{margin:6px 0 0;padding-left:22px;display:flex;flex-direction:column;gap:4px;font-size:13.5px;max-width:86ch}
+.onbpoints{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:8px}
+.onbpoints li{display:grid;grid-template-columns:62px minmax(0,1fr);gap:10px;align-items:baseline;font-size:13.5px}
+.onbpoints li>div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.onbpoints q{color:var(--muted);overflow-wrap:anywhere}
+.onbpoints .flag{color:var(--bad)}
+.onbscore{display:grid;grid-template-columns:96px minmax(0,1fr);gap:8px 12px;align-items:start}
+.onbscore textarea{min-height:0}
+.onbscore .formfoot{grid-column:1/-1;flex-wrap:wrap}
+.onbscore .formfoot .cmeta{margin-right:auto}
+.onbans .formfoot{flex-wrap:wrap}
+.onberr{flex-basis:100%;text-align:right}
+.onbnew{display:flex;flex-direction:column;gap:8px;padding:12px 14px}
+.onbnew ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.onbnewrow{display:flex;gap:10px;align-items:baseline;width:100%;min-width:0;padding:5px 0;background:none;border:none;border-top:1px solid var(--line);color:var(--text);font-size:14px;text-align:left;cursor:pointer}
+.onbnew li:first-child .onbnewrow{border-top:none}
+.onbnewrow b{flex:none;max-width:42%;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.onbnewrow>span:not(.cmeta){flex:1;min-width:0;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.onbnewrow .cmeta{flex:none}
+.onbnewrow:hover b{text-decoration:underline;text-underline-offset:3px}
+.onbnewrow.seen b{font-weight:500;color:var(--muted)}
+@media (max-width:640px){.onbrow{flex-wrap:wrap;justify-content:space-between;gap:8px}.onbmain{flex-basis:100%;order:-1}.onbrow .seg{margin-right:auto}
+  .onbrow .onba{order:3;flex-basis:100%}.onb .phase h3{flex-wrap:wrap;gap:2px 10px}
+  .onbscore{grid-template-columns:1fr}.onbpoints li{grid-template-columns:1fr;gap:4px}.onbpoints .pill{justify-self:start}
+  .onbnewrow{flex-wrap:wrap;gap:2px 10px}.onbnewrow b{max-width:100%}.onbnewrow>span:not(.cmeta){flex-basis:100%;order:3}}
