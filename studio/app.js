@@ -10,17 +10,30 @@
   // a date without a time is a calendar day: read it at local noon, or UTC midnight shows as the day before west of Greenwich
   const fmt = (iso) => { if (!iso) return ""; const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(iso) ? iso + "T12:00:00" : iso); return isNaN(d) ? iso : d.toLocaleDateString("en-GB", { day: "numeric", month: "short" }); };
   const fmtTime = (iso) => { const d = new Date(iso); return isNaN(d) ? iso : d.toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); };
-  const STAGES = ["applied", "triaged", "confirmed", "messaged", "replied", "screen booked", "screen done", "interview booked", "interview done",
-    "work sample", "references", "offer", "hired", "declined", "not now", "pool R1"];
-  const FUNNEL = [["Applied", ["applied"]], ["Triaged", ["triaged"]], ["Shortlisted", ["confirmed"]], ["Messaged", ["messaged"]], ["Replied", ["replied"]],
-    ["Screen call", ["screen booked", "screen done"]], ["Interview", ["interview booked", "interview done"]], ["Work sample", ["work sample"]],
-    ["References", ["references"]], ["Offer", ["offer"]], ["Hired", ["hired"]]];
-  const CLOSED = ["declined", "not now", "pool R1"];
-  const CALLS = ["", "Shortlist", "Hold", "Decline"];
-  // The funnel order the Worker keeps "reached" in: the furthest stage a candidate got to, even after they were closed.
+  // Stage model v2 (5 Nov), the same in the Worker: each stored stage has a status label and a stage group. The funnel order is the one
+  // the Worker keeps "reached" in (the furthest stage a candidate got to, even after they were closed).
   const ORDER = ["applied", "triaged", "confirmed", "messaged", "replied", "screen booked", "screen done", "interview booked", "interview done",
-    "work sample", "references", "offer", "hired"];
-  const STAGE_LABEL = { confirmed: "shortlisted" };
+    "work sample", "2nd interview booked", "2nd interview done", "references", "offer", "hired"];
+  // Closed: a person's call only (robots can't set these or move anyone out of them). A closed candidate's stage group is the group of the
+  // furthest stage they reached.
+  const CLOSED = ["declined", "withdrawn", "not now", "pool R1"];
+  // An outcome is known: cards saved now can't be blind (the Worker marks them "after the outcome").
+  const OUTCOME = ["hired", "declined", "withdrawn", "not now"];
+  const STATUS = { applied: "New", triaged: "In screening", confirmed: "Shortlisted", messaged: "Messaged", replied: "Replied",
+    "screen booked": "Invited to screen call", "screen done": "Screen call done", "interview booked": "Invited to 1st interview", "interview done": "1st interview done",
+    "work sample": "Test assignment sent", "2nd interview booked": "Invited to 2nd interview", "2nd interview done": "2nd interview done",
+    references: "References", offer: "Offer", hired: "Hired", declined: "Rejected", withdrawn: "Withdrawn", "not now": "Not now", "pool R1": "Pool (next round)" };
+  const WS_RECEIVED = "Test assignment received";  // "work sample" once the candidate's file or link is stored
+  const GROUPS = [["Screening", ["applied", "triaged", "confirmed", "messaged", "replied", "screen booked", "screen done"]], ["First interview", ["interview booked", "interview done"]],
+    ["Test assignment", ["work sample"]], ["Second interview", ["2nd interview booked", "2nd interview done"]], ["References", ["references"]], ["Offer", ["offer"]], ["Hired", ["hired"]]];
+  // Stages only a Worker with "stages-v2" knows: the stage pickers offer them only then (an older Worker would store them off the funnel)
+  const V2_STAGES = ["2nd interview booked", "2nd interview done", "withdrawn"];
+  // Every status label, in funnel order and closed ones last: the Status filter's options
+  const STATUS_LIST = ORDER.flatMap((s) => s === "work sample" ? [STATUS[s], WS_RECEIVED] : [STATUS[s]]).concat(CLOSED.map((s) => STATUS[s]));
+  const FUNNEL = [["Applied", ["applied"]], ["Triaged", ["triaged"]], ["Shortlisted", ["confirmed"]], ["Messaged", ["messaged"]], ["Replied", ["replied"]],
+    ["Screen call", ["screen booked", "screen done"]], ["First interview", ["interview booked", "interview done"]], ["Test assignment", ["work sample"]],
+    ["Second interview", ["2nd interview booked", "2nd interview done"]], ["References", ["references"]], ["Offer", ["offer"]], ["Hired", ["hired"]]];
+  const CALLS = ["", "Shortlist", "Hold", "Decline"];
   const VIEWS = ["week", "checklists", "pipeline", "candidates", "screening", "calibration", "outreach", "templates", "activity", "onboarding", "posts"];
   const CALL_RANK = { Shortlist: 0, Hold: 1, Decline: 2 }, CONF_RANK = { High: 0, Medium: 1, Low: 2 };
   // A blind calibration batch (scorecard section 7): Claude's call on these records stays hidden everywhere until a person has made theirs.
@@ -33,7 +46,9 @@
   const firstName = (by) => whoName(by).split(" ")[0];
   const state = { view: "week", boot: null, roleFilter: "all", role: null, filter: "all", candidates: null, results: null, outreach: null, templates: null, search: "", open: {},
     showClosed: false, justCreated: null, cards: null, cardStage: {}, cardEdit: null, srcFilter: "all", callFilter: "all", agentFilter: "all", confFilter: "all",
-    sort: { key: "", dir: 1 }, screenFilter: "tosend", calGroup: "", cvFilter: "all", resBy: {}, wsBy: {}, decBy: {}, onb: null, onbPlan: "", onbOpen: {}, onbDraft: {}, onbAnswer: {}, onbScore: {}, onbErr: {}, onbVisit: null, onbRead: {} };
+    sort: { key: "", dir: 1 }, screenFilter: "tosend", calGroup: "", cvFilter: "all", stageFilter: "all", statusFilter: "all", resBy: {}, wsBy: {}, decBy: {},
+    decisions: null, secAsk: {}, dOpen: {}, carry: null,
+    subOpen: {}, focusSec: "", onb: null, onbPlan: "", onbOpen: {}, onbDraft: {}, onbAnswer: {}, onbScore: {}, onbErr: {}, onbVisit: null, onbRead: {} };
   const store = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
 
   // missing: what to return on a 404 instead of an error (a route an older Worker doesn't have yet; the caller hides what it would show)
@@ -48,7 +63,7 @@
     if (r.status === 404 && missing !== undefined) return missing;
     const j = await r.json().catch(() => ({}));
     if (r.status === 503) { notice(j.error === "login_not_configured" ? "Sign-in isn't switched on for the studio yet." : "The sign-in check didn't answer. Try again in a minute.", true); throw new Error(j.error || "unavailable"); }
-    if (!r.ok || j.error) { notice(j.error || ("Request failed: " + r.status), true); throw new Error(j.error || r.status); }
+    if (!r.ok || j.error) { notice(j.error || ("Request failed: " + r.status), true); throw Object.assign(new Error(j.error || r.status), { status: r.status, data: j }); }
     return j;
   }
   function notice(text, bad) { const n = $("#notice"); n.textContent = text || ""; n.hidden = !text; n.classList.toggle("bad", !!bad); }
@@ -76,24 +91,67 @@
   // The hiring manager as a login: roles.lead holds a name ("Yuliia") or an email
   const leadEmail = (r) => { const l = String((r && (r.lead || r.owner)) || "").trim().toLowerCase();
     return (people().find((x) => x.email === l || x.name.toLowerCase() === l || x.name.toLowerCase().split(" ")[0] === l) || {}).email || ""; };
-  // A call reads with the name of the person who made it; with no call yet, the role's recruiter makes it; with neither, just "Call".
+  // A call reads with the name of the person who made it ("Kostya's call"); the row that makes one carries the viewer's own name, and the
+  // role's recruiter, who is meant to make it, is a note there (14 Nov review).
   const callBy = (c) => (c.your_call && c.call_by) || "";
-  const callLabel = (c) => { const by = callBy(c) || roleOf(c.role_id).recruiter || ""; return by ? `${firstName(by)}'s call` : "Call"; };
+  // The decisions after screening (12 Nov): 1 · Screening is the record's own call (your_call, made by call_by), 2 · Interview and
+  // 3 · Second interview are rows of their own, read with the record (decBy) and for the lists (need "decisions").
+  const STEPN = { screening: "Screening", interview: "Interview", second: "2nd interview" };
+  const decsOf = (c) => state.decBy[c.id] || (state.decisions || {})[c.id] || [];
+  // The latest call (14 Nov review: outside the Decision panel a call only ever meant the screening one, so an interview's No showed nowhere
+  // else and no filter found it): the furthest step anyone decided, with every decision made there, newest first; else the screening call.
+  function latestCall(c) {
+    for (const step of ["second", "interview"]) {
+      const here = decsOf(c).filter((d) => d.step === step && d.call).sort((a, b) => (b.at || "").localeCompare(a.at || ""));
+      if (here.length) return { step, call: here[0].call, by: here[0].by, all: here };
+    }
+    return c.your_call ? { step: "screening", call: c.your_call, by: callBy(c), all: [{ call: c.your_call, by: callBy(c) }] } : null;
+  }
+  // The Call filter's values and the Call sort: the furthest step first, a Go before a No
+  const CALL_KEYS = [["second|Go", "2nd interview: Go"], ["second|No", "2nd interview: No"], ["interview|Go", "Interview: Go"], ["interview|No", "Interview: No"],
+    ["screening|Shortlist", "Screening: Shortlist"], ["screening|Hold", "Screening: Hold"], ["screening|Decline", "Screening: Decline"]];
+  const callKey = (c) => { const l = latestCall(c); return l ? `${l.step}|${l.call}` : "none"; };
+  const callRank = (c) => { const i = CALL_KEYS.findIndex(([k]) => k === callKey(c)); return i < 0 ? CALL_KEYS.length : i; };
   // Each view loads only what it shows; the caches are dropped when the data changes (see refresh) or after a save.
   async function need(...keys) {
     // Lists load light candidate rows and per-candidate criteria counts; a record fetches its full row and its own criteria when it
     // opens (27 Oct: the full tables, about 3 MB and 6 MB, went over the Worker's CPU limit and Cloudflare answered with an error page).
-    const load = { candidates: "candidates?lite=1", summary: "criteria/results?summary=1", cards: "scorecards", outreach: "outreach", templates: "templates" };
+    const load = { candidates: "candidates?lite=1", summary: "criteria/results?summary=1", cards: "scorecards", outreach: "outreach", templates: "templates",
+      // the decisions after screening, by candidate (an older Worker has no such route: none). Read now, they replace what records opened
+      // earlier read, except the open record's own.
+      decisions: () => api("decisions", "GET", null, []).then((rows) => {
+        Object.keys(state.decBy).forEach((k) => { if (!isOpen(k)) delete state.decBy[k]; });
+        return rows.reduce((m, d) => ((m[d.candidate_id] = m[d.candidate_id] || []).push(d), m), {}); }) };
     const missing = keys.filter((k) => !state[k]);
-    (await Promise.all(missing.map((k) => api(load[k])))).forEach((v, i) => { state[missing[i]] = v; });
+    (await Promise.all(missing.map((k) => typeof load[k] === "function" ? load[k]() : api(load[k])))).forEach((v, i) => { state[missing[i]] = v; });
   }
-  const forget = () => { state.boot = null; state.candidates = null; state.summary = null; state.resBy = {}; state.cards = null; state.outreach = null; state.templates = null; state.msgs = null; state.onb = null; };
+  const forget = () => { state.boot = null; state.candidates = null; state.summary = null; state.resBy = {}; state.cards = null; state.outreach = null; state.templates = null; state.msgs = null; state.onb = null; state.decisions = null; };
 
   // ---------- shared candidate logic ----------
   const stageIdx = (s) => ORDER.indexOf(s || "");
   const reachedIdx = (c) => Math.max(stageIdx(c.stage || "applied"), stageIdx(c.reached));
   const reachedOf = (c) => ORDER[reachedIdx(c)] || "applied";
-  const stageWord = (s) => STAGE_LABEL[s] || s || "applied";
+  const stageLabel = (s) => STATUS[s || "applied"] || s;
+  const stageWord = (s) => stageLabel(s).toLowerCase();
+  // What the Worker says it knows (bootstrap "features"; an older Worker sends none, and its routes and stages stay out of the app)
+  const has = (f) => ((state.boot || {}).features || []).includes(f);
+  // The status label ("Invited to 1st interview") and the stage group ("First interview") of a candidate
+  const statusOf = (c) => { const s = c.stage || "applied"; return s === "work sample" && c.ws_file ? WS_RECEIVED : stageLabel(s); };
+  const groupOfStage = (s) => (GROUPS.find(([, st]) => st.includes(s)) || [""])[0];
+  const groupOf = (c) => groupOfStage(ORDER.includes(c.stage || "applied") ? c.stage || "applied" : reachedOf(c)) || "Screening";
+  const isClosedStage = (c) => CLOSED.includes(c.stage);
+  // Funnel order with closed stages after the open ones (a received test assignment just after a sent one)
+  const stageRank = (c) => { const s = c.stage || "applied", i = ORDER.indexOf(s), k = CLOSED.indexOf(s);
+    return i >= 0 ? i * 2 + (s === "work sample" && c.ws_file ? 1 : 0) : k >= 0 ? 1000 + k * 100 + reachedIdx(c) : 500; };
+  // The Stage picker: one group per stage group, status labels as the options' text. The stage stored now is always offered, so a save
+  // never changes it by accident.
+  function stageSelect(c) {
+    const cur = c.stage || "applied", offered = (s) => s === cur || has("stages-v2") || !V2_STAGES.includes(s);
+    const opt = (s) => `<option value="${h(s)}"${s === cur ? " selected" : ""}>${h(s === "work sample" ? statusOf({ stage: s, ws_file: c.ws_file }) : stageLabel(s))}</option>`;
+    const groups = GROUPS.concat([["Closed", CLOSED]]).map(([g, st]) => [g, st.filter(offered)]).filter(([, st]) => st.length);
+    return `<select name="stage">${ORDER.includes(cur) || CLOSED.includes(cur) ? "" : `<option value="${h(cur)}" selected>${h(cur)}</option>`}${
+      groups.map(([g, st]) => `<optgroup label="${h(g)}">${st.map(opt).join("")}</optgroup>`).join("")}</select>`;
+  }
   // Passed at least one stage: shortlisted (a person's call) or got as far as the shortlist or further, in any round.
   const passedStage = (c) => c.your_call === "Shortlist" || reachedIdx(c) >= stageIdx("confirmed");
   const sourceOf = (c) => (c.referred_by || "").trim() ? "Referral" : ((c.sources || "").split(/[,;·]/)[0].trim() || "Not recorded");
@@ -169,9 +227,17 @@
   const roleSeg = () => seg("role", [["all", "All roles"]].concat(openRoles().map((r) => [r.id, r.short]), roles().some(isClosedRole) ? [["closed", "Earlier rounds"]] : []), state.roleFilter);
   const inRole = (c) => state.roleFilter === "all" || c.role_id === state.roleFilter || (state.roleFilter === "closed" && isClosedRole(roleOf(c.role_id)));
   const pill = (text, kind) => text ? `<span class="pill ${kind || ""}" title="${h(text)}">${h(text)}</span>` : "";
-  const callPill = (c) => pill(c, c === "Shortlist" ? "ok" : c === "Decline" ? "bad" : c ? "warn" : "");
+  const callPill = (c) => pill(c, c === "Shortlist" || c === "Go" ? "ok" : c === "Decline" || c === "No" ? "bad" : c ? "warn" : "");
+  // The list's Call cell: the latest call and where it was made ("No" over "Interview · Kostya"), others at that step counted
+  const latestCell = (c) => { const l = latestCall(c); if (!l) return "";
+    return `${callPill(l.call)}<br><span class="muted small">${h(STEPN[l.step])}${l.by ? " · " + h(firstName(l.by)) : ""}${l.all.length > 1 ? ` +${l.all.length - 1}` : ""}</span>`; };
   const confWord = (c) => c ? `<span class="conf conf-${h(c.toLowerCase())}">${h(c)}</span>` : "";
   const table = (cols, rows) => `<div class="tablewrap"><table><thead><tr>${cols.map((c) => `<th>${h(c)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
+  // A text box that grows with its text, up to its data-max height (px, about four lines when not set)
+  const fitArea = (ta) => { if (!ta.getClientRects().length) return;  // hidden (a step's edit row before Edit): fitted when it shows
+    ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight + 2, Number(ta.dataset.max) || 108) + "px"; };
+  // A field that holds one line (a reason, a next step) shown in a box that wraps: a line break pasted into it becomes a space
+  const oneLine = (s) => String(s).replace(/\s*[\r\n]+\s*/g, " ");
 
   // ---------- This week and Posts: the launch kit, rendered by the checklist builder and synced as documents ----------
   async function renderDocView(view, slug) {
@@ -211,7 +277,7 @@
 
   // ---------- pipeline: a vertical funnel with conversions ----------
   async function renderPipeline(view) {
-    await need("candidates");
+    await need("candidates", "decisions");
     const list = state.candidates.filter(inRole);
     const isClosed = (c) => CLOSED.includes(c.stage) || isClosedRole(roleOf(c.role_id));  // an earlier round is closed as a whole
     const active = list.filter((c) => !isClosed(c));
@@ -233,7 +299,7 @@
           <span class="snum">${n}<small>${i > 1 ? `${pct(n, applied)} of applied` : i === 1 ? "" : "reached"}</small></span>
           <span class="sconv">${i ? `<b>${pct(n, prev)}</b><small>from ${h(FUNNEL[i - 1][0].toLowerCase())}</small>` : ""}${bottleneck && bottleneck.i === i ? pill("weakest step", "warn") : ""}</span>
         </button>
-        ${open ? `<div class="stagelist">${here.length ? here.map((c) => `<button type="button" class="srow" data-id="${h(c.id)}"><span class="name">${h(c.name)}</span><span class="muted">${h(roleName(c.role_id))}${c.sources ? " · " + h(c.sources) : ""}</span>${callPill(c.your_call)}${c.due ? `<span class="muted">due ${h(fmt(c.due))}</span>` : ""}<span class="pill">${h(c.stage)}</span></button>`).join("") : `<p class="muted">Nobody at this stage right now.</p>`}</div>` : ""}
+        ${open ? `<div class="stagelist">${here.length ? here.map((c) => `<button type="button" class="srow" data-id="${h(c.id)}"><span class="name">${h(c.name)}</span><span class="muted">${h(roleName(c.role_id))}${c.sources ? " · " + h(c.sources) : ""}</span>${latestCall(c) ? callPill(latestCall(c).call) : ""}${c.due ? `<span class="muted">due ${h(fmt(c.due))}</span>` : ""}${pill(statusOf(c))}</button>`).join("") : `<p class="muted">Nobody at this stage right now.</p>`}</div>` : ""}
       </div>`;
     }).join("");
     const strip = [[active.length, "active candidates"], [closed.length, "closed"], [pct(reached[FUNNEL.length - 1].length, applied), "applied to hired"],
@@ -246,12 +312,12 @@
       `<tr><td>${h(src)}</td><td>${cs.length}</td><td>${cs.filter(passedStage).length}</td><td>${atLeast(cs, "interview booked")}</td><td>${atLeast(cs, "hired")}</td><td>${hiredAll ? Math.round(100 * atLeast(cs, "hired") / hiredAll) + "%" : "–"}</td></tr>`));
     const referred = list.filter((c) => (c.referred_by || "").trim());
     const bountyTable = referred.length ? table(["Candidate", "Role", "Referred by", "Stage", "Hired on", "Bounty", "Bounty due"], referred.map((c) =>
-      `<tr class="clickable" data-id="${h(c.id)}"><td><span class="name">${h(c.name)}</span></td><td>${h(roleName(c.role_id))}</td><td>${h(c.referred_by)}</td><td>${pill(c.stage || "applied")}</td><td>${h(fmt(c.hired_at))}</td><td>${c.bounty ? h(c.bounty) : '<span class="muted">not set yet</span>'}</td><td>${c.bounty_due ? (c.bounty_due <= today() ? `<b>${h(fmt(c.bounty_due))} · due</b>` : h(fmt(c.bounty_due))) : '<span class="muted">at hire + 90 days</span>'}</td></tr>`)) : "";
+      `<tr class="clickable" data-id="${h(c.id)}"><td><span class="name">${h(c.name)}</span></td><td>${h(roleName(c.role_id))}</td><td>${h(c.referred_by)}</td><td>${pill(statusOf(c))}</td><td>${h(fmt(c.hired_at))}</td><td>${c.bounty ? h(c.bounty) : '<span class="muted">not set yet</span>'}</td><td>${c.bounty_due ? (c.bounty_due <= today() ? `<b>${h(fmt(c.bounty_due))} · due</b>` : h(fmt(c.bounty_due))) : '<span class="muted">at hire + 90 days</span>'}</td></tr>`)) : "";
     view.innerHTML = head("Pipeline", "Each stage counts everyone who reached it or went further. Closed candidates sit in their own row and don't count against the conversions. Click a stage to see who is there now.", roleSeg()) +
       `<div class="strip four">${strip.map(([v, t]) => `<div class="kpi"><b>${h(v)}</b><span>${h(t)}</span></div>`).join("")}</div>
       <div class="funnel">${rows}
-      <div class="stage closedrow"><button type="button" class="stagerow" data-toggle="Closed" aria-expanded="${!!state.open.Closed}"><span class="sname">Closed<small>declined, not now, pool, earlier rounds</small></span><span class="sbar"></span><span class="snum">${closed.length}</span><span class="sconv"></span></button>
-        ${state.open.Closed ? `<div class="stagelist">${closed.length ? closed.map((c) => `<button type="button" class="srow" data-id="${h(c.id)}"><span class="name">${h(c.name)}</span><span class="muted">${h(roleName(c.role_id))}</span><span class="pill">${h(isClosedRole(roleOf(c.role_id)) && !CLOSED.includes(c.stage) ? "got to " + stageWord(c.stage) : c.stage)}</span></button>`).join("") : '<p class="muted">Nobody closed yet.</p>'}</div>` : ""}</div></div>
+      <div class="stage closedrow"><button type="button" class="stagerow" data-toggle="Closed" aria-expanded="${!!state.open.Closed}"><span class="sname">Closed<small>rejected, withdrawn, not now, pool, earlier rounds</small></span><span class="sbar"></span><span class="snum">${closed.length}</span><span class="sconv"></span></button>
+        ${state.open.Closed ? `<div class="stagelist">${closed.length ? closed.map((c) => `<button type="button" class="srow" data-id="${h(c.id)}"><span class="name">${h(c.name)}</span><span class="muted">${h(roleName(c.role_id))}</span>${pill(isClosedRole(roleOf(c.role_id)) && !CLOSED.includes(c.stage) ? "got to " + stageWord(c.stage) : statusOf(c) + " · " + groupOf(c))}</button>`).join("") : '<p class="muted">Nobody closed yet.</p>'}</div>` : ""}</div></div>
       ${list.length ? "" : `<p class="muted">No candidates yet. They arrive from the jobs site, LinkedIn and Work.ua through the daily check-in, or you add one under Candidates.</p>`}
       <div class="group"><span class="eyebrow">Source of hire</span>${sourceTable}
         <p class="muted small">Counts everyone by the furthest stage they reached, closed candidates included. Source is the first channel in Sources; anyone with "Referred by" filled counts as Referral.</p></div>
@@ -264,26 +330,45 @@
 
   // ---------- candidates ----------
   async function renderCandidates(view) {
-    await need("candidates");
+    await need("candidates", "decisions");
     const q = state.search.trim().toLowerCase();
-    // Source and Call filters (Yuliia's request, 18 Oct); options count within the chosen role
+    // Source and Call filters (Yuliia's request, 18 Oct); options count within the chosen role. Call is the latest call (14 Nov review):
+    // the furthest step decided, so an interview's No is found as one, not as the Shortlist that came before it.
     const base = state.candidates.filter(inRole);
-    const callOf = (c) => c.your_call || "none", agentOf = (c) => blindNow(c) ? "blind" : c.agent_call || "none", confOf = (c) => blindNow(c) ? "blind" : c.confidence || "none", cvOf = (c) => c.cv_check || "none";
-    const count = (f) => { const m = {}; base.forEach((c) => { m[f(c)] = (m[f(c)] || 0) + 1; }); return m; };
+    const callOf = callKey, agentOf = (c) => blindNow(c) ? "blind" : c.agent_call || "none", confOf = (c) => blindNow(c) ? "blind" : c.confidence || "none", cvOf = (c) => c.cv_check || "none";
+    const count = (f, rows) => { const m = {}; (rows || base).forEach((c) => { m[f(c)] = (m[f(c)] || 0) + 1; }); return m; };
     const srcCounts = count(sourceOf), callCounts = count(callOf), agentCounts = count(agentOf), confCounts = count(confOf), cvCounts = count(cvOf);
     if (state.srcFilter !== "all" && !srcCounts[state.srcFilter]) state.srcFilter = "all";
-    const list = base.filter((c) => (state.srcFilter === "all" || sourceOf(c) === state.srcFilter) && (state.callFilter === "all" || callOf(c) === state.callFilter) &&
+    // Stage and Status (Kostya, 5 Nov): the stage group ("First interview", a closed candidate's furthest one) and the status label
+    // ("Invited to 1st interview", "Rejected"); they combine with every other filter and the search. With a stage chosen, Status offers that
+    // stage's statuses and the closed ones, counted within the stage, and a status the stage can't hold goes back to any, so the two never
+    // contradict each other (14 Nov review: "Test assignment" with "Invited to 1st interview" gave 0 of 1407 and no way back).
+    const inStage = (c) => state.stageFilter === "all" || groupOf(c) === state.stageFilter;
+    const groupCounts = count(groupOf), statusCounts = count(statusOf, base.filter(inStage));
+    const stGroups = GROUPS.filter(([g]) => state.stageFilter === "all" || g === state.stageFilter).map(([g, st]) => [g, st.flatMap((x) => x === "work sample" ? [STATUS[x], WS_RECEIVED] : [STATUS[x]])]);
+    const closedSt = CLOSED.map((x) => STATUS[x]);
+    const odd = Object.keys(statusCounts).filter((l) => !STATUS_LIST.includes(l));  // a stage the app doesn't know, so nobody is unfindable
+    if (state.statusFilter !== "all" && !stGroups.flatMap(([, l]) => l).concat(closedSt, odd).includes(state.statusFilter)) state.statusFilter = "all";
+    const list = base.filter((c) => inStage(c) && (state.statusFilter === "all" || statusOf(c) === state.statusFilter) &&
+      (state.srcFilter === "all" || sourceOf(c) === state.srcFilter) && (state.callFilter === "all" || callOf(c) === state.callFilter) &&
       (state.agentFilter === "all" || agentOf(c) === state.agentFilter) && (state.confFilter === "all" || confOf(c) === state.confFilter) &&
       (state.cvFilter === "all" || cvOf(c) === state.cvFilter) &&
-      (!q || [c.name, c.headline, c.location, c.sources, c.email, c.stage, c.your_call, c.agent_call].join(" ").toLowerCase().includes(q)));
+      (!q || [c.name, c.headline, c.location, c.sources, c.email, c.stage, statusOf(c), groupOf(c), c.your_call, c.agent_call].join(" ").toLowerCase().includes(q)));
     // Sorting: click a column header; click again to reverse. Calls sort Shortlist, Hold, Decline, then none; confidence High to Low.
     const SORTS = { name: (c) => (c.name || "").toLowerCase(), applied: (c) => c.applied || c.created_at || "", agent: (c) => blindNow(c) ? 4 : CALL_RANK[c.agent_call] ?? 3,
-      conf: (c) => blindNow(c) ? 4 : CONF_RANK[c.confidence] ?? 3, your: (c) => CALL_RANK[c.your_call] ?? 3, stage: (c) => stageIdx(c.stage || "applied"), due: (c) => c.due || "~" };
+      conf: (c) => blindNow(c) ? 4 : CONF_RANK[c.confidence] ?? 3, your: callRank, stage: stageRank, due: (c) => c.due || "~" };
     const sk = state.sort.key, sd = state.sort.dir;
     if (SORTS[sk]) list.sort((a, b) => { const x = SORTS[sk](a), y = SORTS[sk](b); return (x < y ? -1 : x > y ? 1 : 0) * sd || (a.name || "").localeCompare(b.name || ""); });
     const opt = (v, label, cur) => `<option value="${h(v)}" ${v === cur ? "selected" : ""}>${h(label)}</option>`;
+    // Labelled like the other filters, so a chosen value says what it filters ("Stage: Hired (2)" next to "Status: Hired (2)")
+    const stageSel = `<select id="fstage" aria-label="Stage">${opt("all", "Stage: any", state.stageFilter)}${GROUPS.map(([g]) => opt(g, `Stage: ${g} (${groupCounts[g] || 0})`, state.stageFilter)).join("")}</select>`;
+    // Status: the labels in funnel order under their stage group, closed ones last
+    const stOpt = (l) => opt(l, `Status: ${l} (${statusCounts[l] || 0})`, state.statusFilter);
+    const statusSel = `<select id="fstatus" aria-label="Status">${opt("all", "Status: any", state.statusFilter)}${stGroups.map(([g, l]) =>
+      `<optgroup label="${h(g)}">${l.map(stOpt).join("")}</optgroup>`).join("")}<optgroup label="Closed">${closedSt.map(stOpt).join("")}</optgroup>${
+      odd.length ? `<optgroup label="Other">${odd.map(stOpt).join("")}</optgroup>` : ""}</select>`;
     const srcSel = `<select id="fsrc" aria-label="Source">${opt("all", "All sources", state.srcFilter)}${Object.entries(srcCounts).sort((a, b) => b[1] - a[1]).map(([v, n]) => opt(v, `${v} (${n})`, state.srcFilter)).join("")}</select>`;
-    const callSel = `<select id="fcall" aria-label="Call">${opt("all", "Call: any", state.callFilter)}${[["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"], ["none", "No call yet"]].map(([v, l]) => opt(v, `Call: ${l} (${callCounts[v] || 0})`, state.callFilter)).join("")}</select>`;
+    const callSel = `<select id="fcall" aria-label="Call">${opt("all", "Call: any", state.callFilter)}${CALL_KEYS.concat([["none", "No call yet"]]).map(([v, l]) => opt(v, `Call: ${l} (${callCounts[v] || 0})`, state.callFilter)).join("")}</select>`;
     const agentSel = `<select id="fagent" aria-label="Agent call">${opt("all", "Agent call: any", state.agentFilter)}${[["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"], ["none", "Not read yet"]].concat(agentCounts.blind ? [["blind", "Hidden, blind batch"]] : []).map(([v, l]) => opt(v, `Agent call: ${l} (${agentCounts[v] || 0})`, state.agentFilter)).join("")}</select>`;
     const confSel = `<select id="fconf" aria-label="Confidence">${opt("all", "Confidence: any", state.confFilter)}${[["High", "High"], ["Medium", "Medium"], ["Low", "Low"]].map(([v, l]) => opt(v, `Confidence: ${l} (${confCounts[v] || 0})`, state.confFilter)).join("")}</select>`;
     const cvSel = `<select id="fcv" aria-label="CV check">${opt("all", "CV check: any", state.cvFilter)}${[["Pass", "Pass"], ["Not pass", "Not pass"], ["none", "Not checked"]].map(([v, l]) => opt(v, `CV check: ${l} (${cvCounts[v] || 0})`, state.cvFilter)).join("")}</select>`;
@@ -291,15 +376,34 @@
     // so Next step and Due fit without scrolling sideways
     const cols = [["Name", "name"], ["Role · source", ""], ["Applied", "applied"], ["Claude", "agent"], ["Call", "your"], ["Stage", "stage"], ["Next step", ""], ["Due", "due"]];
     const th = ([label, key]) => key ? `<th><button type="button" class="sorth" data-sort="${key}" aria-sort="${sk === key ? (sd > 0 ? "ascending" : "descending") : "none"}">${h(label)}<span class="arrow">${sk === key ? (sd > 0 ? "↑" : "↓") : "↕"}</span></button></th>` : `<th>${h(label)}</th>`;
-    view.innerHTML = head("Candidates", `${list.length} of ${state.candidates.length}`, `<button type="button" class="btn" id="add">Add candidate</button>`) +
-      `<div class="toolbar"><input type="search" id="q" placeholder="Search name, headline, source, stage" value="${h(state.search)}">${srcSel}${agentSel}${confSel}${callSel}${cvSel}${roleSeg()}</div>
-      ${list.length ? `<div class="tablewrap cands"><table><thead><tr>${cols.map(th).join("")}</tr></thead><tbody>${
-        list.map((c) => `<tr class="clickable" data-id="${h(c.id)}"><td class="cname"><span class="name">${h(c.name)}</span><span class="muted clamp2">${h(c.headline || c.location || "")}</span></td><td class="csrc"><span class="muted small">${h(roleName(c.role_id))}</span><br>${h(sourceShort(c.sources))}${c.referred_by ? `<br><span class="muted">referred by ${h(c.referred_by)}</span>` : ""}</td><td class="nowrap">${h(fmt(c.applied))}</td><td>${blindNow(c) ? pill("blind") : callPill(c.agent_call)}${blindNow(c) || !c.confidence ? "" : `<br>${confWord(c.confidence)}`}</td><td>${callPill(c.your_call)}${callBy(c) ? `<br><span class="muted small">${h(firstName(callBy(c)))}</span>` : ""}</td><td>${pill(c.stage || "applied")}${c.ws_file ? `<br><span class="wsflag" title="${h(c.ws_file)}">Work sample</span>` : ""}</td><td class="cnext"><span class="clamp2" title="${h(c.next_step)}">${h(c.next_step)}</span></td><td class="nowrap">${h(fmt(c.due))}</td></tr>`).join("")}</tbody></table></div>`
+    // On a phone the column headers give way to cards, so the sort is a select inside the filters
+    const SORT_OPTS = [["", 1, "Sort: latest change"], ["applied", -1, "Sort: applied, newest"], ["name", 1, "Sort: name"], ["stage", 1, "Sort: stage"], ["due", 1, "Sort: due"],
+      ["agent", 1, "Sort: Claude's call"], ["conf", 1, "Sort: confidence"], ["your", 1, "Sort: call"]];
+    const sortSel = `<select id="fsort" class="fsort" aria-label="Sort">${SORT_OPTS.map(([k, d, l]) => `<option value="${k}|${d}"${(SORTS[sk] ? sk : "") === k ? " selected" : ""}>${h(l)}</option>`).join("")}</select>`;
+    // What is filtering the list: the search and every filter not at "any" (the role's buttons stay in sight). Clear filters puts them back.
+    const picked = [state.stageFilter, state.statusFilter, state.srcFilter, state.agentFilter, state.confFilter, state.callFilter, state.cvFilter].filter((v) => v !== "all").length;
+    const on = picked + (q ? 1 : 0), clear = `<button type="button" class="linkbtn" data-fclear>Clear filters</button>`;
+    // Each row as a table row; on a phone as a card (studio.css): the name and the status with its group, the calls, the next step and due.
+    // On a phone the Applied column gives way to the card's second line, which carries the date (14 Nov review: "· applied 18 Oct").
+    const row = (c) => `<tr class="clickable" data-id="${h(c.id)}"><td class="cname"><span class="name">${h(c.name)}</span><span class="muted clamp2">${h(c.headline || c.location || "")}</span></td><td class="csrc"><span class="muted small">${h(roleName(c.role_id))}</span><span class="sep"> · </span><br>${h(sourceShort(c.sources))}${c.applied ? `<span class="cappm"> · applied ${h(fmt(c.applied))}</span>` : ""}${c.referred_by ? `<br><span class="muted">referred by ${h(c.referred_by)}</span>` : ""}</td><td class="nowrap capplied">${h(fmt(c.applied))}</td><td class="cclaude">${blindNow(c) ? pill("blind") : callPill(c.agent_call)}${blindNow(c) || !c.confidence ? "" : `<br>${confWord(c.confidence)}`}</td><td class="ccall">${latestCell(c)}</td><td class="cstage"><span class="stl${isClosedStage(c) ? " closed" : ""}">${h(statusOf(c))}</span><span class="muted small cgrp">${h(groupOf(c))}</span>${c.ws_file && statusOf(c) !== WS_RECEIVED ? `<span class="wsflag" title="${h(c.ws_file)}">Work sample</span>` : ""}</td><td class="cnext"><span class="clamp2" title="${h(c.next_step)}">${h(c.next_step)}</span></td><td class="nowrap cdue">${c.due ? `<span class="duew">due </span>${h(fmt(c.due))}` : ""}</td></tr>`;
+    view.innerHTML = head("Candidates", `${list.length} of ${state.candidates.length}${on ? ` · ${on} filter${on > 1 ? "s" : ""} on · ${clear}` : ""}`, `<button type="button" class="btn" id="add">Add candidate</button>`) +
+      `<div class="toolbar ctools${state.filtersOpen ? " open" : ""}"><input type="search" id="q" placeholder="Search name, headline, source, stage" value="${h(state.search)}">
+        <button type="button" class="btn ghost ftoggle" id="ftoggle" aria-expanded="${state.filtersOpen ? "true" : "false"}" aria-controls="fsel">Filters${picked ? ` · ${picked}` : ""}</button>
+        <div class="fsel" id="fsel">${stageSel}${statusSel}${srcSel}${agentSel}${confSel}${callSel}${cvSel}${sortSel}${roleSeg()}</div></div>
+      ${list.length ? `<div class="tablewrap cands"><table><thead><tr>${cols.map(th).join("")}</tr></thead><tbody>${list.map(row).join("")}</tbody></table></div>`
+        : on ? `<div class="card empty">No candidates match these filters. ${clear}</div>`
         : `<div class="card empty">No candidates match. They arrive from the jobs site, LinkedIn and Work.ua through the daily check-in, or add one by hand.</div>`}`;
     const qel = $("#q", view);
     qel.addEventListener("input", (e) => { state.search = e.target.value; renderCandidates(view); qel.focus(); });
     if (q) { qel.focus(); qel.setSelectionRange(qel.value.length, qel.value.length); }
+    view.querySelectorAll("[data-fclear]").forEach((b) => b.addEventListener("click", () => {
+      Object.assign(state, { search: "", stageFilter: "all", statusFilter: "all", srcFilter: "all", agentFilter: "all", confFilter: "all", callFilter: "all", cvFilter: "all" });
+      renderCandidates(view); }));
+    $("#ftoggle", view).addEventListener("click", () => { state.filtersOpen = !state.filtersOpen; renderCandidates(view); });
+    $("#fsort", view).addEventListener("change", (e) => { const [k, d] = e.target.value.split("|"); state.sort = { key: k, dir: Number(d) || 1 }; renderCandidates(view); });
     bindSeg(view, "role", (v) => { state.roleFilter = v; renderCandidates(view); });
+    $("#fstage", view).addEventListener("change", (e) => { state.stageFilter = e.target.value; renderCandidates(view); });
+    $("#fstatus", view).addEventListener("change", (e) => { state.statusFilter = e.target.value; renderCandidates(view); });
     $("#fsrc", view).addEventListener("change", (e) => { state.srcFilter = e.target.value; renderCandidates(view); });
     $("#fcall", view).addEventListener("change", (e) => { state.callFilter = e.target.value; renderCandidates(view); });
     $("#fcv", view).addEventListener("change", (e) => { state.cvFilter = e.target.value; renderCandidates(view); });
@@ -310,9 +414,10 @@
     view.querySelectorAll("tr.clickable").forEach((tr) => tr.addEventListener("click", () => openCandidate(tr.dataset.id)));
     $("#add", view).addEventListener("click", () => openCandidate(null));
   }
-  // ---------- the candidate record: a pop-up with three blocks ----------
+  // ---------- the candidate record's parts: links, the CV, the screening answers, Claude's read ----------
   const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch (e) { return u; } };
   function linkChip(u, forcedLabel) {
+    if (!/^https?:\/\//i.test(String(u || "").trim())) return u ? `<span class="chip link off" title="${h(u)}">${h(forcedLabel || u)}</span>` : "";
     const host = hostOf(u);
     const label = forcedLabel || (/linkedin\.com\/hiring\/applicants/.test(u) ? "CV on LinkedIn · application" : /linkedin\.com/.test(host) ? "LinkedIn" :/drive\.google\.com|docs\.google\.com/.test(host) ? "CV · in hello@'s Drive" : /instagram\.com/.test(host) ? "Instagram · " + (u.match(/instagram\.com\/([^/?]+)/) || [])[1] : /behance|dribbble|framer|notion|figma|vimeo|youtube/.test(host) ? host : host);
     return `<a class="chip link" href="${h(u)}" target="_blank" rel="noopener" title="${h(u)}">${h(label)} ↗</a>`;
@@ -409,171 +514,491 @@
   const kindOf = (d, r) => d.kind === "knockout" ? (r.result === "met" ? ["passes", "ok"] : r.result === "not met" ? ["fails", "bad"] : ["unclear", "warn"])
     : d.kind === "minus" ? (r.result === "met" ? ["red flag", "bad"] : r.result === "not met" ? ["no", ""] : ["unclear", "warn"])
     : (r.result === "met" ? ["yes", "ok"] : r.result === "not met" ? ["no", ""] : ["unclear", "warn"]);
-  function readBlock(c) {
-    if (blindNow(c)) return `<section class="block read"><div class="readhead"><div><span class="eyebrow">2 · Claude's read</span><h3 class="muted">Hidden until the call is saved</h3></div><span class="cmeta">${h(c.calib_batch)}</span></div>
-      <p class="muted small">This record is in a blind calibration batch: open the CV, set the CV check and the call with a reason, and save. Claude's call shows after that and counts toward the agreement on the Calibration tab.</p></section>`;
-    // A role can carry two scorecard versions (Brand & Content: v0.3 bc-*, v0.4 bc4-*): show the set this record was read with,
-    // or the newest set when it hasn't been read yet.
-    const all = criteriaFor(c.role_id), newest = all.length ? all[all.length - 1].source : "";
-    const lastVer = (resultsFor(c.id).slice().sort((a, b) => (b.at || "").localeCompare(a.at || ""))[0] || {}).rules_version;
+  // Claude's read: the criteria set this record was read with (a role can carry two scorecard versions, Brand & Content v0.3 bc-* and
+  // v0.4 bc4-*), or the newest set when it hasn't been read yet, and each result.
+  function readModel(c) {
+    const all = criteriaFor(c.role_id), newest = all.length ? all[all.length - 1].source : "", byAt = (a, b) => (b.at || "").localeCompare(a.at || "");
+    const lastVer = (resultsFor(c.id).slice().sort(byAt)[0] || {}).rules_version;
     const res = resultsFor(c.id).filter((x) => x.rules_version === lastVer);
     const defs = res.length ? all.filter((d) => res.some((x) => x.criterion_id === d.id)) : all.filter((d) => d.source === newest);
-    const row = (d) => { const r = res.find((x) => x.criterion_id === d.id); if (!r) return `<li class="crow"><span class="pill">not checked</span><div class="cbody"><span class="clabel">${h(d.label)}</span></div></li>`;
+    return { res, defs, last: res.slice().sort(byAt)[0], resultOf: (d) => res.find((x) => x.criterion_id === d.id) };
+  }
+  // "Shortlist · high · knockouts 0 failed of 3, 2 unclear · markers 3 of 5 · 1 red flag": the open section's own counts, each group on its
+  // own (14 Nov review: one ratio of knockouts and markers together, with unclear counted as not met, read like a failing profile)
+  function readSummary(c) {
+    if (blindNow(c)) return "Hidden until the call is saved";
+    const { res, defs, resultOf } = readModel(c);
+    if (!c.agent_call && !res.length) return "Not read yet";
+    const of = (kind) => defs.filter((d) => d.kind === kind), n = (list, result) => list.filter((d) => (resultOf(d) || {}).result === result).length;
+    const ko = of("knockout"), plus = of("plus"), flags = n(of("minus"), "met");
+    const unclear = ko.filter((d) => { const r = resultOf(d); return r && r.result !== "met" && r.result !== "not met"; }).length;  // the section's "unclear" pills
+    return [c.agent_call || "No call yet", c.confidence ? c.confidence.toLowerCase() : "",
+      ko.length ? `knockouts ${n(ko, "not met")} failed of ${ko.length}${unclear ? `, ${unclear} unclear` : ""}` : "",
+      plus.length ? `markers ${n(plus, "met")} of ${plus.length}` : "", flags ? `${flags} red flag${flags > 1 ? "s" : ""}` : ""].filter(Boolean).join(" · ");
+  }
+  function readBlock(c) {
+    if (blindNow(c)) return `<div class="readhead"><h3 class="muted">Hidden until the call is saved</h3><span class="cmeta">${h(c.calib_batch)}</span></div>
+      <p class="muted small">This record is in a blind calibration batch: open the CV, set the CV check and the call with a reason, and save. Claude's call shows after that and counts toward the agreement on the Calibration tab.</p>`;
+    const { res, defs, last, resultOf } = readModel(c);
+    const row = (d) => { const r = resultOf(d); if (!r) return `<li class="crow"><span class="pill">not checked</span><div class="cbody"><span class="clabel">${h(d.label)}</span></div></li>`;
       const [word, kind] = kindOf(d, r); return `<li class="crow"><span class="pill ${kind}">${h(word)}</span><div class="cbody"><span class="clabel">${h(d.label)}</span>${r.evidence ? `<span class="ev">${h(r.evidence)}</span>` : ""}${r.field ? `<span class="cmeta">From ${h(r.field)}</span>` : ""}</div></li>`; };
     const ko = defs.filter((d) => d.kind === "knockout"), plus = defs.filter((d) => d.kind === "plus"), minus = defs.filter((d) => d.kind === "minus"), other = defs.filter((d) => !["knockout", "plus", "minus"].includes(d.kind));
-    const count = (list, pred) => list.filter((d) => { const r = res.find((x) => x.criterion_id === d.id); return r && pred(r); }).length;
-    const last = res.slice().sort((a, b) => (b.at || "").localeCompare(a.at || ""))[0];
-    const head = c.agent_call ? `<div class="readhead"><div><span class="eyebrow">2 · Claude's read</span><h3>${h(c.agent_call)}${c.confidence ? ` <span class="muted">· ${h(c.confidence.toLowerCase())} confidence</span>` : ""}</h3></div><span class="cmeta">${h(c.rules_version || (last && last.rules_version) || "")}${last ? ` · ${h(fmt(last.at))}` : ""}</span></div>`
-      : `<div class="readhead"><div><span class="eyebrow">2 · Claude's read</span><h3 class="muted">Not read yet</h3></div></div>`;
-    if (!c.agent_call && !res.length) return `<section class="block">${head}<p class="muted">The next robot run reads the application against the ${h(roleName(c.role_id))} scorecard: completeness, knockouts, markers, then a proposal.</p></section>`;
-    return `<section class="block read">${head}
+    const count = (list, pred) => list.filter((d) => { const r = resultOf(d); return r && pred(r); }).length;
+    if (!c.agent_call && !res.length) return `<p class="muted">The next robot run reads the application against the ${h(roleName(c.role_id))} scorecard: completeness, knockouts, markers, then a proposal.</p>`;
+    return `<div class="readhead"><h3>${c.agent_call ? `${h(c.agent_call)}${c.confidence ? ` <span class="muted">· ${h(c.confidence.toLowerCase())} confidence</span>` : ""}` : '<span class="muted">No call yet</span>'}</h3>
+        <span class="cmeta">${h(c.rules_version || (last && last.rules_version) || "")}${last ? ` · ${h(fmt(last.at))}` : ""}</span></div>
       ${c.why ? `<p class="why">${h(c.why)}</p>` : ""}
       ${ko.length ? `<div class="critgroup"><span class="lbl">Knockouts · ${count(ko, (r) => r.result === "not met")} failed of ${ko.length}</span><ul class="critlist">${ko.map(row).join("")}</ul></div>` : ""}
       ${plus.length ? `<div class="critgroup"><span class="lbl">Markers for · ${count(plus, (r) => r.result === "met")} of ${plus.length}</span><ul class="critlist">${plus.map(row).join("")}</ul></div>` : ""}
       ${minus.length ? `<div class="critgroup"><span class="lbl">Red flags · ${count(minus, (r) => r.result === "met")} of ${minus.length}</span><ul class="critlist">${minus.map(row).join("")}</ul></div>` : ""}
       ${other.length ? `<div class="critgroup"><span class="lbl">Criteria</span><ul class="critlist">${other.map(row).join("")}</ul></div>` : ""}
       ${c.doubt ? `<div class="kvline"><span class="lbl">Doubt to probe</span><span>${h(c.doubt)}</span></div>` : ""}
-      <p class="muted small">Claude's reading of what she or he sent, against the scorecard, with the words it rests on. It informs the call; nobody is declined on it.</p></section>`;
+      <p class="muted small">Claude's reading of what she or he sent, against the scorecard, with the words it rests on. It informs the call; nobody is declined on it.</p>`;
   }
-  async function openCandidate(id) {
-    if (wsLive) await wsLive.flush();  // a call note still in its field is saved before any record is read (again)
-    if (id) await need("candidates", "cards");
-    const c = id ? state.candidates.find((x) => x.id === id) : { stage: "applied", role_id: state.roleFilter !== "all" && state.roleFilter !== "closed" ? state.roleFilter : (openRoles()[0] || {}).id };
-    if (!c) { forget(); await render(true); notice(`There's no candidate ${id} in the studio.`, true); return; }
-    if (id) {  // the full row (CV, screening answers, written answer, first lines) and this candidate's criteria
-      const [full, res, msgs, ws, dec] = await Promise.all([api("candidates/" + encodeURIComponent(id)), api("criteria/results?candidate_id=" + encodeURIComponent(id)), api("messages?candidate_id=" + encodeURIComponent(id)),
-        wsLoad(id), api("decisions?candidate_id=" + encodeURIComponent(id), "GET", null, [])]);
-      Object.assign(c, full); state.resBy = state.resBy || {}; state.resBy[id] = res; state.msgsBy = state.msgsBy || {}; state.msgsBy[id] = msgs; state.wsBy[id] = ws; state.decBy[id] = dec;
-    }
-    const sel = (name, opts, val, labels) => `<select name="${name}">${opts.map((o, i) => `<option value="${h(o)}" ${o === (val || "") ? "selected" : ""}>${h(labels ? labels[i] : (o || "–"))}</option>`).join("")}</select>`;
-    const kv = (k, v) => v ? `<dt>${h(k)}</dt><dd>${h(v)}</dd>` : "";
+
+  // ---------- the candidate record (redesigned 5 Nov): a header that stays, the Next call panel and collapsible sections in the main column,
+  // and the Decision panel on the right (under the Next call panel on a narrow screen) ----------
+  // A section's open or closed state is remembered per section, across records (localStorage); a call sheet's groups stay as they were
+  // while the same record is redrawn.
+  const secOpen = (name, dflt) => { const v = store.get("studio-sec-" + name); return v === "1" ? true : v === "0" ? false : dflt; };
+  const section = (name, title, summary, body, dflt) => { const open = secOpen(name, dflt);
+    return `<details class="rsec" id="sec-${name}" data-sec="${name}" data-state="${open ? 1 : 0}"${open ? " open" : ""}><summary><span class="rsec-t">${h(title)}</span><span class="rsec-s" data-secsum>${h(summary)}</span></summary><div class="rsec-b">${body}</div></details>`; };
+  const setSum = (name, text) => { const el = $(`#sec-${name} [data-secsum]`); if (el) el.textContent = text; };
+  // Opened by the app (a link from the Calibration view, the Work sample's "tab" button), not by the person: not remembered
+  function openSec(name, scroll) {
+    const d = $("#sec-" + name); if (!d) return;
+    if (!d.open) { d.dataset.state = "1"; d.open = true; }
+    if (scroll) requestAnimationFrame(() => d.scrollIntoView({ block: "start" }));
+  }
+  const isOpen = (id) => $("#recdlg").open && $("#recdlg").dataset.cid === id;
+  const callKind = (x) => x === "Shortlist" || x === "Go" ? "ok" : x === "Decline" || x === "No" ? "bad" : x ? "warn" : "";
+  // The latest call, with its step and the name of each person who decided there: "Interview · Kostya: No", "2nd interview · Julieta: Go ·
+  // Kostya: No", "Screening · Kostya: Shortlist"; with no call yet the one the role's recruiter makes (14 Nov review: the header named the
+  // screening call while the panel held an interview No)
+  function callChip(c) {
+    const l = latestCall(c), rec = roleOf(c.role_id).recruiter;
+    if (!l) return pill(`Screening · ${rec ? `${firstName(rec)}'s call, ` : ""}not made yet`, "");
+    const kinds = [...new Set(l.all.map((d) => callKind(d.call)))];
+    return pill(`${STEPN[l.step]} · ${l.all.map((d) => (d.by ? firstName(d.by) + ": " : "") + d.call).join(" · ")}`, kinds.length === 1 ? kinds[0] : "warn");
+  }
+  // The header: status and stage group, the latest call with the name of whoever made it, Claude's (not in a blind batch), one line of facts,
+  // and the links used most
+  function headHtml(c, hideClaude) {
+    const kind = ["declined", "withdrawn"].includes(c.stage) ? "bad" : ["offer", "hired"].includes(c.stage) ? "ok" : "";
+    const w = wsOf(c), m = w && !w.failed ? w.meta : null, wsLink = m && /^https?:\/\/\S+$/i.test(m.link || "") ? m.link : "";
     const role = roleOf(c.role_id);
-    const furthest = id && reachedIdx(c) > stageIdx(c.stage || "applied") ? stageWord(reachedOf(c)) : "";
-    const links = [];
-    if (c.linkedin) links.push(linkChip(c.linkedin, "LinkedIn"));
-    urlsIn(c.cv).filter((u) => !/linkedin\.com\/hiring\/applicants|drive\.google\.com|docs\.google\.com/.test(u)).forEach((u) => links.push(linkChip(u)));
-    const eyebrow = id ? [c.id, roleName(c.role_id) + (isArchivedRole(role) ? " (archived)" : isClosedRole(role) ? " (earlier round)" : ""), c.sources, c.applied ? "applied " + fmt(c.applied) : ""].filter(Boolean).join(" · ") : roleName(c.role_id);
-    const application = id ? `<section class="block"><span class="eyebrow">1 · From the application</span>
-        <dl class="kv">${kv("Location", c.location)}${kv("Email", c.email)}${kv("English, self-rated", c.english)}${kv("Headline", c.headline)}${kv("Referred by", c.referred_by)}${kv("Furthest stage", furthest)}${kv("Scores", c.scores)}${kv("Latest reply", c.latest_reply)}${kv("Last contact", c.last_contact)}</dl>
-        ${screeningBlock(c)}
-        ${cvBlock(c)}
-        ${links.length ? `<div class="links"><span class="lbl">Links she or he gave</span><div class="chips">${links.join("")}</div>${/drive\.google\.com/.test(c.cv || "") ? `<span class="muted small">The CV sits in hello@'s Drive. If the link asks for access, hello@ needs to share the "Corner Careers — Applications" folder with you once.</span>` : ""}</div>` : ""}
-        ${cvCheck(c)}
-        ${c.site_answer ? `<div class="answer"><span class="lbl">Written answer</span><p>${h(c.site_answer).replace(/\n+/g, "<br>")}</p></div>` : ""}</section>` : "";
-    const callSeg = `${seg("yourcall", [["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"]], c.your_call || "")}<input type="hidden" name="your_call" value="${h(c.your_call || "")}">`;
-    // 3 · Decisions (12 Nov): three steps, each with the name of the person who makes the call. Screening is the record's own call and
-    // saves with the record (it moves the stage as before); the interview and second-interview decisions save one by one.
-    const form = `<section class="block"><span class="eyebrow">${id ? "3 · Decisions" : "New candidate"}</span>
+    const facts = [c.id, roleName(c.role_id) + (isArchivedRole(role) ? " (archived)" : isClosedRole(role) ? " (earlier round)" : ""), c.sources, c.applied ? "applied " + fmt(c.applied) : "", c.location, c.english ? "English: " + c.english : ""].filter(Boolean);
+    const links = [c.linkedin ? linkChip(c.linkedin, "LinkedIn") : "", cvOpen(c, "chip link"),
+      m && Number(m.size) > 0 ? `<a class="chip link" href="${API}worksample/${encodeURIComponent(c.id)}/file" target="_blank" rel="noopener" title="${h(m.filename || c.ws_file || "")}">Open work sample ↗</a>` : wsLink ? linkChip(wsLink, "Work sample") : "",
+      c.email ? `<a class="chip link mail" href="mailto:${h(c.email.trim())}" title="${h(c.email)}">${h(c.email.trim())}</a>` : ""].filter(Boolean);
+    // the stage group only when it says something the status doesn't ("Hired" "Hired", "Offer" "Offer" read twice: 14 Nov review)
+    const grp = groupOf(c), sameWord = grp.toLowerCase() === statusOf(c).toLowerCase();
+    return `<div class="rchips"><span class="pill st ${kind}" title="Status">${h(statusOf(c))}</span>${sameWord ? "" : `<span class="pill grp" title="Stage">${h(grp)}</span>`}${callChip(c)}${
+      !hideClaude && !blindNow(c) && c.agent_call ? pill("Claude · " + c.agent_call, callKind(c.agent_call)) : ""}</div>
+      <p class="rmeta">${facts.map(h).join(" · ")}</p>${links.length ? `<div class="rlinks">${links.join("")}</div>` : ""}`;
+  }
+  const setHead = (c, hideClaude) => { if (isOpen(c.id)) $("#recsub").innerHTML = headHtml(c, hideClaude); };
+  // the Next call panel's "Now" line follows a saved Next step at once, like the header
+  const setNow = (c) => { const el = isOpen(c.id) && $("#callnow"); if (el) { el.innerHTML = callNowHtml(c); el.hidden = !c.next_step; el.title = nowText(c); } };
+  // Section summaries, one line each
+  function cardsSummary(c) {
+    const cards = cardsFor(c.id), rub = rubricOf(c.role_id);
+    if (!cards.length) return "No cards yet";
+    const latest = cards.slice().sort((a, b) => (b.updated_at || b.created_at || "").localeCompare(a.updated_at || a.created_at || ""))[0];
+    const label = ((rub && rub.stages.find(([x]) => x === latest.stage)) || [latest.stage, latest.stage])[1];
+    // like the cards themselves, the score stays out of sight for someone who hasn't scored that stage, so they can score blind
+    const shown = OUTCOME.includes(c.stage) || isClosedRole(roleOf(c.role_id)) || cards.some((k) => k.stage === latest.stage && k.scorer === state.boot.who);
+    return `${cards.length} card${cards.length > 1 ? "s" : ""} · ${label}${shown ? `: ${latest.weighted != null ? Number(latest.weighted).toFixed(2) : "–"}${latest.decision ? " · " + latest.decision : ""}` : ", folded until you score it"}`;
+  }
+  function wsSummary(c) {
+    const w = wsOf(c);
+    if (!w) return "";
+    if (w.failed) return "Didn't load";
+    const m = w.meta, qs = w.questions || [], n = (w.flaws || []).length;
+    return [m ? `${Number(m.size) > 0 ? "File" : "Link"} received${m.received_at ? " " + fmt(m.received_at) : ""}` : "Nothing received yet", n ? `${n} flaw${n > 1 ? "s" : ""}` : "",
+      qs.length ? `${qs.filter((q) => q.asked).length} of ${qs.length} questions asked` : ""].filter(Boolean).join(" · ");
+  }
+  function msgsSummary(c) {
+    const list = msgsOf(c), last = list[list.length - 1], first = (c.name || "").split(" ")[0];
+    return [list.length ? `${list.length} message${list.length > 1 ? "s" : ""} · last ${last.direction === "in" ? "from " + first : "sent"} ${fmt(last.at)}` : "",
+      c.reply_draft ? "reply drafted" : "", !list.length && (inScreening(c) || c.screen_concern) ? (wasSent(c) ? "screen message sent" : c.screen_message ? "screen message to send" : "no concern written yet") : ""].filter(Boolean).join(" · ");
+  }
+  const appSummary = (c) => [sourceShort(c.sources) || "Source not recorded", c.applied ? "applied " + fmt(c.applied) : "", c.cv_file ? "CV stored" : ""].filter(Boolean).join(" · ");
+  // Blind scoring (18 Oct): an interview's outcome stays out of sight until the viewer has a card of their own for this candidate, unless
+  // the outcome is known or the round is closed, as the cards themselves do (cardsSummary). A call sheet's results are the AI recruiter's
+  // card in words, so its Weighted, Must-pass and Verdict fold the same way (14 Nov review: they showed on the first screen).
+  const callsShown = (c) => OUTCOME.includes(c.stage) || isClosedRole(roleOf(c.role_id)) || cardsFor(c.id).some((k) => k.scorer === state.boot.who);
+  const FOLDED = "folded until you score";
+  const earlierSummary = (c, sheets) => sheets.map((x) => { const v = Object.fromEntries(x.chips);
+    if (!callsShown(c)) return mdPlain(stepName(c, x.title)) + (x.chips.length ? `: results ${FOLDED}` : "");
+    return mdPlain(stepName(c, x.title)) + (v.Verdict ? `: ${v.Verdict}` : "") + (v.Weighted ? `, ${v.Weighted}` : ""); }).join(" · ");
+  // Empty when the record has none of it (an earlier round's hire imported with a name and a source only), so the section is hidden
+  function applicationHtml(c) {
+    const kv = (k, v) => v ? `<dt>${h(k)}</dt><dd>${h(v)}</dd>` : "";
+    const furthest = reachedIdx(c) > stageIdx(c.stage || "applied") ? stageLabel(reachedOf(c)) : "";
+    const links = (c.linkedin ? [linkChip(c.linkedin, "LinkedIn")] : []).concat(urlsIn(c.cv).filter((u) => !/linkedin\.com\/hiring\/applicants|drive\.google\.com|docs\.google\.com/.test(u)).map((u) => linkChip(u)));
+    const facts = kv("Location", c.location) + kv("Email", c.email) + kv("English, self-rated", c.english) + kv("Headline", c.headline) + kv("Referred by", c.referred_by) + kv("Furthest stage", furthest) + kv("Scores", c.scores) + kv("Latest reply", c.latest_reply) + kv("Last contact", c.last_contact);
+    return [facts ? `<dl class="kv">${facts}</dl>` : "", screeningBlock(c), cvBlock(c),
+      links.length ? `<div class="links"><span class="lbl">Links she or he gave</span><div class="chips">${links.join("")}</div>${/drive\.google\.com/.test(c.cv || "") ? `<span class="muted small">The CV sits in hello@'s Drive. If the link asks for access, hello@ needs to share the "Corner Careers — Applications" folder with you once.</span>` : ""}</div>` : "",
+      cvCheck(c),
+      c.site_answer ? `<div class="answer"><span class="lbl">Written answer</span><p>${h(c.site_answer).replace(/\n+/g, "<br>")}</p></div>` : ""].filter(Boolean).join("\n      ");
+  }
+  // A date field holds only a whole day. A value stored another way ("2026-04", the March round's hires) can't show in it, so the field
+  // names it, and a save that leaves the field empty keeps it (it used to come back empty, and the Worker then set hired_at to today).
+  const dayOf = (v) => /^\d{4}-\d{2}-\d{2}/.test(v || "") ? v.slice(0, 10) : "";
+  const dateField = (name, v) => `<input name="${name}" type="date" value="${h(dayOf(v))}">${v && !dayOf(v) ? `<span class="muted small">Stored as “${h(v)}”: pick a day to replace it.</span>` : ""}`;
+  // The Decision panel (5 Nov, with the Decisions of 12 Nov; one Save since the second 14 Nov review). The three steps, then the record's
+  // fields, then Save at the panel's foot, which saves everything changed in it: the record's fields that changed (only those) and each
+  // step's decision that changed. 1 · Screening is the record's own call and moves the stage as before; 2 · Interview and 3 · Second
+  // interview are rows of their own and leave the stage alone. A step before its stage is one quiet line; a call made shows as one line
+  // with the name of whoever made it, and Edit (or Change, for someone else's screening call). The row that edits a call always carries the
+  // viewer's own name, the person the Worker records; who is meant to decide is a note above it.
+  function decisionHtml(c, id) {
+    const sel = (name, opts, val, labels) => `<select name="${name}">${opts.map((o, i) => `<option value="${h(o)}" ${o === (val || "") ? "selected" : ""}>${h(labels ? labels[i] : (o || "–"))}</option>`).join("")}</select>`;
+    const title = id ? "Decisions and next step" : "New candidate";
+    return `<section class="decision" aria-label="${title}"><span class="eyebrow">${title}</span>
       <form class="form" id="cform">
         ${id ? "" : `<label class="full"><span class="lbl">Name</span><input name="name" required></label><label><span class="lbl">Role</span>${sel("role_id", openRoles().map((r) => r.id), c.role_id, openRoles().map((r) => r.short))}</label><label><span class="lbl">Source</span><input name="sources" placeholder="LinkedIn UA, referral…"></label><label class="full"><span class="lbl">LinkedIn</span><input name="linkedin" type="url"></label><label><span class="lbl">Email</span><input name="email" type="email"></label><label><span class="lbl">Location</span><input name="location"></label>`}
         <ul class="full dsteps">
-          <li class="dstep"><span class="lbl">1 · Screening</span>
-            <div class="drow"><span class="dwho" id="calllabel">${h(callLabel(c))}</span>${callSeg}
-              <input name="your_reason" value="${h(c.your_reason)}" placeholder="Reason, needed when the call differs from Claude's" aria-label="Reason">
-              <button type="submit" class="btn small">Save</button></div>
-            ${id && c.agent_call && !blindNow(c) ? `<span class="hint">Claude suggests <b>${h(c.agent_call)}</b>. For a blind check, make the call before reading the block above.</span>` : ""}</li>
+          <li class="dstep" id="dstep-screening">${screenStep(c, id)}</li>
           ${id ? `<li class="dstep" id="dstep-interview">${decisionStep(c, "interview")}</li><li class="dstep" id="dstep-second">${decisionStep(c, "second")}</li>` : ""}
         </ul>
-        <label><span class="lbl">Stage</span>${sel("stage", STAGES, c.stage || "applied")}</label>
-        <label><span class="lbl">Due</span><input name="due" type="date" value="${h((c.due || "").slice(0, 10))}"></label>
-        <label class="full"><span class="lbl">Next step</span><input name="next_step" value="${h(c.next_step)}"></label>
-        <details class="fold plain more"><summary>Referral and hire fields</summary><div class="form inner">
+        <label><span class="lbl">Stage</span>${stageSelect(c)}</label>
+        <label><span class="lbl">Due</span>${dateField("due", c.due)}</label>
+        <label class="full"><span class="lbl">Next step</span><textarea name="next_step" class="fit oneline" rows="2" data-max="168">${h(c.next_step)}</textarea></label>
+        <label class="full"><span class="lbl">Notes</span><textarea name="notes">${h(c.notes)}</textarea></label>
+        <details class="fold plain more full"><summary>Referral and hire fields</summary><div class="form inner">
           <label><span class="lbl">Referred by</span><input name="referred_by" value="${h(c.referred_by)}" placeholder="Who on the team or in our network"></label>
           <label><span class="lbl">Referral bounty</span><input name="bounty" value="${h(c.bounty)}" placeholder="Blank until Kostya sets it"></label>
-          ${id ? `<label><span class="lbl">Hired on</span><input name="hired_at" type="date" value="${h((c.hired_at || "").slice(0, 10))}"></label>
+          ${id ? `<label><span class="lbl">Hired on</span>${dateField("hired_at", c.hired_at)}</label>
           <div class="fieldnote"><span class="lbl">Bounty due</span><span>${c.bounty_due ? h(fmt(c.bounty_due)) + " · hire + 90 days" : (c.referred_by ? "90 days after the hire date" : "Only for referrals")}</span></div>` : ""}</div></details>
-        <label class="full"><span class="lbl">Notes</span><textarea name="notes">${h(c.notes)}</textarea></label>
         <div class="formfoot full"><span class="saved" id="csaved"></span><button type="submit" class="btn">${id ? "Save" : "Add"}</button></div>
       </form></section>`;
-    openRecord(id ? c.name : "New candidate", eyebrow, (id && scriptDue(c) ? scriptBlock(c) : "") + application + (id ? readBlock(c) + screenSection(c) : "") + form + (id ? (scriptDue(c) ? "" : scriptBlock(c)) + scoreBlock(c) + wsBlock(c) : ""), id);
-    if (id) { bindDecisions(c); bindScoreBlock(c); bindWsBlock(c); bindScreen($("#recbody"), async () => { forget(); await render(true); await openCandidate(id); }); bindReply($("#recbody"), async () => { forget(); await render(true); await openCandidate(id); }); bindCvCheck($("#recbody"), () => render(true)); }
-    const f = $("#cform");
-    bindSeg(f, "yourcall", (v) => { const cur = $('input[name="your_call"]', f); cur.value = cur.value === v ? "" : v; f.querySelectorAll('[data-seg="yourcall"] button').forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === cur.value)); });
-    // After a save: everything is re-read (the Worker moves the stage when the call changes, and keeps reached, hired_at and bounty_due),
-    // the page behind redraws in place, and the record reopens with what was stored.
-    const reopen = async () => { forget(); await render(true); if (id) await openCandidate(id); else closeRecord(); };
+  }
+  async function openCandidate(id) {
+    if (wsLive) await wsLive.flush();  // a call note still in its field is saved before any record is read (again)
+    // What was typed in the Decision panel and not saved yet stays when the same record is drawn again (a link or a file added, a message
+    // marked sent, a save refused because the stage changed meanwhile)
+    const f0 = id && isOpen(id) && $("#cform"), carry = (state.carry && state.carry.cid === id ? state.carry : null) || (f0 && f0._edits ? f0._edits() : null);
+    state.carry = null;
+    if (id) await need("candidates", "cards");
+    let c = id ? state.candidates.find((x) => x.id === id) : { stage: "applied", role_id: state.roleFilter !== "all" && state.roleFilter !== "closed" ? state.roleFilter : (openRoles()[0] || {}).id };
+    // a record added since the list was read (the robots' new applicant, linked from #talent): the list is read again once
+    if (!c) { forget(); await render(true); await need("candidates", "cards"); c = state.candidates.find((x) => x.id === id); }
+    if (!c) { notice(`There's no candidate ${id} in the studio.`, true); return; }
+    if (id) {  // the full row (CV, screening answers, written answer, first lines, the call sheets), this candidate's criteria and decisions
+      // the work sample only from a Worker that has its routes (an older one would answer 404 into the console)
+      const [full, res, msgs, ws, dec] = await Promise.all([api("candidates/" + encodeURIComponent(id)), api("criteria/results?candidate_id=" + encodeURIComponent(id)), api("messages?candidate_id=" + encodeURIComponent(id)),
+        has("worksample") ? wsLoad(id) : null, api("decisions?candidate_id=" + encodeURIComponent(id), "GET", null, [])]);
+      Object.assign(c, full); state.resBy = state.resBy || {}; state.resBy[id] = res; state.msgsBy = state.msgsBy || {}; state.msgsBy[id] = msgs; state.wsBy[id] = ws; state.decBy[id] = dec;
+      if (state.decisions) state.decisions[id] = dec;
+    }
+    if (!id) openRecord("New candidate", roleName(c.role_id), `<div class="reclayout solo">${decisionHtml(c, id)}</div>`, null, "");
+    else {
+      const sheets = parseSheets(c.interview_sheet), focus = state.focusSec;
+      state.focusSec = "";
+      // Claude's read starts open when there is no call sheet
+      const read = section("read", "Claude's read", readSummary(c), readBlock(c), !sheets.length);
+      // The main column opens on the Next call panel; a card without a call sheet opens on Claude's read instead, so on a narrow screen,
+      // where the Decision panel comes right after this first part, the evidence comes before the form (14 Nov review: a phone opened a
+      // screening card on an empty form, with Claude's read 900px down)
+      openRecord(c.name, "", `<div class="reclayout"><div class="recnext">${sheets.length ? nextCallHtml(c, sheets[0]) : read}</div>
+        <div class="recside">${decisionHtml(c, id)}</div>
+        <div class="recrest">${(sheets.length ? read : "") + sectionList(c, sheets).filter((x) => x[3]).map(([k, t, sm, b]) => section(k, t, sm, b, asked(c, k))).join("") + laterHtml(c)}</div></div>`, id, headHtml(c));
+      if (focus) openSec(focus, true);
+      bindLater(c); bindScoreBlock(c); bindWsBlock(c); bindScreen($("#recbody"), async () => { forget(); await render(true); await openCandidate(id); }); bindReply($("#recbody"), async () => { forget(); await render(true); await openCandidate(id); }); bindCvCheck($("#recbody"), () => render(true));
+    }
+    bindRecordForm(c, id, carry);
+  }
+  // The main column's sections after the Next call panel (or Claude's read): [key, title, summary, body]. A section with nothing in it isn't
+  // shown, nor Scorecards and Work sample before their step (cardsShown, wsShown), unless asked for from the line at the card's end
+  // (state.secAsk; 14 Nov review: the gates took away the upload and "Score this stage" where the stage lagged behind what happened).
+  const asked = (c, k) => !!(state.secAsk[c.id] || {})[k];
+  const cardsOn = (c) => !!rubricOf(c.role_id) && (cardsShown(c) || asked(c, "cards"));
+  const wsOn = (c) => wsShown(c) || asked(c, "ws");
+  const sectionList = (c, sheets) => [["cards", "Scorecards", cardsSummary(c), cardsOn(c) ? scoreBlock(c) : ""], ["ws", "Work sample", wsSummary(c), wsBlock(c)],
+    ["msgs", "Messages", msgsSummary(c), messagesHtml(c)], ["app", "Application", appSummary(c), applicationHtml(c)],
+    ["earlier", "Earlier calls", earlierSummary(c, sheets.slice(1)), sheets.length > 1 ? earlierHtml(c, sheets.slice(1)) : ""]];
+  // The sections someone may need before their step, as one quiet line at the card's end (not on a closed record: its steps are over)
+  function laterHtml(c) {
+    if (isClosedStage(c)) return "";
+    const w = wsOf(c), can = [rubricOf(c.role_id) && !cardsOn(c) ? ["cards", "Scorecards"] : null,
+      w && !w.failed && !wsOn(c) && wsInRubric(c) && !isClosedRole(roleOf(c.role_id)) ? ["ws", "Work sample"] : null].filter(Boolean);
+    return can.length ? `<p class="reclater" id="reclater"><span class="muted">Before their step:</span> ${can.map(([k, t]) => `<button type="button" class="linkbtn" data-secask="${k}">${t}</button>`).join('<span class="muted"> · </span>')}</p>` : "";
+  }
+  function bindLater(c) {
+    document.querySelectorAll("#reclater [data-secask]").forEach((b) => b.addEventListener("click", () => {
+      const k = b.dataset.secask; state.secAsk[c.id] = { ...(state.secAsk[c.id] || {}), [k]: true };
+      syncSections(c); openSec(k, true);
+    }));
+  }
+  // The sections that apply now and aren't on the card yet (a stage saved in the panel, one asked for) join it in their place, bound
+  // (14 Nov review: a later stage saved in the panel brought them back only once the record was opened again)
+  function syncSections(c) {
+    const rest = isOpen(c.id) && $("#recbody .recrest");
+    if (!rest) return;
+    const order = ["read", "cards", "ws", "msgs", "app", "earlier"], at = (k) => rest.querySelector(`:scope > #sec-${k}`);
+    for (const [k, t, sm, b] of sectionList(c, parseSheets(c.interview_sheet))) {
+      if (!b || $("#sec-" + k)) continue;
+      const next = order.slice(order.indexOf(k) + 1).map(at).find(Boolean) || rest.querySelector(":scope > #reclater");
+      const html = section(k, t, sm, b, asked(c, k));
+      if (next) next.insertAdjacentHTML("beforebegin", html); else rest.insertAdjacentHTML("beforeend", html);
+      if (k === "cards") bindScoreBlock(c);
+      if (k === "ws") bindWsBlock(c);
+    }
+    const old = rest.querySelector(":scope > #reclater"), later = laterHtml(c);
+    if (old) old.remove();
+    if (later) { rest.insertAdjacentHTML("beforeend", later); bindLater(c); }
+  }
+  // The Decision panel's form: one Save for everything in it (14 Nov review: four Saves, and the biggest one, pinned at the panel's foot, left
+  // the interview decisions picked above it unsaved while it said "Saved"). Only what changed since the form was drawn is sent, so an
+  // untouched Stage, Next step or Due never goes back over what a robot or a colleague saved while the card was open; the stage goes with the
+  // one the card showed (stage_was), and the Worker refuses it (409) when the stored one changed meanwhile.
+  function bindRecordForm(c, id, carry) {
+    const f = $("#cform"), saved = $("#csaved");
+    const snap = () => Object.fromEntries(new FormData(f).entries());
+    const init = snap();  // the fields as drawn; a save sends what differs
+    const changed = () => Object.fromEntries(Object.entries(snap()).filter(([k, v]) => (init[k] ?? "") !== v));
+    const decRows = () => [...f.querySelectorAll(".drow[data-dstep]")];
+    const rowVal = (row) => ({ call: (row.querySelector('[data-seg] button[aria-pressed="true"]') || { dataset: { v: "" } }).dataset.v || "", reason: oneLine($("textarea", row).value).trim() });
+    const rowInit = (row) => { try { return JSON.parse(row.dataset.init || "{}"); } catch (e) { return {}; } };
+    const rowDirty = (row) => { const a = rowVal(row), b = rowInit(row); return a.call !== (b.call || "") || a.reason !== (b.reason || ""); };
+    const screenDirty = () => { const d = changed(); return "your_call" in d || "your_reason" in d; };
+    const say = (t, bad) => { saved.textContent = t; saved.classList.toggle("bad", !!bad); saved.classList.toggle("warn", t === "Not saved yet"); };
+    let saving = 0;
+    // "Not saved yet" on each step changed and at the foot, and no "Saved" while anything is
+    const marks = () => {
+      decRows().forEach((row) => { const m = $("[data-dmark]", row); if (!rowDirty(row)) { m.textContent = ""; m.classList.remove("bad", "warn"); } else if (!m.classList.contains("bad")) { m.textContent = "Not saved yet"; m.classList.add("warn"); } });
+      const sm = f.querySelector("[data-dscreen] [data-dmark]");
+      if (sm) { sm.textContent = screenDirty() ? "Not saved yet" : ""; sm.classList.toggle("warn", screenDirty()); }
+      const any = Object.keys(changed()).length || decRows().some(rowDirty);
+      if (any && !saving && !saved.classList.contains("bad")) say("Not saved yet");
+      else if (!any && saved.textContent === "Not saved yet") say("");
+    };
+    // a step's edit row shown (Edit, Change, Add, Decide now) or put back (Cancel), and its values back to what is stored
+    const show = (step, on) => { const row = f.querySelector(`[data-dedit-row="${step}"]`), ro = f.querySelector(`[data-dro="${step}"]`), add = f.querySelector(`[data-dadd="${step}"]`), note = f.querySelector(`#dstep-${step} [data-dnote]`);
+      if (row) row.hidden = !on; if (ro) ro.hidden = !!on; if (add) add.hidden = !!on; if (note) note.hidden = !on;
+      if (on && row) row.querySelectorAll("textarea").forEach(fitArea); };
+    const press = (root, name, v) => root.querySelectorAll(`[data-seg="${name}"] button`).forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === v && !!v));
+    const reset = (step) => {
+      if (step === "screening") { f.elements.your_call.value = init.your_call || ""; press(f, "yourcall", init.your_call || ""); f.elements.your_reason.value = init.your_reason || ""; return; }
+      const row = f.querySelector(`.drow[data-dstep="${step}"]`); if (!row) return;
+      const b = rowInit(row); press(row, "dec-" + step, b.call || ""); $("textarea", row).value = b.reason || ""; $("[data-dmark]", row).classList.remove("bad");
+    };
+    // a step drawn again from what is stored (after its save, or when someone else's call arrived), focus kept in the step
+    const redraw = (step) => {
+      const li = $("#dstep-" + step); if (!li) return;
+      const had = li.contains(document.activeElement);
+      li.innerHTML = step === "screening" ? screenStep(c, id) : decisionStep(c, step);
+      if (step === "screening") { init.your_call = f.elements.your_call.value; init.your_reason = f.elements.your_reason.value; }
+      bindDecisions(c);
+      if (had) { const b = li.querySelector("button:not([hidden])"); if (b) b.focus(); }
+    };
+    // fields nobody touched since the form was drawn show what is stored now
+    const sync = () => {
+      for (const el of f.elements) {
+        const k = el.name;
+        if (!k || k === "your_call" || k === "your_reason" || !(k in init) || el.value !== init[k] || !(k in c)) continue;
+        const v = k === "due" || k === "hired_at" ? dayOf(c[k]) : k === "stage" ? c.stage || "applied" : String(c[k] ?? "");
+        if (v === el.value) continue;
+        if (el.tagName === "SELECT" && ![...el.options].some((o) => o.value === v)) el.add(new Option(v, v), 0);
+        el.value = v; init[k] = el.value;
+        if (el.tagName === "TEXTAREA") fitArea(el);
+      }
+      if (!screenDirty()) redraw("screening");
+    };
+    const LABELS = { your_call: "1 · Screening", your_reason: "1 · Screening", stage: "Stage", due: "Due", next_step: "Next step", notes: "Notes", referred_by: "Referred by", bounty: "Referral bounty", hired_at: "Hired on" };
+    Object.assign(f, { _marks: marks, _show: show, _reset: reset,
+      _what: () => id ? [...new Set(Object.keys(changed()).map((k) => LABELS[k] || k).concat(decRows().filter(rowDirty).map((r) => DSTEPS[r.dataset.dstep])))] : Object.values(changed()).some(Boolean) ? ["the new candidate"] : [],
+      _edits: () => ({ cid: id, fields: changed(), decs: Object.fromEntries(decRows().filter(rowDirty).map((r) => [r.dataset.dstep, rowVal(r)])) }) });
+    bindDecisions(c);
+    f.addEventListener("input", marks);
+    // edits put back in their fields and steps, still to be saved: carried over a redraw, or a save that failed
+    const apply = (edits) => {
+      for (const [k, v] of Object.entries(edits.fields || {})) { const el = f.elements[k]; if (!el || el instanceof RadioNodeList) continue; el.value = v; if (el.tagName === "TEXTAREA") fitArea(el); }
+      if (edits.fields && ("your_call" in edits.fields || "your_reason" in edits.fields)) { press(f, "yourcall", f.elements.your_call.value); show("screening", true); }
+      for (const [step, v] of Object.entries(edits.decs || {})) {
+        if (!f.querySelector(`.drow[data-dstep="${step}"]`)) { state.dOpen[`${c.id}|${step}`] = true; redraw(step); }
+        const row = f.querySelector(`.drow[data-dstep="${step}"]`); if (!row) continue;
+        show(step, true); press(row, "dec-" + step, v.call); $("textarea", row).value = v.reason; fitArea($("textarea", row));
+      }
+      marks();
+    };
+    if (carry) { apply(carry); if (carry.msg) say(carry.msg, true); }
     f.addEventListener("submit", async (e) => {
       e.preventDefault();
-      const data = Object.fromEntries(new FormData(e.target).entries());
-      if (!id) { await api("candidates", "POST", data); await reopen(); return; }
-      // An existing record saves in the background: the change shows at once (the record stays where it is and can be closed
-      // straight away), the request runs on, and the list behind redraws from the server when it answers. The stage moves the way
-      // the Worker moves it when the call changes, so a second Save doesn't send a stale stage back.
-      const before = { ...c }, wasBlind = blindNow(c), saved = $("#csaved"), called = (data.your_call || "") !== (c.your_call || "");
-      if (called && ["applied", "triaged", "confirmed", "declined"].includes(data.stage || "applied"))
-        data.stage = data.your_call === "Decline" ? "declined" : data.your_call === "Shortlist" ? "confirmed" : c.agent_call ? "triaged" : "applied";
-      Object.assign(c, data);
-      if (called) c.call_by = data.your_call ? state.boot.who : "";  // the Worker records who made the call; the label shows it at once
-      const lab = $("#calllabel"); if (lab) lab.textContent = callLabel(c);
-      const stageSel = f.querySelector('select[name="stage"]'); if (stageSel) stageSel.value = c.stage || "applied";
+      const raw = changed(), data = { ...raw };
+      ["due", "hired_at"].forEach((k) => { if (k in data && !data[k] && c[k] && !dayOf(c[k])) delete data[k]; });  // see dateField
+      ["next_step", "your_reason"].forEach((k) => { if (typeof data[k] === "string") data[k] = oneLine(data[k]); });  // one line, as the fields always held
+      if (!id) {  // a new record: everything filled in
+        const all = snap(); ["next_step", "your_reason"].forEach((k) => { if (typeof all[k] === "string") all[k] = oneLine(all[k]); });
+        await api("candidates", "POST", all); Object.assign(init, snap()); forget(); await render(true); closeRecord(true); return;
+      }
+      const decs = decRows().filter(rowDirty).map((row) => ({ row, step: row.dataset.dstep, ...rowVal(row) }));
+      // a No needs its reason: nothing goes until it has one
+      const noReason = decs.find((d) => d.call === "No" && !d.reason);
+      if (noReason) { const m = $("[data-dmark]", noReason.row); m.textContent = "Add the reason for the No"; m.classList.remove("warn"); m.classList.add("bad"); $("textarea", noReason.row).focus(); say("Not saved: a No needs its reason", true); return; }
+      if (!Object.keys(data).length && !decs.length) { say(saved.textContent === "Saved" ? "Saved" : "Nothing changed"); return; }
+      // An existing record saves in the background: the change shows at once (the record stays where it is and can be closed straight
+      // away), the requests run on, and the card and the list behind follow what was stored when they answer. The stage shows the way the
+      // Worker moves it when the call changes (its EARLY stages); the Worker decides it from the stage it holds.
+      const before = { ...c }, wasBlind = blindNow(c), called = "your_call" in data, initBefore = { ...init };
+      const local = { ...data }, stageNow = "stage" in data ? data.stage : c.stage || "applied";
+      if (called && ["applied", "triaged", "confirmed", "declined"].includes(stageNow))
+        local.stage = data.your_call === "Decline" ? "declined" : data.your_call === "Shortlist" ? "confirmed" : c.agent_call ? "triaged" : "applied";
+      if ("stage" in data) data.stage_was = init.stage || "applied";
+      Object.assign(c, local);
+      if (called) c.call_by = data.your_call ? state.boot.who : "";  // the Worker records who made the call; the step shows it at once
+      Object.assign(init, raw);
+      if (local.stage && f.elements.stage) { const s = f.elements.stage; if (![...s.options].some((o) => o.value === local.stage)) s.add(new Option(local.stage, local.stage), 0); s.value = local.stage; init.stage = s.value; }
+      const decBefore = decs.map((d) => d.row.dataset.init);
+      decs.forEach((d) => { d.row.dataset.init = JSON.stringify({ call: d.call, reason: d.reason }); const m = $("[data-dmark]", d.row); m.textContent = "Saving…"; m.classList.remove("warn", "bad"); });
       delete f.dataset.dirty;
-      saved.textContent = "Saving…";
+      saving++; say("Saving…");
+      if (Object.keys(data).length) { setHead(c, wasBlind); setNow(c); if (called) redraw("screening"); }  // Claude's call stays hidden until a blind record is saved
       render(true);
-      api("candidates/" + id, "PATCH", data).then(async () => {
-        if (saved.isConnected) saved.textContent = "Saved";
-        const rb = $("#recbody .block.read");
-        if (wasBlind && rb && $("#recdlg").open && $("#rectitle").textContent === c.name) rb.outerHTML = readBlock(c);  // a blind record shows Claude's read now
-        forget(); await render(true);
-      }).catch(async (err) => {
-        Object.assign(c, before); if (saved.isConnected) saved.textContent = "Not saved";
-        await render(true); notice(`${c.name}: not saved (${err && err.message || err}). Open the record and save again.`, true);
-      });
+      const quietly = (p) => p.then(() => ({ ok: true }), (err) => ({ ok: false, err }));
+      const [rec, ...dres] = await Promise.all([Object.keys(data).length ? quietly(api("candidates/" + id, "PATCH", data)) : null,
+        ...decs.map((d) => quietly(api(`decisions/${encodeURIComponent(c.id)}/${d.step}`, "PUT", { call: d.call, reason: d.reason })))]);
+      saving--;
+      const failed = [];
+      if (rec && !rec.ok) {
+        Object.assign(c, before);
+        const err = rec.err, moved = err && err.status === 409 && err.data && err.data.stage;
+        if (moved) {  // the stage changed while the card was open: nothing of the record was written; the card is drawn again from what is stored, with the rest still typed in it
+          const { stage, ...rest } = raw, msg = `Not saved: the stage changed while the card was open (it is ${stageLabel(moved)} now). Your other changes are still here: check the stage and save again.`;
+          dres.forEach((r, i) => { if (!r.ok) decs[i].row.dataset.init = decBefore[i]; });
+          if (isOpen(id) && f.isConnected) {
+            const later = f._edits(); delete later.fields.stage;  // and whatever was typed while the save was under way
+            notice(""); state.carry = { cid: id, fields: { ...rest, ...later.fields }, decs: { ...Object.fromEntries(decs.filter((d, i) => !dres[i].ok).map((d) => [d.step, { call: d.call, reason: d.reason }])), ...later.decs }, msg };
+            forget(); await render(true); await openCandidate(id);
+          } else notice(`${c.name}: not saved. The stage changed while the record was open (it is ${stageLabel(moved)} now). Open the record and save again.`, true);
+          return;
+        }
+        for (const k of Object.keys(raw)) init[k] = initBefore[k];  // still to be saved
+        if (local.stage) init.stage = initBefore.stage;
+        failed.push(`the record (${(err && err.message) || err})`);
+        if (isOpen(id) && f.isConnected) {  // the card back to what is stored, with what didn't go still in its fields
+          setHead(c); setNow(c);
+          if (called) redraw("screening");
+          if (local.stage && f.elements.stage) f.elements.stage.value = "stage" in raw ? raw.stage : initBefore.stage;
+          apply({ fields: raw });
+        }
+      }
+      dres.forEach((r, i) => { if (r.ok) return; decs[i].row.dataset.init = decBefore[i]; const m = $("[data-dmark]", decs[i].row); m.textContent = `Not saved (${(r.err && r.err.message) || r.err})`; m.classList.add("bad"); failed.push(DSTEPS[decs[i].step]); });
+      // what is stored now: the record (the Worker moves the stage, keeps reached, hired_at and bounty_due) and the decisions
+      if (decs.length) { try { state.decBy[c.id] = await api("decisions?candidate_id=" + encodeURIComponent(c.id)); if (state.decisions) state.decisions[c.id] = state.decBy[c.id]; } catch (e2) {} }
+      if (rec && rec.ok) { try { Object.assign(c, await api("candidates/" + encodeURIComponent(id))); } catch (e2) {} }
+      if (isOpen(id) && f.isConnected) {
+        dres.forEach((r, i) => { if (r.ok && !rowDirty(decs[i].row)) redraw(decs[i].step); });
+        if (rec && rec.ok) {
+          sync(); setNow(c); syncSections(c);
+          // a stage saved can bring a step's turn (2 · Interview from the first interview's booking on): the steps nobody is typing in follow
+          ["interview", "second"].forEach((s) => { const row = f.querySelector(`.drow[data-dstep="${s}"]`); if (!row || !rowDirty(row)) redraw(s); });
+          if (wasBlind) { const rb = $("#sec-read .rsec-b"); if (rb) rb.innerHTML = readBlock(c); setSum("read", readSummary(c)); }  // a blind record shows Claude's read now
+        }
+        setHead(c);
+        say(failed.length ? `Not saved: ${failed.join(", ")}` : "Saved", !!failed.length);
+        marks();
+        if (failed.length) notice("");
+      } else if (failed.length) notice(`${c.name}: not saved (${failed.join(", ")}). Open the record and save again.`, true);
+      forget(); await render(true);
     });
   }
   // Decisions after screening. Interview: Go or No with a reason (needed for a No); whoever saves it is recorded, and each person has one.
   // Second interview: one each from the role's hiring manager and from Kostya (one row when that is the same person). A person edits
   // only their own; everyone else's shows as it was saved. Robots never write these, and they don't move the stage.
+  // Since the second 14 Nov review a call made shows as one line (pill, reason, day, as everyone else's), the panel's Save saves every step,
+  // and a step before its stage is one quiet line.
   const DSTEPS = { interview: "2 · Interview", second: "3 · Second interview" };
-  const decOf = (c, step) => (state.decBy[c.id] || []).filter((d) => d.step === step).sort((a, b) => (a.at || "").localeCompare(b.at || ""));
+  const decOf = (c, step) => decsOf(c).filter((d) => d.step === step).sort((a, b) => (a.at || "").localeCompare(b.at || ""));
+  const myCall = () => `${firstName(state.boot.who)}'s call`;
+  // A call made, as one line: whose, the call, the reason, the day; on one's own, Edit (Change on someone else's screening call, which the
+  // record holds once)
+  const roLine = (step, label, call, reason, at, act) => `<div class="drow ro"${act ? ` data-dro="${step}"` : ""}><span class="dwho">${h(label)}</span>${pill(call, callKind(call))}${act ? `<button type="button" class="linkbtn small dedit-btn" data-dedit="${step}">${h(act)}</button>` : ""}
+      <span class="dreason">${h(reason)}${at ? `${reason ? " " : ""}<span class="cmeta">${h(fmt(at))}</span>` : ""}</span></div>`;
+  // 1 · Screening: the record's own call. The row that edits it carries the viewer's name; the recruiter who is meant to make it is a note.
+  function screenStep(c, id) {
+    const me = state.boot.who, by = callBy(c), made = !!(id && c.your_call), rec = roleOf(c.role_id).recruiter;
+    // Claude's call on the step's own line, and the rule it carries in the reason's placeholder (one line, not two, in the 320px panel)
+    const claude = id && c.agent_call && !blindNow(c) ? c.agent_call : "";
+    const note = made ? (by && by !== me ? `<span class="dnote" data-dnote hidden>Saving replaces ${h(firstName(by))}'s call.</span>` : "")
+      : rec && rec !== me ? `<span class="dnote">${h(firstName(rec))} makes this call.</span>` : "";
+    return `<span class="lbl">1 · Screening${claude ? `<span class="dclaude" title="Claude suggests ${h(claude)}. A call that differs needs its reason."> · Claude: ${h(claude)}</span>` : ""}</span>${made ? roLine("screening", by ? `${firstName(by)}'s call` : "Call", c.your_call, c.your_reason, "", by && by !== me ? "Change" : "Edit") : ""}${note}
+      <div class="dedit" data-dedit-row="screening"${made ? " hidden" : ""}><div class="drow" data-dscreen><span class="dwho">${h(myCall())}</span>${seg("yourcall", [["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"]], c.your_call || "")}<input type="hidden" name="your_call" value="${h(c.your_call || "")}">
+        <textarea name="your_reason" class="fit oneline" rows="1" placeholder="${claude ? `Reason, needed if not ${h(claude)}` : "Reason"}" aria-label="Reason for the screening call${claude ? `, needed when it differs from Claude's ${h(claude)}` : ""}">${h(c.your_reason)}</textarea>
+        <span class="dact"><span class="saved" data-dmark></span>${made ? `<button type="button" class="linkbtn small" data-dcancel="screening">Cancel</button>` : ""}</span></div></div>`;
+  }
+  // 2 · Interview from the first interview's booking on, 3 · Second interview from the test assignment on; before that one quiet line, with
+  // "Decide now" on an open record for when the stage lags behind what happened (14 Nov review: the two steps took 500px of the panel on
+  // every card, a screening one or a rejected one too). Whoever saves an interview decision is recorded, one per person; the second
+  // interview's are the role's hiring manager's and Kostya's. Robots never write these, and they don't move the stage.
+  const DFROM = { interview: "interview booked", second: "work sample" }, DLATER = { interview: "from the first interview", second: "after the test" };
   function decisionStep(c, step) {
     const me = state.boot.who, role = roleOf(c.role_id), all = decOf(c, step), mine = all.find((d) => d.by === me);
-    const shown = (label, d) => `<div class="drow ro"><span class="dwho">${h(label)}</span>${d ? pill(d.call, d.call === "Go" ? "ok" : "bad") : '<span class="muted small">No call yet</span>'}
-      <span class="dreason">${d ? h(d.reason) : ""}</span><span class="cmeta">${d ? h(fmt(d.at)) : ""}</span></div>`;
-    const edit = (label, d) => `<div class="drow" data-dstep="${step}"><span class="dwho">${h(label)}</span>${seg("dec-" + step, [["Go", "Go"], ["No", "No"]], d ? d.call : "")}
-      <input class="dreason" value="${h(d ? d.reason : "")}" placeholder="Reason, needed for a No" aria-label="Reason">
-      <span class="dact"><span class="saved" data-dsaved></span><button type="button" class="btn small" data-dsave>Save</button></span></div>`;
-    let rows;
+    const label = `<span class="lbl">${DSTEPS[step]}</span>`;
+    if (!all.length && reachedIdx(c) < stageIdx(DFROM[step]) && !state.dOpen[`${c.id}|${step}`])
+      return isClosedStage(c) || isClosedRole(role) ? `<div class="dlater">${label}<span class="muted small">${h(DLATER[step])}</span></div>`
+        : `<button type="button" class="dlater" data-dnow="${step}" title="Decide now" aria-label="${h(DSTEPS[step])}, ${h(DLATER[step])}: decide now">${label}<span class="muted small">${h(DLATER[step])}</span></button>`;
+    const deciders = step === "second" ? [...new Set([leadEmail(role), state.boot.final_call].filter(Boolean))] : [];
+    const mayDecide = step === "interview" || deciders.includes(me);
+    const line = (d) => roLine(step, `${firstName(d.by)}'s call`, d.call, d.reason, d.at, d.by === me ? "Edit" : "");
+    let rows, note = "";
     if (step === "interview") {
-      const others = all.filter((d) => d.by !== me);
-      // nobody decided yet: the row carries the recruiter's name (or just "Call"); the person who saves it is the one recorded
-      const label = mine || others.length ? `${firstName(me)}'s call` : role.recruiter ? `${firstName(role.recruiter)}'s call` : "Call";
-      rows = others.map((d) => shown(`${firstName(d.by)}'s call`, d)).join("") + edit(label, mine);
+      rows = all.filter((d) => d.by !== me).map(line).join("") + (mine ? line(mine) : "");
+      if (!all.length && role.recruiter && role.recruiter !== me) note = `${firstName(role.recruiter)} makes this call.`;
     } else {
-      const lead = leadEmail(role), deciders = [...new Set([lead, state.boot.final_call].filter(Boolean))];
-      const extra = all.filter((d) => !deciders.includes(d.by));  // saved by someone who was the hiring manager then
-      rows = deciders.map((by) => by === me ? edit(`${firstName(by)}'s call`, mine) : shown(`${firstName(by)}'s call`, all.find((d) => d.by === by))).join("")
-        + extra.map((d) => shown(`${firstName(d.by)}'s call`, d)).join("");
+      rows = deciders.map((by) => { const d = all.find((x) => x.by === by); return d ? line(d) : by === me ? "" : `<div class="drow ro"><span class="dwho">${h(firstName(by))}'s call</span><span class="muted small">not made yet</span></div>`; }).join("")
+        + all.filter((d) => !deciders.includes(d.by)).map(line).join("");  // saved by someone who was the hiring manager then
+      if (!mayDecide) note = `${deciders.map((x) => firstName(x)).join(" and ")} make${deciders.length > 1 ? "" : "s"} this call.`;
     }
-    return `<span class="lbl">${DSTEPS[step]}</span>${rows}`;
+    // the viewer's own row: open while it is theirs to take (nobody decided the interview yet; their second-interview call), behind Edit once
+    // they decided, behind "Add" while others have and they haven't
+    const open = mayDecide && !mine && (step === "second" || !all.length);
+    const init = JSON.stringify({ call: mine ? mine.call : "", reason: mine ? mine.reason || "" : "" });
+    const edit = !mayDecide ? "" : `<div class="dedit" data-dedit-row="${step}"${open ? "" : " hidden"}><div class="drow" data-dstep="${step}" data-init="${h(init)}"><span class="dwho">${h(myCall())}</span>${seg("dec-" + step, [["Go", "Go"], ["No", "No"]], mine ? mine.call : "")}
+        <textarea class="dreason fit oneline" rows="1" placeholder="Reason, needed for a No" aria-label="Reason for the ${step === "second" ? "second-interview" : "interview"} decision">${h(mine ? mine.reason : "")}</textarea>
+        <span class="dact"><span class="saved" data-dmark></span>${open ? "" : `<button type="button" class="linkbtn small" data-dcancel="${step}">Cancel</button>`}</span></div></div>`;
+    const add = mayDecide && !mine && !open ? `<button type="button" class="linkbtn small dadd" data-dadd="${step}">Add ${h(myCall())}</button>` : "";
+    return `${label}${note ? `<span class="dnote">${h(note)}</span>` : ""}${rows}${edit}${add}`;
   }
+  // The steps' controls: Edit, Change, Add and Decide now open a row, Cancel puts it back as stored, Go and No press and unpress (unpressed and
+  // saved, one's own decision is taken back), and Enter in a reason saves the panel. New rows after a redraw are bound once.
   function bindDecisions(c) {
-    document.querySelectorAll("#recbody .drow[data-dstep]").forEach((row) => {
-      const step = row.dataset.dstep, input = $("input.dreason", row), mark = $("[data-dsaved]", row), btn = $("[data-dsave]", row);
-      if (btn.dataset.bound) return;  // a re-render of one step binds its new rows only
-      btn.dataset.bound = "1";
-      const picked = () => (row.querySelector('[data-seg] button[aria-pressed="true"]') || { dataset: { v: "" } }).dataset.v;
-      bindSeg(row, "dec-" + step, (v) => { const cur = picked(); row.querySelectorAll("[data-seg] button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === v && cur !== v)); mark.textContent = ""; });
-      const save = async () => {
-        const call = picked(), reason = input.value.trim();
-        mark.classList.remove("bad");
-        if (call === "No" && !reason) { mark.textContent = "Add the reason"; mark.classList.add("bad"); input.focus(); return; }
-        btn.disabled = true; mark.textContent = "Saving…";
-        try {
-          await api(`decisions/${encodeURIComponent(c.id)}/${step}`, "PUT", { call, reason });
-          state.decBy[c.id] = await api("decisions?candidate_id=" + encodeURIComponent(c.id));
-          const li = $("#dstep-" + step); if (li) { li.innerHTML = decisionStep(c, step); bindDecisions(c); const m = $("#dstep-" + step + " [data-dsaved]"); if (m) m.textContent = call ? "Saved" : "Taken back"; }
-        } catch (e) { btn.disabled = false; mark.textContent = "Not saved"; mark.classList.add("bad"); }
-      };
-      btn.addEventListener("click", save);
-      // Enter in the reason saves this decision, not the whole record
-      input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); if (!btn.disabled) save(); } });
+    const f = $("#cform"); if (!f) return;
+    const marks = () => f._marks && f._marks(), show = (step, on) => f._show && f._show(step, on);
+    // the screening call: a click picks, a click on the picked one takes it back (the hidden field is what the form sends)
+    f.querySelectorAll('[data-seg="yourcall"] button:not([data-bound])').forEach((b) => { b.dataset.bound = "1"; b.addEventListener("click", () => {
+      const cur = f.elements.your_call; cur.value = cur.value === b.dataset.v ? "" : b.dataset.v;
+      f.querySelectorAll('[data-seg="yourcall"] button').forEach((x) => x.setAttribute("aria-pressed", x.dataset.v === cur.value)); marks(); }); });
+    f.querySelectorAll(".drow[data-dstep]:not([data-bound])").forEach((row) => {
+      row.dataset.bound = "1";
+      const step = row.dataset.dstep;
+      bindSeg(row, "dec-" + step, (v) => { const cur = (row.querySelector('[data-seg] button[aria-pressed="true"]') || { dataset: {} }).dataset.v;
+        row.querySelectorAll("[data-seg] button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === v && cur !== v)); $("[data-dmark]", row).classList.remove("bad"); marks(); });
     });
+    f.querySelectorAll("textarea.oneline:not([data-ol])").forEach((ta) => {
+      ta.dataset.ol = "1";
+      ta.addEventListener("input", () => fitArea(ta));
+      // one line of text, as the fields always held: Enter saves the panel, and a line break becomes a space on save
+      ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); f.requestSubmit(); } });
+      fitArea(ta); requestAnimationFrame(() => fitArea(ta));
+    });
+    const once = (sel, fn) => f.querySelectorAll(`${sel}:not([data-bound])`).forEach((b) => { b.dataset.bound = "1"; b.addEventListener("click", () => fn(b)); });
+    once("[data-dedit], [data-dadd]", (b) => { const step = b.dataset.dedit || b.dataset.dadd; show(step, true);
+      const row = f.querySelector(`[data-dedit-row="${step}"]`), t = row && (row.querySelector('[data-seg] button[aria-pressed="true"]') || row.querySelector("[data-seg] button")); if (t) t.focus(); });
+    once("[data-dcancel]", (b) => { const step = b.dataset.dcancel; if (f._reset) f._reset(step); show(step, false); marks();
+      const back = f.querySelector(`[data-dro="${step}"] [data-dedit], [data-dadd="${step}"]`); if (back) back.focus(); });
+    once("[data-dnow]", (b) => { const step = b.dataset.dnow; state.dOpen[`${c.id}|${step}`] = true; const li = $("#dstep-" + step); li.innerHTML = decisionStep(c, step); bindDecisions(c);
+      const t = li.querySelector("[data-seg] button"); if (t) t.focus(); });
   }
   // ---------- the message screen: one concern per shortlisted candidate and the LinkedIn message that checks it ----------
   // Claude writes the concern and the message; Kostya edits if he wants, copies it into LinkedIn and marks it sent, which moves the
   // candidate to "messaged". The same panel shows on the Screening view and in the candidate record.
-  const SENT = ["messaged", "replied", "screen booked", "screen done", "interview booked", "interview done", "work sample", "references", "offer", "hired"];
-  const wasSent = (c) => SENT.includes(c.stage || "");
+  const SENT = ORDER.slice(ORDER.indexOf("messaged"));  // messaged and every funnel stage after it
+  // Sent once the candidate got as far as messaged, closed since or not, or once the conversation has a message to them (second 14 Nov
+  // review: the current stage alone showed a withdrawn or declined candidate's sent message as unsent, with Mark as sent)
+  const wasSent = (c) => SENT.includes(c.stage || "") || reachedIdx(c) >= stageIdx("messaged") || msgsOf(c).some((m) => m.direction === "out");
   // A person's call decides when there is one; otherwise Claude's Shortlist counts.
   const inScreening = (c) => (c.your_call ? c.your_call === "Shortlist" : c.agent_call === "Shortlist") && c.cv_check !== "Not pass" && !blindNow(c) && !CLOSED.includes(c.stage) && !isClosedRole(roleOf(c.role_id));
   // The hiring lead's own look at the CV or portfolio as a work sample (scorecard v0.4, 27 Oct): Pass or Not pass, saved on the click.
@@ -594,12 +1019,16 @@
   const atWord = (s) => { const d = new Date(s); return isNaN(d) ? s : d.toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); };
   const linkify = (t) => h(t).replace(/https?:\/\/[^\s<]+[^\s<.,;:!?)\]]/g, (u) => `<a href="${u}" target="_blank" rel="noopener">${u}</a>`);
   const CHANNEL = { linkedin: "LinkedIn", email: "Email", "work.ua": "Work.ua" };
-  function convoHtml(c) {
+  // keep: on the card, only the last few messages show, the earlier ones behind one fold above them (14 Nov review: a five-message thread
+  // ran about 2,000px before the reply draft)
+  function convoHtml(c, keep) {
     const list = msgsOf(c);
     if (!list.length) return "";
     const first = (c.name || "").split(" ")[0], n = list.filter((m) => m.direction === "in").length;
+    const one = (m) => `<div class="msg ${m.direction === "in" ? "in" : "out"}"><div class="mmeta">${m.direction === "in" ? h(first) : "You"} · ${h(CHANNEL[m.channel] || m.channel)} · ${h(atWord(m.at))}</div><div class="mbody">${linkify(m.body)}</div></div>`;
+    const cut = keep && list.length > keep + 1 ? list.length - keep : 0;
     return `<div class="convo"><span class="lbl">Conversation · ${list.length} message${list.length > 1 ? "s" : ""}${n ? ` · ${n} from ${h(first)}` : " · no reply yet"}</span>
-      ${list.map((m) => `<div class="msg ${m.direction === "in" ? "in" : "out"}"><div class="mmeta">${m.direction === "in" ? h(first) : "You"} · ${h(CHANNEL[m.channel] || m.channel)} · ${h(atWord(m.at))}</div><div class="mbody">${linkify(m.body)}</div></div>`).join("")}</div>`;
+      ${cut ? `<details class="fold plain convomore"><summary>${cut} earlier message${cut > 1 ? "s" : ""}</summary><div class="convolist">${list.slice(0, cut).map(one).join("")}</div></details>` : ""}${list.slice(cut).map(one).join("")}</div>`;
   }
   // The reply draft (28 Oct): Claude drafts the next message to someone who replied (reply_draft) with the step it suggests and why
   // (reply_note). Kostya edits it, sends it himself in the same channel and marks it sent: it joins the conversation and the draft clears.
@@ -631,57 +1060,287 @@
   async function loadMsgs() {
     if (!state.msgs) { state.msgs = await api("messages"); state.msgsBy = {}; for (const m of state.msgs) (state.msgsBy[m.candidate_id] = state.msgsBy[m.candidate_id] || []).push(m); }
   }
-  function screenPanel(c) {
-    if (!c.screen_concern && !c.screen_message) return `<p class="muted small">No concern written yet. Claude writes one for every shortlisted candidate.</p>${convoHtml(c)}${replyHtml(c)}`;
-    return `<div class="scrpanel" data-sid="${h(c.id)}">
-      <div class="scrcol"><span class="lbl">Concern to verify</span><p class="concern">${h(c.screen_concern)}</p></div>
+  // rec: the panel inside a candidate's record, where the header already has Open CV and LinkedIn and the Messages section lays out the
+  // conversation and the reply itself (see messagesHtml). A concern not written yet leaves no empty label.
+  function screenPanel(c, rec) {
+    if (!c.screen_concern && !c.screen_message) return `<p class="muted small">No concern written yet. Claude writes one for every shortlisted candidate.</p>${rec ? "" : convoHtml(c) + replyHtml(c)}`;
+    const application = urlsIn(c.cv).filter((u) => /linkedin\.com\/hiring\/applicants/.test(u)).map((u) => `<a class="btn ghost small" href="${h(u)}" target="_blank" rel="noopener">Application ↗</a>`).join("");
+    return `<div class="scrpanel${c.screen_concern ? "" : " noconcern"}" data-sid="${h(c.id)}" data-stage="${h(c.stage || "applied")}">
+      ${c.screen_concern ? `<div class="scrcol"><span class="lbl">Concern to verify</span><p class="concern">${h(c.screen_concern)}</p></div>` : ""}
       <div class="scrcol"><span class="lbl">Message to send on LinkedIn</span><textarea class="scrmsg" rows="7" aria-label="Message to ${h(c.name)}">${h(c.screen_message)}</textarea>
         <div class="pact"><button type="button" class="btn small" data-copy>Copy</button><button type="button" class="btn ghost small" data-savemsg hidden>Save the edit</button>
-          ${wasSent(c) ? `<span class="pill ok">sent${c.last_contact ? " " + h(fmt(c.last_contact)) : ""}</span>` : `<button type="button" class="btn ghost small" data-sent>Mark as sent</button>`}
-          ${cvOpen(c, "btn small")}
-          ${c.linkedin ? `<a class="btn ghost small" href="${h(c.linkedin)}" target="_blank" rel="noopener">LinkedIn ↗</a>` : ""}
-          ${urlsIn(c.cv).filter((u) => /linkedin\.com\/hiring\/applicants/.test(u)).map((u) => `<a class="btn ghost small" href="${h(u)}" target="_blank" rel="noopener">Application ↗</a>`).join("")}</div>
-        ${c.latest_reply && !repliedAt(c) ? `<div class="answer"><span class="lbl">Latest reply</span><p>${h(c.latest_reply)}</p></div>` : ""}</div>${convoHtml(c)}${replyHtml(c)}</div>`;
+          ${wasSent(c) ? `<span class="pill ok">sent${c.last_contact ? " " + h(fmt(c.last_contact)) : ""}</span>`
+            : isClosedStage(c) || isClosedRole(roleOf(c.role_id)) ? `<span class="muted small">Not sent · the record is closed</span>` : `<button type="button" class="btn ghost small" data-sent>Mark as sent</button>`}
+          ${rec ? "" : cvOpen(c, "btn small")}
+          ${!rec && c.linkedin ? `<a class="btn ghost small" href="${h(c.linkedin)}" target="_blank" rel="noopener">LinkedIn ↗</a>` : ""}
+          ${application}</div>
+        ${c.latest_reply && !repliedAt(c) ? `<div class="answer"><span class="lbl">Latest reply</span><p>${h(c.latest_reply)}</p></div>` : ""}</div>${rec ? "" : convoHtml(c) + replyHtml(c)}</div>`;
   }
-  const screenSection = (c) => blindNow(c) ? "" : inScreening(c) || c.screen_concern ? `<section class="block"><span class="eyebrow">Message screen</span>${screenPanel(c)}</section>` : "";
-  // The interview script (27 Oct): the candidate's prep sheet in Markdown, written before the call and filled with the answers after it.
-  // Rendered safely: everything is escaped first, then a small subset is turned on (headings, tables, lists, bold, code, http links).
-  const mdInline = (t) => h(t).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>').replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1");
-  function mdToHtml(md) {
+  // Once the screening message is sent (or the candidate is past it): the concern it checks, the message as one line that opens to its text
+  // (the conversation holds it too), and a reply recorded outside the conversation. Empty when there is none of it.
+  function sentScreenHtml(c) {
+    const norm = (t) => String(t || "").replace(/\s+/g, " ").trim(), out = msgsOf(c).filter((m) => m.direction !== "in");
+    const at = (out.find((m) => norm(m.body) === norm(c.screen_message)) || {}).at || c.last_contact || "";
+    return [c.screen_concern ? `<div class="kvline scrsentc"><span class="lbl">Concern to verify</span><span>${h(c.screen_concern)}</span></div>` : "",
+      c.screen_message ? `<details class="fold plain scrsent"><summary>Screening message · sent${at ? " " + h(fmt(at)) : ""}</summary><p class="scrtext">${linkify(c.screen_message)}</p></details>` : "",
+      c.latest_reply && !repliedAt(c) ? `<div class="answer"><span class="lbl">Latest reply</span><p>${h(c.latest_reply)}</p></div>` : ""].filter(Boolean).join("");
+  }
+  // The record's Messages section, the thing to act on first (14 Nov review: the reply draft came last, 2,000px down): Claude's reply draft,
+  // then for someone in screening or with a concern written the message screen (the message to send; once sent, one line), then the
+  // conversation with its last two messages open. Hidden in a blind batch, as the message screen always was.
+  const messagesHtml = (c) => blindNow(c) ? "" : [replyHtml(c),
+    inScreening(c) || c.screen_concern ? (wasSent(c) ? sentScreenHtml(c) : screenPanel(c, true)) : "",
+    convoHtml(c, 2)].filter(Boolean).join("");
+
+  // ---------- the call sheets on the card (5 Nov) ----------
+  // candidates.interview_sheet holds one Markdown sheet per call, newest first, each starting "# <step> · <date, time (-03)>"; text
+  // before the first "# " is a sheet called "Interview script" (the format of 27 Oct). Under its title a sheet has one meta paragraph,
+  // then "## " sections, which the card groups as Context, Script, Next steps and Results (talent-checkin README).
+  // Rendered safely: every piece of text goes through h(), and only this small subset of Markdown becomes HTML: ### headings, **bold**,
+  // *italic*, `code`, [text](http link), bare http(s) addresses, lists and tables. Nothing from a sheet is ever inserted as HTML.
+  const INLINE_MD = /`([^`\n]+)`|\[([^\]\n]+)\]\(([^)\s]+)\)|\*\*(?=\S)(.*?\S)\*\*|(?<![\w*])\*(?=[^\s*])([^*\n]*?[^\s*])\*(?![\w*])|(?<![\w_])_(?=[^\s_])([^_\n]*?[^\s_])_(?![\w_])|(https?:\/\/[^\s<>"'`]+)/g;
+  // a bare address ends before trailing punctuation, and before a closing bracket it didn't open
+  function trimUrl(u) {
+    let tail = "";
+    const extra = (o, c) => u.split(c).length > u.split(o).length;
+    while (u.length > 10) {
+      const ch = u.slice(-1);
+      if (/[.,;:!?'"*_]/.test(ch) || (ch === ")" && extra("(", ")")) || (ch === "]" && extra("[", "]"))) { tail = ch + tail; u = u.slice(0, -1); } else break;
+    }
+    return [u, tail];
+  }
+  // plain: the same text without markers or link targets (for summary lines, which must not hold links, and for lengths). Only mdPlain
+  // passes it: mdInline(t) on its own always escapes, also when handed to Array.map (whose index would otherwise read as the flag).
+  const mdInline = (t) => inlineMd(t, false);
+  function inlineMd(t, plain) {
+    const s = String(t == null ? "" : t); let out = "", at = 0;
+    for (const m of s.matchAll(INLINE_MD)) {
+      out += plain ? s.slice(at, m.index) : h(s.slice(at, m.index)); at = m.index + m[0].length;
+      const [, code, text, href, bold, it1, it2, url] = m;
+      if (plain) { out += code != null ? code : text != null ? inlineMd(text, true) : bold != null ? inlineMd(bold, true) : it1 != null || it2 != null ? inlineMd(it1 != null ? it1 : it2, true) : url; continue; }
+      if (code != null) out += `<code>${h(code)}</code>`;
+      else if (text != null) out += /^https?:\/\//i.test(href) ? `<a href="${h(href)}" target="_blank" rel="noopener">${mdInline(text)}</a>` : mdInline(text);
+      else if (bold != null) out += `<b>${mdInline(bold)}</b>`;
+      else if (it1 != null || it2 != null) out += `<i>${mdInline(it1 != null ? it1 : it2)}</i>`;
+      else { const [u, tail] = trimUrl(url); out += `<a href="${h(u)}" target="_blank" rel="noopener">${h(u)}</a>${h(tail)}`; }
+    }
+    return out + (plain ? s.slice(at) : h(s.slice(at)));
+  }
+  const mdPlain = (t) => inlineMd(t, true);
+  const isRow = (l) => /^\s*\|.*\|\s*$/.test(l), isSep = (l) => /^\s*\|(\s*:?-+:?\s*\|)+\s*$/.test(l);
+  const cellsOf = (l) => l.trim().replace(/\\\|/g, "\u0001").replace(/^\||\|$/g, "").split("|").map((x) => x.trim().replace(/\u0001/g, "|"));
+  const ITEM = /^(\s*)([-*+]|\d+[.)])\s+/;
+  // "Show more" under a paragraph or a meta line that is clamped (one click handler on the record, see below)
+  const clampHtml = (inner) => `<div class="clampbox">${inner}<button type="button" class="linkbtn small" data-more aria-expanded="false">Show more</button></div>`;
+  // One paragraph per line: the robots write one statement per line and never wrap. A leading "Label:" reads in bold, and a paragraph over
+  // about 700 characters shows four lines and "Show more".
+  function mdPara(t) {
+    const m = !/^\*\*/.test(t) && t.match(/^([A-Z][\w ’'()/&+.-]{0,46}?):\s/);
+    const html = m ? `<b>${h(m[1])}:</b> ${mdInline(t.slice(m[0].length))}` : mdInline(t);
+    return mdPlain(t).length > 700 ? clampHtml(`<p class="clamp4">${html}</p>`) : `<p>${html}</p>`;
+  }
+  function mdList(lines, i) {  // → [html, the next line]; deeper lines belong to the item above them
+    const ind = (l) => l.match(/^\s*/)[0].length, base = ind(lines[i]), first = lines[i].match(ITEM)[2], items = [];
+    while (i < lines.length && lines[i].trim()) {
+      const l = lines[i];
+      if (ind(l) === base && ITEM.test(l)) { items.push({ text: l.replace(ITEM, ""), sub: [] }); i++; }
+      else if (ind(l) > base && items.length) { items[items.length - 1].sub.push(l); i++; }
+      else break;
+    }
+    const li = (it) => {
+      if (!it.sub.some((x) => ITEM.test(x) || isRow(x))) return `<li>${mdInline([it.text].concat(it.sub.map((x) => x.trim())).join(" "))}</li>`;
+      const cut = Math.min(...it.sub.map(ind));
+      return `<li>${mdInline(it.text)}${mdBlocks(it.sub.map((x) => x.slice(cut)).join("\n"))}</li>`;
+    };
+    const ordered = /\d/.test(first), start = ordered ? parseInt(first, 10) : 1;
+    return [`<${ordered ? "ol" : "ul"}${start > 1 ? ` start="${start}"` : ""}>${items.map(li).join("")}</${ordered ? "ol" : "ul"}>`, i];
+  }
+  // A table whose cells are short stays a compact table (scrolling inside its own frame on a phone). When any cell runs past ~140
+  // characters, its rows become an accordion: the first cell and the short cells (a score, "Not asked") on the row, the long cells
+  // under it when opened, each with its column's name.
+  function mdTable(rows) {
+    const all = rows.filter((r) => !isSep(r)).map(cellsOf);
+    if (!all.length) return "";
+    const [head, ...body] = all, n = head.length, len = (x) => mdPlain(x).length;
+    const full = body.map((r) => Array.from({ length: Math.max(n, r.length) }, (_, k) => r[k] || ""));
+    if (!full.some((r) => r.some((x) => len(x) > 140)))
+      return `<div class="tablewrap mdt"><table class="${full.every((r) => len(r[0]) <= 24) ? "idcol" : ""}" style="min-width:${Math.min(720, n * 110)}px"><thead><tr>${head.map((x) => `<th>${mdInline(x)}</th>`).join("")}</tr></thead><tbody>${
+        full.map((r) => `<tr>${r.map((x) => `<td>${mdInline(x)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+    const empty = (x) => !x.replace(/[_\s–-]/g, "");
+    return `<div class="tacc"><div class="tacchead">${head.map((x) => h(mdPlain(x))).filter(Boolean).join(" · ")}</div>${full.map((r) => {
+      const cells = r.slice(1).map((x, k) => [head[k + 1] || "", x]).filter(([, x]) => !empty(x));
+      const short = cells.filter(([, x]) => len(x) <= 40), long = cells.filter(([, x]) => len(x) > 40);
+      // a bare index ("1", "#") says nothing on its own: the row also shows the start of its first long cell
+      const peek = len(r[0]) <= 4 && long.length ? `<span class="trp">${h(mdPlain(long[0][1]))}</span>` : "";
+      // on the row a column goes by its short name ("Proof", not "Proof (what she showed, time)"); opened, by its full one
+      const sum = `<span class="tr1">${h(mdPlain(r[0])) || "–"}</span>${short.map(([k, x]) => `<span class="tcs"><small>${h(mdPlain(k).replace(/\s*\([^)]*\)\s*/g, " ").trim())}</small> ${h(mdPlain(x))}</span>`).join("")}${peek}`;
+      return long.length ? `<details class="trow"><summary>${sum}</summary><dl class="trd">${long.map(([k, x]) => `<dt>${mdInline(k)}</dt><dd>${mdInline(x)}</dd>`).join("")}</dl></details>`
+        : `<div class="trow flat">${sum}</div>`;
+    }).join("")}</div>`;
+  }
+  function mdBlocks(md) {
     const lines = String(md || "").replace(/\r/g, "").split("\n"), out = [];
-    const isRow = (l) => /^\s*\|.*\|\s*$/.test(l), isItem = (l) => /^\s*([-*]|\d+\.)\s+/.test(l), isHead = (l) => /^#{1,6}\s/.test(l);
-    const cells = (l) => l.trim().replace(/\\\|/g, "\u0001").replace(/^\||\|$/g, "").split("|").map((x) => x.trim().replace(/\u0001/g, "|"));
     let i = 0;
     while (i < lines.length) {
       const l = lines[i];
       if (!l.trim()) { i++; continue; }
+      if (/^\s*```/.test(l)) { const code = []; i++; while (i < lines.length && !/^\s*```/.test(lines[i])) code.push(lines[i++]); i++; out.push(`<pre><code>${h(code.join("\n"))}</code></pre>`); continue; }
       const m = l.match(/^(#{1,6})\s+(.*)$/);
       if (m) { const n = Math.min(m[1].length + 2, 6); out.push(`<h${n}>${mdInline(m[2])}</h${n}>`); i++; continue; }
-      if (isRow(l)) {
-        const rows = []; while (i < lines.length && isRow(lines[i])) rows.push(lines[i++]);
-        const [head, ...rest] = rows.filter((r) => !/^\s*\|[\s:|-]+\|\s*$/.test(r));
-        out.push(`<div class="tablewrap"><table><thead><tr>${cells(head).map((x) => `<th>${mdInline(x)}</th>`).join("")}</tr></thead><tbody>${rest.map((r) => `<tr>${cells(r).map((x) => `<td>${mdInline(x)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
-        continue;
-      }
-      if (isItem(l)) {
-        const ordered = /^\s*\d+\./.test(l), items = [];
-        while (i < lines.length && isItem(lines[i])) { items.push(lines[i++].replace(/^\s*([-*]|\d+\.)\s+/, "")); while (i < lines.length && /^\s{2,}\S/.test(lines[i]) && !isItem(lines[i])) items[items.length - 1] += " " + lines[i++].trim(); }
-        out.push(`<${ordered ? "ol" : "ul"}>${items.map((t) => `<li>${mdInline(t)}</li>`).join("")}</${ordered ? "ol" : "ul"}>`);
-        continue;
-      }
-      const para = []; while (i < lines.length && lines[i].trim() && !isHead(lines[i]) && !isRow(lines[i]) && !isItem(lines[i])) para.push(lines[i++].trim());
-      out.push(`<p>${mdInline(para.join(" "))}</p>`);
+      if (isRow(l)) { const rows = []; while (i < lines.length && isRow(lines[i])) rows.push(lines[i++]); out.push(mdTable(rows)); continue; }
+      if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(l)) { out.push("<hr>"); i++; continue; }
+      if (ITEM.test(l)) { const [html, next] = mdList(lines, i); out.push(html); i = next; continue; }
+      if (/^\s*>/.test(l)) { const q = []; while (i < lines.length && /^\s*>/.test(lines[i])) q.push(lines[i++].replace(/^\s*>\s?/, "")); out.push(`<blockquote>${mdBlocks(q.join("\n"))}</blockquote>`); continue; }
+      out.push(mdPara(l.trim())); i++;
     }
     return out.join("");
   }
-  const scriptDue = (c) => /^(interview|screen) booked$/.test(c.stage || "");
-  function scriptBlock(c) {
-    if (!c.interview_sheet) return "";
-    const md = c.interview_sheet.replace(/^\s*#\s+([^\n]+)\n/, ""), title = (c.interview_sheet.match(/^\s*#\s+([^\n]+)/) || [0, "Interview script"])[1];
-    return `<section class="block" id="scriptblock"><span class="eyebrow">Interview script</span>
-      <details class="fold plain mdoc"${scriptDue(c) ? " open" : ""}><summary>${h(title)}</summary>${mdToHtml(md)}</details></section>`;
+
+  // The sheets, newest first: { title, meta, sections: [{ heading, body, group }], filled, chips }
+  const SHEET_GROUPS = [["context", "Context"], ["script", "Script"], ["next", "Next steps"], ["results", "Results"]];
+  const bareHead = (t) => String(t || "").replace(/^\s*\d+[.)]\s*/, "").trim();
+  const sameAs = (heading, label) => bareHead(heading).toLowerCase().replace(/\s+/g, " ") === label.toLowerCase();
+  const afterCall = (heading) => /^(after the call|results?\b)/i.test(bareHead(heading));
+  // An "After the call" section is filled once it has a weighted score, a verdict, or a value in an "AI score" column
+  function callFilled(body) {
+    if (/\bWeighted\b[^\n]*?[:=]\s*\d/i.test(body) || /\bVerdict\s*:\s*(?![_\s])\S/i.test(body)) return true;
+    const lines = body.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      if (!isRow(lines[i]) || (i && isRow(lines[i - 1]))) continue;  // a table's first row is its header
+      const k = cellsOf(lines[i]).findIndex((x) => /^ai score$/i.test(mdPlain(x).trim()));
+      if (k >= 0) for (let j = i + 1; j < lines.length && isRow(lines[j]); j++) if (!isSep(lines[j]) && (cellsOf(lines[j])[k] || "").replace(/[_\s–-]/g, "")) return true;
+    }
+    return false;
   }
+  // An "After the call" not filled yet is the robots' empty template: it is no group of its own and no Next step ("pending", shown as one
+  // muted line, 14 Nov review: the six-part sheets' Next steps held only that template)
+  function sheetGroup(heading, body) {
+    const t = bareHead(heading).toLowerCase();
+    if (afterCall(heading)) return callFilled(body) ? "results" : "pending";
+    if (/^next steps?\b/.test(t)) return "next";
+    if (/script|run sheet|questions|logistics|quick marks|agenda|role.?play/.test(t)) return "script";
+    return "context";
+  }
+  // The call's outcome in a few words, from the status line the robots write: "Weighted: 1.6 · Must-pass: fail · Verdict: No · Confidence: medium"
+  function resultChips(text) {
+    const pick = (re) => { const m = text.match(re); return m ? m[1].trim().replace(/\s+/g, " ").slice(0, 40) : ""; };
+    return [["Weighted", pick(/\bWeighted\s*:\s*(\d+(?:[.,]\d+)?)/i) || pick(/\bWeighted\b[^\n]*?=\s*(\d+(?:[.,]\d+)?)\b/i)], ["Must-pass", pick(/\bMust-pass\s*:\s*([A-Za-z][\w-]*)/i)],
+      ["Verdict", pick(/\bVerdict\s*:\s*([A-Za-z][^(·|\n.;,]*)/i)], ["Confidence", pick(/\bConfidence\s*:\s*([A-Za-z][\w-]*)/i)]].filter(([, v]) => v);
+  }
+  const chipKind = (k, v) => { const x = v.toLowerCase();
+    return k === "Must-pass" ? (/^(pass|met)/.test(x) ? "ok" : /^fail/.test(x) ? "bad" : "warn")
+      : k === "Verdict" ? (/^(no\b|below|fail|reject|decline)/.test(x) ? "bad" : /^(yes|meets|pass|strong|hire|move)/.test(x) ? "ok" : "warn") : ""; };
+  // a long verdict ("not decidable from this call") is cut to the pill's width; the title keeps it whole
+  const chipsHtml = (chips) => chips.map(([k, v]) => `<span class="pill ${chipKind(k, v)}" title="${h(k)} ${h(v)}">${h(k)} ${h(v)}</span>`).join("");
+  function parseSheets(text) {
+    const sheets = []; let cur = null, fence = false;
+    for (const l of String(text || "").replace(/\r/g, "").split("\n")) {
+      if (/^\s*```/.test(l)) fence = !fence;
+      const m = !fence && l.match(/^#\s+(.+?)\s*#*\s*$/);
+      if (m) { cur = { title: m[1], lines: [] }; sheets.push(cur); continue; }
+      if (!cur) { if (!l.trim()) continue; cur = { title: "Interview script", lines: [] }; sheets.push(cur); }
+      cur.lines.push(l);
+    }
+    return sheets.map(({ title, lines }) => {
+      let i = 0; while (i < lines.length && !lines[i].trim()) i++;
+      const meta = [];  // the first paragraph under the title, unless it is a heading, a list or a table
+      const plainLine = (l) => l.trim() && !/^\s*(#|\||```|>|([-*+]|\d+[.)])\s)/.test(l);
+      while (i < lines.length && plainLine(lines[i])) meta.push(lines[i++].trim());
+      const sections = []; let sec = { heading: "", lines: [] };
+      const push = () => { const body = sec.lines.join("\n").trim(); if (sec.heading || body) sections.push({ heading: sec.heading, body, group: sheetGroup(sec.heading, body) }); };
+      for (; i < lines.length; i++) { const m = lines[i].match(/^##\s+(.+?)\s*#*\s*$/); if (m) { push(); sec = { heading: m[1], lines: [] }; } else sec.lines.push(lines[i]); }
+      push();
+      const res = sections.filter((x) => x.group === "results");
+      return { title, meta, sections, filled: res.length > 0, chips: resultChips(res.map((x) => x.body).join("\n")) };
+    });
+  }
+  // A group's one-line hint: Script counts its questions (Q1., Q2. … or a numbered list under a "questions" heading) or its parts,
+  // Results shows the outcome chips, Next steps counts the steps, Context names what it covers.
+  function groupHint(g, secs, sheet, shown) {
+    const text = secs.map((x) => x.body).join("\n"), plural = (n, w) => `${n} ${w}${n > 1 ? "s" : ""}`;
+    if (g === "results") return shown ? chipsHtml(sheet.chips) : h(FOLDED);
+    if (g === "script") {
+      const qs = new Set();
+      secs.map((x) => bareHead(x.heading)).concat(text.split("\n")).forEach((l) => { const m = l.match(/^\s*(?:(?:[-*+]|\d+[.)])\s+)?(?:\*\*|__)?\s*(?:\d{1,2}:\d{2}\s+)?Q(\d{1,3})\b/); if (m) qs.add(m[1]); });
+      const n = qs.size || secs.filter((x) => /question/i.test(x.heading)).reduce((k, x) => k + (x.body.match(/^\s*\d+[.)]\s+/gm) || []).length, 0);
+      if (n) return h(plural(n, "question"));
+      const parts = secs.length > 1 ? secs.length : (text.match(/^\s*(?:[-*+]\s+)?\*\*\d{1,2}:\d{2}\b/gm) || []).length;
+      return parts > 1 ? h(`${parts} parts`) : "";
+    }
+    if (g === "next") {
+      const steps = secs.reduce((k, x) => k + (x.body.match(/^\s*([-*+]|\d+[.)])\s+/gm) || []).length, 0);
+      return h(steps ? plural(steps, "step") : "");
+    }
+    const heads = [];
+    secs.forEach((x) => { if (x.heading && !sameAs(x.heading, "Context")) heads.push(bareHead(x.heading)); (x.body.match(/^#{3,6}\s+.+$/gm) || []).forEach((y) => heads.push(y.replace(/^#+\s+/, ""))); });
+    return h(heads.map(mdPlain).join(" · "));
+  }
+  // Context, Script, Next steps and Results, each closed until opened (its state is kept while the record is redrawn). When several of the
+  // sheet's sections land in one group, each keeps its heading.
+  function sheetGroupsHtml(c, sheet, si) {
+    const shown = callsShown(c);
+    const groups = SHEET_GROUPS.map(([g, label]) => {
+      const secs = sheet.sections.filter((x) => x.group === g && x.body);
+      if (!secs.length) return "";
+      const key = `${c.id}|${si}|${g}`, open = !!state.subOpen[key], many = secs.length > 1;
+      const sub = (x) => x.heading && (many || (g !== "results" && !sameAs(x.heading, label))) ? `<h4 class="sh">${mdInline(bareHead(x.heading))}</h4>` : "";
+      return `<details class="subp" data-sub="${h(key)}" data-state="${open ? 1 : 0}"${open ? " open" : ""}><summary><span class="subt">${h(label)}</span><span class="subh">${groupHint(g, secs, sheet, shown)}</span></summary>
+        <div class="subb sheet">${g === "results" && sheet.chips.length ? `<div class="chips rchiprow">${chipsHtml(sheet.chips)}</div>` : ""}${secs.map((x) => sub(x) + mdBlocks(x.body)).join("")}</div></details>`;
+    }).join("");
+    // the robots' empty "After the call": one line, nothing to open
+    const waiting = !sheet.filled && sheet.sections.some((x) => x.group === "pending") ? `<div class="subp subwait"><span class="subt">Results</span><span class="subh">${si ? "none recorded" : "after the call"}</span></div>` : "";
+    return groups + waiting;
+  }
+  // The step's name: the sheet's title without the candidate's name in front ("Yana H., first interview, 29 Oct" → "First interview, 29 Oct")
+  function stepName(c, title) {
+    const n = (c.name || "").trim(), t = n && title.toLowerCase().startsWith(n.toLowerCase()) ? title.slice(n.length).replace(/^\s*[,·:–—-]\s*/, "") : title;
+    return t ? t.charAt(0).toUpperCase() + t.slice(1) : title;
+  }
+  const metaHtml = (meta) => { const html = meta.map((l) => mdInline(l)).join("<br>");
+    return !meta.length ? "" : mdPlain(meta.join(" ")).length > 240 ? clampHtml(`<p class="callmeta clamp2">${html}</p>`) : `<p class="callmeta">${html}</p>`; };
+  // The day a sheet's title names ("First interview, 4 Nov 2026 12:00 (-03)", "Work sample call (2nd interview) · Thu 5 Nov, 12:30–13:30
+  // (-03)") as YYYY-MM-DD; a title without a year is read in the year that puts the day nearest to today. "" when it names none.
+  const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+  function sheetDay(title) {
+    const m = String(title || "").match(/\b(\d{1,2})\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b\.?(?:,?\s+(\d{4})\b)?/i);
+    if (!m) return "";
+    const mon = MONTHS.indexOf(m[2].slice(0, 3).toLowerCase()), now = new Date(today() + "T12:00:00");
+    let y = m[3] ? +m[3] : now.getFullYear();
+    if (!m[3]) { const away = (new Date(y, mon, +m[1], 12) - now) / 864e5; if (away > 182) y--; else if (away < -182) y++; }
+    const d = new Date(y, mon, +m[1], 12);
+    return d.getMonth() === mon ? localDay(d) : "";
+  }
+  // What stands now, from the record's Next step (the robots keep it with what actually happened: a call moved, cancelled, held), under
+  // the call's name, with the due day. 14 Nov review: a booking whose day had passed still read as the next call.
+  // For someone yet to score (callsShown), a sentence of it that carries the AI card's result leaves the line, which says so (second 14 Nov
+  // review: Next steps stored before the robots' prompts changed put "AI card: weighted 2.47, partial" right above "folded until you score").
+  const AI_RESULT = /\bweighted\b|\bverdict\b|\bmust-pass\b|\bAI card\b\s*:?\s*\d/i;
+  const nowText = (c) => { const t = c.next_step || "";
+    if (!AI_RESULT.test(t) || callsShown(c)) return t;
+    const kept = t.split(/(?<=[.;!?])\s+/).filter((s) => !AI_RESULT.test(s)).join(" ").replace(/[\s;,:]+$/, "");
+    return `${kept ? kept.replace(/([^.!?])$/, "$1.") + " " : ""}The AI card's result is folded until you score.`; };
+  const callNowHtml = (c) => c.next_step ? `<span class="lbl">Now${c.due ? ` · due ${h(fmt(c.due))}` : ""}</span> ${h(nowText(c))}` : "";
+  // The Next call panel: the newest sheet's name, what stands now, its meta line, and its four groups. "Latest call" once its results are
+  // filled; "Booked call · date passed" once its day is behind us without results. The panel itself doesn't fold, its groups do (second
+  // 14 Nov review: a click on the Now line, to select a time, folded the panel on every card, and the fold was remembered).
+  function nextCallHtml(c, sheet) {
+    const groups = sheetGroupsHtml(c, sheet, 0), day = sheetDay(sheet.title);
+    const eyebrow = sheet.filled ? "Latest call" : day && day < today() ? "Booked call · date passed" : "Next call";
+    return `<section class="callp" id="sec-next" aria-labelledby="callt"><div class="callhd"><span class="eyebrow${sheet.filled || eyebrow === "Next call" ? "" : " late"}">${eyebrow}</span>
+      <h3 class="callt" id="callt">${h(mdPlain(stepName(c, sheet.title)))}</h3></div>
+      <div class="callb"><p class="callnow" id="callnow"${c.next_step ? "" : " hidden"} title="${h(nowText(c))}">${callNowHtml(c)}</p>${metaHtml(sheet.meta)}${groups ? `<div class="subps">${groups}</div>` : ""}</div></section>`;
+  }
+  // After the viewer saves a card of their own, the call sheets' results unfold in place (callsShown), the panel's open parts kept
+  function refreshCalls(c) {
+    if (!isOpen(c.id)) return;
+    const sheets = parseSheets(c.interview_sheet), nx = $("#sec-next"), eb = $("#sec-earlier .rsec-b");
+    if (nx && sheets.length) nx.outerHTML = nextCallHtml(c, sheets[0]);
+    if (eb && sheets.length > 1) { eb.innerHTML = earlierHtml(c, sheets.slice(1)); setSum("earlier", earlierSummary(c, sheets.slice(1))); }
+  }
+  // Earlier calls: one fold per earlier sheet, its name and outcome on the fold (folded for someone yet to score), the same four groups inside
+  const earlierHtml = (c, sheets) => `<div class="subps">${sheets.map((x, k) => { const si = k + 1, key = `${c.id}|${si}|sheet`, open = !!state.subOpen[key];
+    return `<details class="subp sheetp" data-sub="${h(key)}" data-state="${open ? 1 : 0}"${open ? " open" : ""}><summary><span class="subt">${h(mdPlain(stepName(c, x.title)))}</span><span class="subh">${callsShown(c) ? chipsHtml(x.chips) : x.chips.length ? h("results " + FOLDED) : ""}</span></summary>
+      <div class="subb">${metaHtml(x.meta)}<div class="subps">${sheetGroupsHtml(c, x, si)}</div></div></details>`; }).join("")}</div>`;
   function bindScreen(root, after) {
     root.querySelectorAll(".scrpanel").forEach((p) => {
       const id = p.dataset.sid, ta = $(".scrmsg", p), save = $("[data-savemsg]", p), copy = $("[data-copy]", p), sent = $("[data-sent]", p);
@@ -695,7 +1354,10 @@
       save.addEventListener("click", async () => { save.disabled = true; await api("candidates/" + id, "PATCH", { screen_message: ta.value }); await after(); });
       if (sent) sent.addEventListener("click", async () => {
         sent.disabled = true;
-        const patch = { stage: "messaged", last_contact: today(), next_step: "Wait for the reply; nudge after 5 working days" };
+        // the stage moves to messaged only from an earlier one: a later or a closed stage is never sent from here (second 14 Nov review:
+        // one click reopened a declined candidate and replaced their next step)
+        const at = stageIdx(p.dataset.stage || ""), early = at >= 0 && at < stageIdx("messaged");
+        const patch = early ? { stage: "messaged", last_contact: today(), next_step: "Wait for the reply; nudge after 5 working days" } : { last_contact: today() };
         if (ta.value !== orig) patch.screen_message = ta.value;
         await api("candidates/" + id, "PATCH", patch); await after();
       });
@@ -734,6 +1396,12 @@
     return { fam, rule, stages: JSON.parse(rule.stages || "[]"), scored: rows.filter((r) => r.kind !== "must_pass"), must: rows.find((r) => r.kind === "must_pass") || null };
   }
   const cardsFor = (cid) => (state.cards || []).filter((k) => k.candidate_id === cid);
+  // The Scorecards section once there is a card, or once the first scored call is near: a call booked (a screen call is the PM and sales
+  // designer intro), or for PM's message screen the message sent (14 Nov review: "No cards yet" on every card, a screening decline's too)
+  // Also whenever the Work sample section is there in a role whose scorecard scores it (14 Nov review: its "Work sample tab in Scorecards" did
+  // nothing on a declined record with a link stored, where Scorecards was hidden).
+  const cardsShown = (c) => { const rub = rubricOf(c.role_id); if (!rub) return false; if (cardsFor(c.id).length) return true;
+    return reachedIdx(c) >= stageIdx(rub.stages.some(([st]) => st === "message") ? "messaged" : "screen booked") || (wsInRubric(c) && wsShown(c)); };
   const itemOf = (card, cid) => (card.items || []).find((i) => i.criterion_id === cid) || {};
   const mustPill = (m) => m ? pill(m, m === "pass" ? "ok" : m === "fail" ? "bad" : "warn") : '<span class="muted">–</span>';
   const decisionPill = (d) => pill(d || "–", d === "meets" ? "ok" : d === "partial" ? "" : d ? "bad" : "");
@@ -776,19 +1444,19 @@
     let actions = "";
     if (!edit) actions = mine ? `<button type="button" class="btn ghost small" data-scstart="edit">Edit my card</button>`
       : `${ai ? `<button type="button" class="btn small" data-scstart="draft">Confirm or edit the AI draft</button>` : ""}<button type="button" class="btn ${ai ? "ghost " : ""}small" data-scstart="blank">Score ${ai ? "blind" : "this stage"}</button>`;
-    const known = ["hired", "declined", "not now"].includes(c.stage) || isClosedRole(roleOf(c.role_id));
+    const known = OUTCOME.includes(c.stage) || isClosedRole(roleOf(c.role_id));
     const hideForBlind = !mine && here.length && !known && (!edit || edit.mode === "blank");
     const shown = edit && edit.mode === "blank" ? `<p class="muted small">The other cards stay hidden until you save yours, so they don't steer your scores.</p>`
       : hideForBlind ? `<details class="fold plain"><summary>Show the ${here.length} card${here.length > 1 ? "s" : ""} for this stage${gaps ? ` · ${gaps} gap${gaps > 1 ? "s" : ""} over one point` : ""}</summary>${tableHtml}</details>
         <p class="muted small">You haven't scored this stage yet. Score blind first if you want your card to count as an independent check.</p>` : tableHtml;
-    return `<section class="block" id="scoreblock"><div class="readhead"><div><span class="eyebrow">4 · Interview scorecards</span><h3>${h(curLabel)}${gaps && !hideForBlind ? ` <span class="muted">· ${gaps} gap${gaps > 1 ? "s" : ""} over one point</span>` : ""}</h3></div><span class="cmeta">${h(rub.rule.version || "")}</span></div>
+    return `<div class="secin" id="scoreblock"><div class="readhead"><div><h3>${h(curLabel)}${gaps && !hideForBlind ? ` <span class="muted">· ${gaps} gap${gaps > 1 ? "s" : ""} over one point</span>` : ""}</h3></div><span class="cmeta">${h(rub.rule.version || "")}</span></div>
       ${tabs}
       ${here.length ? "" : `<p class="muted">No cards for this stage yet. The AI recruiter drafts one from the recording's transcript; you confirm or edit it.</p>`}
       ${shown}
       ${known ? `<p class="muted small">This candidate's outcome is already known, so cards saved here can't be blind. They show the rubric at work but don't count in Calibration.</p>` : ""}
       ${actions ? `<div class="pact">${actions}</div>` : ""}
       ${edit ? cardEditor(c, rub, cur, edit, ai, mine) : ""}
-      <p class="muted small">${h(rub.rule.decision)} The AI recruiter's card is advice; the people who interview decide.</p></section>`;
+      <p class="muted small">${h(rub.rule.decision)} The AI recruiter's card is advice; the people who interview decide.</p></div>`;
   }
   function cardEditor(c, rub, stage, edit, ai, mine) {
     const base = edit.mode === "edit" ? mine : edit.mode === "draft" ? ai : null;
@@ -832,7 +1500,7 @@
       const mine = cardsFor(c.id).find((k) => k.stage === edit.stage && k.scorer === state.boot.who);
       await api("scorecards", "POST", { candidate_id: c.id, stage: edit.stage, items, must_pass: d.must_pass, must_pass_note: d.must_pass_note, summary: d.summary,
         started_from: edit.mode === "edit" ? (mine && mine.started_from) || "blank" : edit.mode });
-      state.cards = await api("scorecards"); state.cardEdit = null; again(); wsScoreRefresh(c);
+      state.cards = await api("scorecards"); state.cardEdit = null; again(); wsScoreRefresh(c); setSum("cards", cardsSummary(c)); refreshCalls(c);
     });
   }
 
@@ -851,7 +1519,12 @@
   const wsOf = (c) => state.wsBy[c.id];
   const wsHas = (w) => !!(w && !w.failed && (w.meta || (w.flaws || []).length || (w.questions || []).length));
   const wsInRubric = (c) => { const rub = rubricOf(c.role_id); return !!(rub && rub.stages.some(([st]) => st === "worksample")); };
-  const wsShown = (c) => wsHas(wsOf(c)) || reachedIdx(c) >= stageIdx("work sample") || wsInRubric(c);
+  // The Work sample section once there is something in it, or once the step is near: the test sent (or later), or the first interview booked
+  // in a role whose scorecard has the step (the test often goes out right after that call, before the stage says so: second 14 Nov review).
+  // An earlier round's people never get one now (14 Nov review: every TA and Brand & Content card, a screening decline and a March hire
+  // included, showed "Nothing received yet" with an upload form for a test never sent). Before that, "Before their step" at the card's end
+  // brings it, and Scorecards, to a card that needs them early.
+  const wsShown = (c) => wsHas(wsOf(c)) || (!isClosedRole(roleOf(c.role_id)) && (reachedIdx(c) >= stageIdx("work sample") || (wsInRubric(c) && !isClosedStage(c) && reachedIdx(c) >= stageIdx("interview booked"))));
   const wsWhen = (s) => !s ? "" : /T\d{2}:\d{2}/.test(s) ? fmtTime(s) : fmt(s);
   // The type comes from the file's extension through this list, never from the browser's own guess: an .html or .svg sent as itself would
   // open as a page on Studio's address (5 Nov review). The Worker keeps the same list and serves anything else as a plain download.
@@ -865,10 +1538,10 @@
   // hasn't scored this stage yet, so they can score blind first.
   function wsScoreHtml(c) {
     const cards = cardsFor(c.id).filter((k) => k.stage === "worksample").sort((a, b) => scorerRank(a.scorer) - scorerRank(b.scorer));
-    const go = rubricOf(c.role_id) ? `<button type="button" class="linkbtn small" data-wsgo>Work sample tab in block 4</button>` : "";
+    const go = rubricOf(c.role_id) ? `<button type="button" class="linkbtn small" data-wsgo>Work sample tab in Scorecards</button>` : "";
     const one = (k) => `<span class="wsscorer">${h(scorerName(k.scorer))} <b>${k.weighted != null ? Number(k.weighted).toFixed(2) : "–"}</b>${decisionPill(k.decision)}${k.must_pass === "fail" ? pill("must-pass fail", "bad") : ""}</span>`;
     const ai = cards.filter((k) => k.scorer === "ai"), people = cards.filter((k) => k.scorer !== "ai");
-    const known = ["hired", "declined", "not now"].includes(c.stage) || isClosedRole(roleOf(c.role_id));
+    const known = OUTCOME.includes(c.stage) || isClosedRole(roleOf(c.role_id));
     const line = `<div class="wsscores">${ai.map(one).join("")}${people.length ? people.map(one).join("") : '<span class="muted small">no person\'s card yet</span>'}</div>`;
     const body = !cards.length ? `<span class="muted">No card yet.</span>`
       : !known && !cards.some((k) => k.scorer === state.boot.who) ? `<details class="fold plain"><summary>${cards.length} card${cards.length > 1 ? "s" : ""}, folded until you score this stage</summary>${line}</details>` : line;
@@ -899,15 +1572,15 @@
   }
   function wsBlock(c) {
     const w = wsOf(c);
-    if (w == null || !wsShown(c)) return "";
-    if (w.failed) return `<section class="block" id="wsblock"><span class="eyebrow">5 · Work sample</span><p class="muted small">The work sample didn't load (${h(w.failed)}). Close the record and open it again.</p></section>`;
+    if (w == null || !wsOn(c)) return "";
+    if (w.failed) return `<div class="secin" id="wsblock"><p class="muted small">The work sample didn't load (${h(w.failed)}). Close the record and open it again.</p></div>`;
     const m = w.meta || {}, flaws = w.flaws || [], qs = w.questions || [], items = flaws.concat(qs);
     const hasFile = Number(m.size) > 0, link = /^https?:\/\/\S+$/i.test(m.link || "") ? m.link : "";
     // the host exactly: "docs.google.com.evil.example" is not a Google Doc (5 Nov review)
     const linkLabel = (u) => { const host = hostOf(u); return host === "docs.google.com" ? "Google Doc" : host === "drive.google.com" ? "Google Drive" : host; };
     const latest = items.slice().sort((a, b) => (b.updated_at || b.created_at || "").localeCompare(a.updated_at || a.created_at || ""))[0];
     const facts = [m.filename, m.stored_at ? `stored ${fmt(m.stored_at)}${m.by ? " by " + whoName(m.by) : ""}` : ""].filter(Boolean);
-    const head = `<div class="readhead"><div><span class="eyebrow">5 · Work sample</span><h3>${w.meta ? (m.received_at ? "Received " + h(wsWhen(m.received_at)) : "Received") : '<span class="muted">Nothing received yet</span>'}${m.source ? ` <span class="muted">· ${h(m.source)}</span>` : ""}</h3></div>
+    const head = `<div class="readhead"><div><h3>${w.meta ? (m.received_at ? "Received " + h(wsWhen(m.received_at)) : "Received") : '<span class="muted">Nothing received yet</span>'}${m.source ? ` <span class="muted">· ${h(m.source)}</span>` : ""}</h3></div>
       ${latest ? `<span class="cmeta">Flaws and questions · ${h(whoName(latest.by) || "–")}${latest.updated_at || latest.created_at ? " · " + h(fmt(latest.updated_at || latest.created_at)) : ""}</span>` : ""}</div>`;
     const file = w.meta ? `<div class="wsfile"><div class="chips">${hasFile ? `<a class="chip link cvopen" href="${API}worksample/${encodeURIComponent(c.id)}/file" target="_blank" rel="noopener" title="${h(m.filename || c.ws_file)}">Open work sample ↗</a>` : ""}${link ? linkChip(link, linkLabel(link)) : ""}</div>
         ${c.ws_file ? `<span class="cmeta">${h(c.ws_file)}</span>` : ""}${facts.length ? `<span class="cmeta">${h(facts.join(" · "))}</span>` : ""}</div>`
@@ -922,13 +1595,13 @@
         <span class="saved" data-wsupsaved></span>
         <p class="muted small">PDF, Word or a Google Doc link, up to 20 MB. Storing one moves an earlier stage to "work sample"; it never moves a stage back.${hasFile ? ' <button type="button" class="linkbtn" data-wsdel>Remove the stored file</button> (the link stays).' : ""}</p>
       </form></details>`;
-    return `<section class="block" id="wsblock">${head}${file}
+    return `<div class="secin" id="wsblock">${head}${file}
       ${wsScoreHtml(c)}
       ${wsFlawsHtml(flaws)}
       ${wsQuestionsHtml(qs, flaws)}
       ${w.meta && !items.length ? `<p class="muted small">No flaws or questions yet. The AI recruiter writes them when it scores the document.</p>` : ""}
       ${upload}
-      <p class="muted small">The AI recruiter reads the document against the brief the candidate got and the role's review guide. The flaws and questions prepare the call; nobody is declined on them. Ticks and notes are yours: a robot's new list keeps them.</p></section>`;
+      <p class="muted small">The AI recruiter reads the document against the brief the candidate got and the role's review guide. The flaws and questions prepare the call; nobody is declined on them. Ticks and notes are yours: a robot's new list keeps them.</p></div>`;
   }
   // The open record's call notes (5 Nov review). A note saves when it loses focus, and whatever is still unsaved goes before any record is
   // read (again) and when the record closes: an upload or a link used to redraw the record from a read made before the note went, so the
@@ -938,10 +1611,13 @@
   function bindWsGo(c) {
     const b = $("#wsblock [data-wsgo]");
     if (b) b.addEventListener("click", () => {
+      // Scorecards isn't on the card yet (before its step): it joins it here, so the button always leads somewhere (14 Nov review)
+      if (!$("#scoreblock")) { state.secAsk[c.id] = { ...(state.secAsk[c.id] || {}), cards: true }; syncSections(c); }
       const sb = $("#scoreblock"); if (!sb) return;
       state.cardStage[c.id] = "worksample"; state.cardEdit = null;
       sb.outerHTML = scoreBlock(c); bindScoreBlock(c);
-      $("#scoreblock").scrollIntoView({ block: "start", behavior: "smooth" });
+      openSec("cards");
+      $("#sec-cards").scrollIntoView({ block: "start", behavior: "smooth" });  // the section's title and fold in sight, not only its body
     });
   }
   function wsScoreRefresh(c) { const el = $("#wsscore"); if (el) { el.outerHTML = wsScoreHtml(c); bindWsGo(c); } }
@@ -954,7 +1630,7 @@
     // back), and the record reopens at this block, or at the note being typed.
     const reopen = async () => {
       forget(); await render(true); await openCandidate(id);
-      requestAnimationFrame(() => { const t = document.activeElement, b = $("#wsblock");
+      requestAnimationFrame(() => { const t = document.activeElement, b = $("#sec-ws") || $("#wsblock");
         if (t && t.matches && t.matches("textarea.wsnote")) t.scrollIntoView({ block: "center" }); else if (b) b.scrollIntoView({ block: "start" }); });
     };
     bindWsGo(c);
@@ -1002,7 +1678,7 @@
           const v = cb.checked ? 1 : 0;
           cb.disabled = true;
           if (!(await patch(li, { asked: v }))) cb.checked = !v;
-          cb.disabled = false; li.classList.toggle("asked", cb.checked); count(); clean();
+          cb.disabled = false; li.classList.toggle("asked", cb.checked); count(); clean(); setSum("ws", wsSummary(c));
         });
         ta.addEventListener("input", () => fit(ta));
         ta.addEventListener("change", () => saveNote(li));
@@ -1146,28 +1822,72 @@
         <p class="muted small">Within 1 point and Exact count criteria both scorers scored. Mean difference is the average absolute gap in points. Cards started from the AI draft agree more by construction; blind cards are the honest test. The triage handover rule in screening-logic.md is 90%+ agreement over two batches of 30 with no misses; no handover rule is set yet for interview scorecards.</p></div>
       ${focus && Object.keys(focus.byCrit).length ? `<div class="group"><span class="eyebrow">By criterion · ${h(scorerName(focus.b))} vs ${h(scorerName(focus.a))}</span>${table(["Criterion", "Compared", "Average difference", "Gaps over one point"], Object.entries(focus.byCrit).map(([id, bc]) =>
         `<tr><td>${h(critLabel(bc.fam, id))}</td><td>${bc.n}</td><td>${(bc.sum / bc.n > 0 ? "+" : "") + (bc.sum / bc.n).toFixed(2)}</td><td>${bc.gaps}</td></tr>`))}<p class="muted small">Average difference is ${h(scorerName(focus.b))}'s score minus ${h(scorerName(focus.a))}'s: plus means ${h(scorerName(focus.b))} scores higher.</p></div>` : ""}
-      ${gapsList.length ? `<div class="group"><span class="eyebrow">Gaps to talk through</span>${table(["Candidate", "Stage", "Criterion", "Scores"], gapsList.map((g) => `<tr class="clickable" data-id="${h(g.cid)}"><td><span class="name">${h(cname(g.cid))}</span></td><td>${h(stageName(g.cid, g.stage))}</td><td>${h(g.crit)}</td><td>${h(scorerName(g.a))} ${g.sa} · ${h(scorerName(g.b))} ${g.sb}</td></tr>`))}</div>` : ""}
+      ${gapsList.length ? `<div class="group"><span class="eyebrow">Gaps to talk through</span>${table(["Candidate", "Stage", "Criterion", "Scores"], gapsList.map((g) => `<tr class="clickable" data-id="${h(g.cid)}" data-stage="${h(g.stage)}"><td><span class="name">${h(cname(g.cid))}</span></td><td>${h(stageName(g.cid, g.stage))}</td><td>${h(g.crit)}</td><td>${h(scorerName(g.a))} ${g.sa} · ${h(scorerName(g.b))} ${g.sb}</td></tr>`))}</div>` : ""}
       ${practice.length ? `<p class="muted small">Not counted: ${practice.length} card${practice.length > 1 ? "s" : ""} saved after the outcome was known (${[...new Set(practice.map((k) => cname(k.candidate_id)))].map(h).join(", ")}). They test the rubric, not the scorers.</p>` : ""}
       <div class="group"><span class="eyebrow">AI drafts waiting for a person's card</span>${waiting.length ? table(["Candidate", "Stage", "AI weighted", "Decision rule"], waiting.map((k) => `<tr class="clickable" data-id="${h(k.candidate_id)}" data-stage="${h(k.stage)}"><td><span class="name">${h(cname(k.candidate_id))}</span><br><span class="muted">${h(roleName((state.candidates.find((x) => x.id === k.candidate_id) || {}).role_id))}</span></td><td>${h(stageName(k.candidate_id, k.stage))}</td><td>${k.weighted != null ? Number(k.weighted).toFixed(2) : "–"} <span class="muted">· ${k.scored} criteria</span></td><td>${decisionPill(k.decision)}</td></tr>`)) : '<p class="muted">None.</p>'}</div>`;
-    view.querySelectorAll("tr.clickable").forEach((tr) => tr.addEventListener("click", () => { if (tr.dataset.stage) state.cardStage[tr.dataset.id] = tr.dataset.stage; openCandidate(tr.dataset.id); }));
+    view.querySelectorAll("tr.clickable").forEach((tr) => tr.addEventListener("click", () => { if (tr.dataset.stage) { state.cardStage[tr.dataset.id] = tr.dataset.stage; state.focusSec = "cards"; } openCandidate(tr.dataset.id); }));
     bindSeg(view, "calgroup", (v) => { state.calGroup = v; renderCalibration(view); });
     view.querySelectorAll("[data-bopen]").forEach((b) => b.addEventListener("click", () => openCandidate(b.dataset.bopen)));
   }
 
-  function openRecord(title, eyebrow, html, cid) {
+  function openRecord(title, eyebrow, html, cid, sub) {
     // Typing in a call note since openCandidate saved the notes: the same record's new form takes it over (bindWsBlock); for another record it is sent.
     if (wsLive) { if (cid && wsLive.cid === cid) wsCarry = { cid, values: wsLive.unsaved(), focus: wsLive.focused() }; else wsLive.flush(); }
     wsLive = null;
-    const d = $("#recdlg"), body = $("#recbody"); $("#rectitle").textContent = title; $("#receyebrow").textContent = eyebrow; body.innerHTML = html;
+    const d = $("#recdlg"), body = $("#recbody");
+    d.dataset.cid = cid || ""; d.classList.toggle("hassub", !!sub);
+    $("#rectitle").textContent = title; $("#receyebrow").textContent = eyebrow || ""; $("#recsub").innerHTML = sub || ""; body.innerHTML = html;
     if (!d.open) (d.showModal ? d.showModal() : d.setAttribute("open", ""));
-    // Back to the top once the dialog is shown: a closed dialog ignores scrollTop, so the next record used to open where the last one was left
-    body.scrollTop = 0; requestAnimationFrame(() => { body.scrollTop = 0; });
+    // Back to the top once the dialog is shown: a closed dialog ignores scrollTop, so the next record used to open where the last one was left.
+    // On a phone the dialog itself scrolls (its header's first row stays), elsewhere the body does.
+    const top = () => { body.scrollTop = 0; d.scrollTop = 0; d.classList.remove("scrolled"); };
+    top(); requestAnimationFrame(top);
   }
+  // The record's collapsible parts, for every record: a section's open state is remembered when the person opens or closes it (the
+  // toggle event doesn't bubble, hence the capture), and "Show more" opens a clamped paragraph.
+  $("#recbody").addEventListener("toggle", (e) => {
+    const d = e.target;
+    if (!d.matches || !d.matches("details[data-sec], details[data-sub]")) return;
+    const now = d.open ? "1" : "0";
+    if (d.dataset.state === now) return;  // drawn that way, or opened by the app
+    d.dataset.state = now;
+    if (d.dataset.sec) store.set("studio-sec-" + d.dataset.sec, now); else state.subOpen[d.dataset.sub] = d.open;
+  }, true);
+  $("#recbody").addEventListener("click", (e) => {
+    const b = e.target.closest && e.target.closest("[data-more]");
+    if (!b) return;
+    const box = b.closest(".clampbox"), open = !box.classList.contains("open");
+    box.classList.toggle("open", open); b.textContent = open ? "Show less" : "Show more"; b.setAttribute("aria-expanded", open);
+  });
+  // The Decision panel stays in view beside the main column and scrolls itself when it is taller than the record's body. The body's height is
+  // the space the dialog has (studio.css gives a record the window's height), and a closed dialog's 0 is no reading (14 Nov review).
+  if (window.ResizeObserver) new ResizeObserver(() => { const hgt = $("#recbody").clientHeight; if (hgt > 0) $("#recdlg").style.setProperty("--rbh", hgt + "px"); }).observe($("#recbody"));
+  // A field focused in the panel (Tab, a click, a step opened) is kept clear of the sticky Save bar at its foot (second 14 Nov review, WCAG 2.2
+  // 2.4.11: Due, Notes and a step's controls landed under it; the bar's scroll-padding in studio.css alone left Notes 27px under it)
+  $("#recbody").addEventListener("focusin", (e) => requestAnimationFrame(() => {
+    const t = e.target, d = t.closest && t.closest(".recside .decision"), foot = d && d.querySelector(".formfoot");
+    if (!foot || t.closest(".formfoot") || getComputedStyle(foot).position !== "sticky") return;
+    const over = t.getBoundingClientRect().bottom + 8 - foot.getBoundingClientRect().top;
+    if (over > 0) d.scrollTop += over;
+  }));
+  $("#recdlg").addEventListener("scroll", () => { const d = $("#recdlg"); d.classList.toggle("scrolled", d.scrollTop > 4); });
   // Closing a record opened from a link leaves the address at the list, so a reload doesn't open it again.
   const leaveLink = () => { if (/^#candidates\//.test(location.hash)) history.replaceState(null, "", "#candidates"); };
-  function closeRecord() { const d = $("#recdlg"); if (d.open) d.close(); leaveLink(); }
-  $("#recdlg").addEventListener("cancel", leaveLink);  // Escape
-  $("#recclose").addEventListener("click", closeRecord);
+  // Closing a record with changes not saved asks first (14 Nov review: a Go and its reason picked in a step went with no word): the Decision
+  // panel's fields and steps, a scorecard being written, an edited message, a work sample link or file not added yet
+  const unsavedParts = () => {
+    if (!$("#recdlg").open) return [];
+    const f = $("#cform"), parts = f && f._what ? f._what() : [];
+    if ($("#recbody #scform[data-dirty]")) parts.push("your scorecard");
+    if ($('#recbody .scrmsg[data-dirty="1"], #recbody .rmsg[data-dirty="1"]')) parts.push("an edited message");
+    if ($("#recbody form[data-wsup][data-dirty]")) parts.push("the work sample file or link");
+    return parts;
+  };
+  const closeOk = () => { const p = unsavedParts(); return !p.length || confirm(`${p.join(", ")}: not saved. Close the record anyway?`); };
+  function closeRecord(force) { const d = $("#recdlg"); if (d.open && !force && !closeOk()) return; if (d.open) d.close(); leaveLink(); }
+  $("#recdlg").addEventListener("cancel", (e) => { if (!closeOk()) { e.preventDefault(); return; } leaveLink(); });  // Escape
+  window.addEventListener("beforeunload", (e) => { if (unsavedParts().length) { e.preventDefault(); e.returnValue = ""; } });
+  $("#recclose").addEventListener("click", () => closeRecord());
   $("#recdlg").addEventListener("click", (e) => { if (e.target === $("#recdlg")) closeRecord(); });
 
   // ---------- outreach ----------
@@ -1316,9 +2036,9 @@
   }
   function poolFor(role) {
     // Earlier rounds of the same job only (Kostya, 18 Oct: a sales designer has no place under TA Manager).
-    // Someone declined for the job stays out: the lead already decided.
+    // Someone declined for the job stays out: the lead already decided. Withdrawn counts the same way (stages v2, as in studio.py rediscover).
     const fam = familyOf(role), mine = state.candidates.filter((c) => c.role_id === role.id);
-    const declined = (c) => c.your_call === "Decline" || c.stage === "declined";
+    const declined = (c) => c.your_call === "Decline" || c.stage === "declined" || c.stage === "withdrawn";
     return state.candidates.filter((c) => c.role_id !== role.id && roles().some((r) => r.id === c.role_id) && familyOf(roleOf(c.role_id)) === fam && passedStage(c) && c.stage !== "hired" && !declined(c))
       .map((c) => ({ c, added: mine.some((m) => samePerson(c, m)) }))
       .sort((a, b) => (reachedIdx(b.c) - reachedIdx(a.c)) || a.c.name.localeCompare(b.c.name));

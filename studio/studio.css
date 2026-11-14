@@ -2,7 +2,9 @@
    Red Hat Display and Mono, light cards with a 1px line, mono uppercase eyebrows, segmented controls, quiet buttons. */
 :root{
   --bg:#e4e4dd; --bg-2:#d9d9d1; --card:#f4f4ef; --white:#fff; --ink:#1c1c1c; --text:#333; --muted:#5f5f5a;
-  --line:rgba(106,100,100,.22); --accent:#9a7446; --ok:#3f7f41; --ok-bg:rgba(63,127,65,.12); --warn:#9a6a1a; --warn-bg:rgba(154,106,26,.12);
+  /* ok and warn are the inks of the green and amber words (11px pills): 4.5:1 or more on their 12% tint over the card, white or the ground
+     (14 Nov review: #3f7f41 and #9a6a1a gave 3.8:1); the tints keep the earlier hues */
+  --line:rgba(106,100,100,.22); --accent:#9a7446; --ok:#2e6630; --ok-bg:rgba(63,127,65,.12); --warn:#7a5312; --warn-bg:rgba(154,106,26,.12);
   --bad:#9e3233; --bad-bg:rgba(158,50,51,.10); --code:#efefe9;
   /* the four kinds of onboarding task, in the same logic as ok / warn / bad: an ink for the word, the same hue at 12% behind it */
   --call:#34588a; --call-bg:rgba(52,88,138,.22); --watch:#6b4a8c; --watch-bg:rgba(107,74,140,.22);
@@ -307,27 +309,138 @@ dialog .dhead{display:flex;justify-content:space-between;gap:12px;align-items:fl
 .docbody .card{display:flex;flex-direction:column;gap:8px;min-width:0}
 @media (prefers-reduced-motion:reduce){.bar span{transition:none}}
 
-/* The candidate record: a pop-up with three blocks */
-dialog.record{width:min(960px,calc(100vw - 32px));max-height:calc(100vh - 32px);border:1px solid var(--line);border-radius:14px;background:var(--bg);color:var(--text);padding:0;display:none;flex-direction:column;overflow:hidden}
+/* The candidate record (redesigned 5 Nov): a header that stays (name, status and stage, the calls, one line of facts, the links used most),
+   then the main column (the Next call panel and collapsible sections) beside the Decision panel. Spacing on 8/12/16/24. */
+dialog.record{width:min(1180px,calc(100vw - 32px));max-width:none;max-height:calc(100vh - 32px);border:1px solid var(--line);border-radius:14px;background:var(--bg);color:var(--text);padding:0;display:none;flex-direction:column;overflow:hidden}
 dialog.record[open]{display:flex}
 dialog.record::backdrop{background:rgba(28,28,28,.5)}
-dialog.record .dhead{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;padding:16px 22px;border-bottom:1px solid var(--line);background:var(--card)}
-dialog.record .dhead h2{font-size:22px;margin-top:2px}
-.recbody{overflow:auto;padding:18px 22px 32px;display:flex;flex-direction:column;gap:14px}
-.block{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;display:flex;flex-direction:column;gap:12px}
-.block>.eyebrow{margin-bottom:-2px}
-.block .kv{grid-template-columns:150px 1fr;gap:8px 14px}
-.block .kv dd{line-height:1.5}
+dialog.record .dhead{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;padding:16px 24px;border-bottom:1px solid var(--line);background:var(--card);flex:none}
+dialog.record.hassub .dhead{border-bottom:none;padding-bottom:8px}
+dialog.record .dhead h2{font-size:24px;margin-top:2px;overflow-wrap:anywhere}
+#receyebrow:empty{display:none}
+.rsub{display:flex;flex-direction:column;gap:8px;padding:0 24px 16px;background:var(--card);border-bottom:1px solid var(--line);flex:none;min-width:0}
+.rsub:empty{display:none}
+.rchips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.rchips .pill{max-width:min(100%,560px)}
+.pill.st{background:var(--ink);color:var(--card)}
+.pill.st.bad{background:var(--bad);color:#fff}.pill.st.ok{background:var(--ok);color:#fff}
+.pill.grp{background:transparent;box-shadow:inset 0 0 0 1px var(--line);color:var(--muted)}
+.rmeta{font-size:13px;line-height:1.45;color:var(--muted);overflow-wrap:anywhere;max-width:120ch}
+.rlinks{display:flex;flex-wrap:wrap;gap:6px}
+.rlinks .chip.link{font-size:12.5px;padding:6px 11px;background:var(--bg)}
+.chip.mail{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip.off{cursor:default}
+.recbody{overflow:auto;padding:20px 24px 32px;min-height:0;flex:1 1 auto}
+/* A candidate's record takes the window's height (less the 16px margins), so the body's height is the space the dialog has, not the height
+   of what is in it: the Decision panel's cap below is measured from it (14 Nov review: the cap came from the body, which grew with the
+   panel, so a short main column left the panel at 320px with Save out of sight). The New candidate form keeps its own height. */
+@media (min-width:901px){dialog.record.hassub{height:calc(100vh - 32px);height:calc(100dvh - 32px)}}
+/* Main column and Decision panel. The panel spans both rows and its inner box sticks, so it stays beside the sections as they scroll. */
+.reclayout{display:grid;grid-template-columns:minmax(0,1fr) 320px;grid-template-rows:auto 1fr;grid-template-areas:"next side" "rest side";column-gap:24px;align-items:start}
+.reclayout.solo{display:block;max-width:720px}
+.recnext{grid-area:next;min-width:0;margin-bottom:12px}
+.recside{grid-area:side;align-self:stretch;min-width:0}
+.recrest{grid-area:rest;display:flex;flex-direction:column;gap:12px;min-width:0}
+.decision{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:12px;container:dpanel/inline-size}
+/* At most the body's height less its top and bottom padding (20 + 32), so the panel's top isn't cut off at the end of the scroll. The wheel
+   over a panel that can't scroll further moves the record (no overscroll containment: 14 Nov review, the record never scrolled from here). */
+.recside .decision{position:sticky;top:0;max-height:max(280px,calc(var(--rbh,80vh) - 52px));overflow:auto;padding-bottom:0}
+/* Save and its "Saved" stay at the panel's foot while the steps and the fields scroll above them (beside the main column only). The panel
+   scrolls a focused field clear of that bar (second 14 Nov review: Tab put Due and a step's controls under it, WCAG 2.4.11). */
+@media (min-width:901px){.recside .decision .formfoot{position:sticky;bottom:0;z-index:1;margin:2px -16px 0;padding:12px 16px 14px;background:var(--card);border-top:1px solid var(--line)}
+  .recside .decision{scroll-padding-bottom:88px}}
+.recside .decision .form{grid-template-columns:minmax(0,1fr)}
+.recside .decision .form.inner{grid-template-columns:minmax(0,1fr)}
+.decision>.eyebrow{margin-bottom:-4px}
+@media (max-width:900px){
+  .reclayout{grid-template-columns:minmax(0,1fr);grid-template-rows:none;grid-template-areas:"next" "side" "rest"}
+  .recside{margin-bottom:12px}
+  .recside .decision{position:static;max-height:none;overflow:visible;padding-bottom:16px}
+}
+/* A section: title and a one-line summary on the fold; the summary is cut with an ellipsis rather than wrapping */
+details.rsec{background:var(--card);border:1px solid var(--line);border-radius:12px;min-width:0}
+details.rsec>summary{list-style:none;cursor:pointer;display:flex;align-items:baseline;gap:12px;padding:12px 16px;min-height:48px;border-radius:11px}
+details.rsec>summary::-webkit-details-marker,details.subp>summary::-webkit-details-marker,details.trow>summary::-webkit-details-marker{display:none}
+details.rsec>summary::after,details.subp>summary::after{content:"+";flex:none;margin-left:auto;font-family:var(--m);font-size:14px;color:var(--muted)}
+details.rsec[open]>summary::after,details.subp[open]>summary::after{content:"–"}
+details.rsec>summary:hover,details.trow>summary:hover{background:var(--white)}
+details.subp>summary:hover{background:var(--card)}
+details.rsec[open]>summary{border-bottom:1px solid var(--line);border-radius:11px 11px 0 0}
+.rsec-t{flex:none;font-weight:600;font-size:15.5px;color:var(--ink)}
+.rsec-s{flex:1;min-width:0;font-size:13.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rsec-b{padding:16px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.secin{display:flex;flex-direction:column;gap:12px;min-width:0}
+/* The Next call panel: the step's name, what stands now, its meta line, then Context, Script, Next steps and Results, each closed until
+   opened. The panel itself doesn't fold (second 14 Nov review). */
+.callp{background:var(--card);border:1px solid var(--ink);border-radius:12px;min-width:0}
+.callhd{display:flex;flex-direction:column;gap:4px;min-width:0;padding:14px 16px 10px}
+.callt{margin:0;font-size:20px;font-weight:600;line-height:1.25;color:var(--ink);letter-spacing:-.01em;overflow-wrap:anywhere}
+.callb{padding:0 16px 16px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.callmeta{font-size:13.5px;line-height:1.5;color:var(--muted);max-width:75ch;overflow-wrap:anywhere}
+.subps{border:1px solid var(--line);border-radius:10px;background:var(--white);min-width:0}
+details.subp{border-top:1px solid var(--line);min-width:0}
+details.subp:first-child{border-top:none}
+details.subp>summary{list-style:none;cursor:pointer;display:flex;align-items:baseline;gap:12px;padding:10px 14px;min-height:44px}
+details.subp:first-child>summary{border-radius:9px 9px 0 0}
+details.subp:last-child:not([open])>summary{border-radius:0 0 9px 9px}
+.subt{flex:none;font-weight:600;color:var(--ink);font-size:14.5px}
+.subh{flex:1;min-width:0;font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.subh .pill{margin-right:4px}
+.subb{padding:4px 14px 16px;min-width:0}
+details.sheetp>.subb{display:flex;flex-direction:column;gap:12px;padding-top:4px}
+details.sheetp .subps{background:var(--card)}
+.rchiprow{margin:4px 0 4px}
+/* A sheet's text: one statement per line, prose kept to a readable width */
+.sheet{font-size:14px;line-height:1.55;color:var(--text)}
+.sheet>*{margin:8px 0 0}
+.sheet>:first-child{margin-top:4px}
+.sheet p,.sheet li{max-width:75ch;overflow-wrap:anywhere}
+.sheet b{color:var(--ink);font-weight:600}
+.sheet h4.sh{font-family:var(--m);font-size:11.5px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:20px 0 4px;padding-top:12px;border-top:1px solid var(--line)}
+.sheet>h4.sh:first-child{margin-top:4px;padding-top:0;border-top:none}
+.sheet h5{font-size:15px;margin:16px 0 2px;color:var(--ink)}
+.sheet h6{font-size:14px;margin:12px 0 2px;color:var(--ink)}
+.sheet ul,.sheet ol{margin:6px 0 0;padding-left:20px;display:flex;flex-direction:column;gap:6px}
+.sheet code{font-family:var(--m);font-size:12.5px;background:var(--code);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+.sheet pre{white-space:pre-wrap;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-family:var(--m);font-size:12.5px;overflow-x:auto}
+.sheet pre code{background:none;padding:0}
+.sheet blockquote{margin:8px 0 0;padding:2px 12px;border-left:3px solid var(--line);color:var(--muted)}
+.sheet a{overflow-wrap:anywhere}
+.clampbox{display:flex;flex-direction:column;align-items:flex-start;gap:2px}
+.clampbox.open .clamp4,.clampbox.open .clamp2{display:block;-webkit-line-clamp:unset;overflow:visible}
+.clamp4{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+.clampbox>.linkbtn{font-size:13px;color:var(--muted)}
+.sheet .tablewrap.mdt{margin-top:8px;background:var(--card)}
+.mdt table{font-size:13px}
+.mdt th{white-space:normal}
+.mdt th,.mdt td{padding:8px 10px}
+/* A table with long cells: one row per line, opened for the long cells, each under its column's name */
+.tacc{margin-top:8px;border:1px solid var(--line);border-radius:8px;background:var(--card);min-width:0}
+.trow{border-top:1px solid var(--line);min-width:0}
+.trow:first-child{border-top:none}
+.trow>summary,.trow.flat{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;padding:9px 12px;min-height:40px;list-style:none}
+.trow>summary{cursor:pointer;padding-right:32px;position:relative}
+.trow>summary::after{content:"+";position:absolute;right:12px;top:9px;font-family:var(--m);color:var(--muted)}
+.trow[open]>summary::after{content:"–"}
+.tr1{font-weight:600;color:var(--ink);overflow-wrap:anywhere}
+.tcs{font-size:13.5px;color:var(--text);overflow-wrap:anywhere}
+.tcs small{font-family:var(--m);font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);margin-right:4px}
+.trp{flex:1 1 220px;min-width:0;font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.trd{display:grid;grid-template-columns:minmax(110px,170px) minmax(0,1fr);gap:8px 16px;margin:0;padding:4px 12px 14px}
+.trd dt{font-family:var(--m);font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);padding-top:3px;overflow-wrap:anywhere}
+.trd dd{margin:0;font-size:14px;line-height:1.55;max-width:75ch;overflow-wrap:anywhere}
+/* The parts of the earlier blocks, now inside sections */
+.rsec-b .kv{grid-template-columns:150px 1fr;gap:8px 14px}
+.rsec-b .kv dd{line-height:1.5}
 .links{display:flex;flex-direction:column;gap:6px}
 .links .chips{gap:8px}
 .links .chip.link{font-size:13px;padding:6px 12px;background:var(--bg)}
 .answer{display:flex;flex-direction:column;gap:6px}
 .answer p{font-size:14.5px;line-height:1.6;max-width:72ch;padding:12px 14px;background:var(--bg);border-radius:8px;border:1px solid var(--line)}
 .lbl{font-family:var(--m);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
-.block.read{border-color:var(--ink)}
 .readhead{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}
-.readhead h3{font-size:22px;margin-top:2px}
-.readhead .muted{font-weight:400;font-size:15px}
+.readhead h3{font-size:18px;margin-top:2px}
+.readhead .muted{font-weight:400;font-size:14.5px}
 .why{font-size:15px;line-height:1.55;max-width:72ch}
 .critgroup{display:flex;flex-direction:column;gap:6px}
 .critgroup .critlist{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:4px 12px;margin:0;list-style:none}
@@ -339,8 +452,38 @@ dialog.record .dhead h2{font-size:22px;margin-top:2px}
 .callrow .hint{margin-top:2px}
 details.more{margin-top:2px}
 details.more .inner{margin-top:10px}
-@media (max-width:720px){.block .kv{grid-template-columns:1fr}.crow{grid-template-columns:1fr}.crow .pill{margin-bottom:2px}}
-
+@media (max-width:720px){.rsec-b .kv{grid-template-columns:1fr}.crow{grid-template-columns:1fr}.crow .pill{margin-bottom:2px}.trd{grid-template-columns:minmax(0,1fr);gap:2px}.trd dd{margin-bottom:8px}}
+/* Phones: the record fills the screen and scrolls as one page; the name and Close stay at the top, everything else scrolls under them.
+   Tap targets are at least 40px. */
+@media (max-width:600px){
+  dialog.record{width:100%;height:100%;max-width:none;max-height:none;margin:0;inset:0;border:none;border-radius:0}
+  dialog.record[open]{display:block;overflow-y:auto;overscroll-behavior:contain}
+  dialog.record .dhead{position:sticky;top:0;z-index:4;padding:max(12px,env(safe-area-inset-top)) 16px 8px;align-items:center}
+  dialog.record.scrolled .dhead{box-shadow:0 1px 0 var(--line)}
+  dialog.record .dhead h2{font-size:20px}
+  .rsub{padding:0 16px 14px}
+  .recbody{overflow:visible;padding:16px 12px max(32px,env(safe-area-inset-bottom))}
+  details.rsec>summary{flex-wrap:wrap;row-gap:2px;padding:12px 14px;position:relative;padding-right:40px}
+  details.rsec>summary::after{position:absolute;right:14px;top:14px}
+  .rsec-s{flex-basis:100%}
+  .callhd{padding:12px 12px 8px}
+  .rsec-b{padding:14px 12px}
+  .callb{padding:0 12px 14px}
+  .callt{font-size:18px}
+  details.subp>summary{flex-wrap:wrap;row-gap:2px;position:relative;padding-right:36px}
+  details.subp>summary::after{position:absolute;right:14px;top:12px}
+  .subh{flex-basis:100%;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.7}
+  .subb{padding:4px 12px 14px}
+  .decision{padding:14px 12px}
+  dialog.record .btn,dialog.record .seg button,dialog.record .chip.link,dialog.record .linkbtn.name{min-height:40px}
+  dialog.record .rlinks .chip.link,dialog.record .links .chip.link,dialog.record a.btn{display:inline-flex;align-items:center}
+  dialog.record details.fold>summary{min-height:40px;align-items:center}
+  dialog.record details.q>summary{padding:12px 0}
+  dialog.record .wsscore .linkbtn{min-height:40px}
+  dialog.record input:not([type=checkbox]):not([type=file]),dialog.record select{min-height:42px}
+  dialog.record .seg{display:flex}
+  dialog.record .seg button{flex:1}
+}
 /* Interview scorecards: scorers side by side, gaps over one point flagged, the card editor */
 .sctable table{min-width:560px}
 .sctable th small,.sctable td small{display:block;font-family:var(--m);font-size:10.5px;letter-spacing:.03em;text-transform:none;color:var(--muted);font-weight:400;margin-top:2px}
@@ -360,15 +503,6 @@ details.more .inner{margin-top:10px}
 .replydraft{grid-column:1/-1;display:flex;flex-direction:column;gap:8px;margin-top:4px;padding:12px 14px;border:1px dashed var(--line);border-radius:10px;background:var(--bg-2)}
 .replydraft .rnote{font-size:13.5px;line-height:1.5;color:var(--text);margin:0;white-space:pre-line}
 .convo .mmeta{font-family:var(--m);font-size:11px;color:var(--muted);margin-bottom:4px;white-space:normal}
-/* The interview script on the card (27 Oct): a Markdown prep sheet. */
-.mdoc h3{font-size:17px;margin:20px 0 6px}
-.mdoc h4,.mdoc h5,.mdoc h6{font-size:15px;margin:16px 0 6px}
-.mdoc p{margin:6px 0;line-height:1.5;font-size:14px}
-.mdoc ul,.mdoc ol{margin:6px 0 8px 20px;padding:0;font-size:14px;line-height:1.5}
-.mdoc .tablewrap{margin:8px 0}
-.mdoc table{font-size:13px;min-width:560px}
-.mdoc th,.mdoc td{padding:8px 10px}
-.mdoc code{font-family:var(--m);font-size:12.5px}
 details.q{margin-top:4px;font-size:12.5px}
 details.q summary{cursor:pointer;color:var(--muted);font-family:var(--m);font-size:11px}
 details.q ul{margin:4px 0 0;padding-left:16px;display:flex;flex-direction:column;gap:4px;font-style:italic}
@@ -502,6 +636,64 @@ label.wsask{flex-direction:row;align-items:center;gap:6px;flex:none;padding-top:
 .wsform>.saved,.wsform>p{grid-column:1/-1}
 .wsform>.saved:empty{display:none}
 @media (max-width:560px){.wsup .wsform{grid-template-columns:1fr}.wsqctl,.wsprobe,.wsq .saved{padding-left:0}.wsscore .linkbtn{margin-left:0}}
+/* Candidates: the status label with its stage group small under it (5 Nov) */
+td.cstage{min-width:118px;max-width:170px}
+td.cstage .stl{display:block;font-weight:500;color:var(--ink);line-height:1.35}
+td.cstage .stl.closed{color:var(--muted)}
+td.cstage>.muted{display:block;font-size:12px;line-height:1.35;margin-top:2px}
+td.cstage .wsflag{margin-top:6px}
+/* A fold's one-line summary is for when it is closed: open, the content says it (and Results doesn't show its chips twice) */
+details.rsec[open]>summary>.rsec-s,details.subp[open]>summary>.subh{display:none}
+.mdt table.idcol td:first-child{white-space:nowrap}
+.tacchead{padding:7px 12px;border-bottom:1px solid var(--line);font-family:var(--m);font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);overflow-wrap:anywhere}
+.tacchead+.trow{border-top:none}
+/* A long address or file path with no spaces wraps instead of widening the record (an AI card's source line did at 390px) */
+#recbody p{overflow-wrap:anywhere}
+/* Phones: the Candidates filters two to a row (seven selects since the Stage and Status filters) */
+@media (max-width:600px){.toolbar input[type=search]{width:100%}.toolbar select{flex:1 1 calc(50% - 5px);min-width:0;max-width:none;font-size:14px;padding-inline:8px}}
+/* Candidates (14 Nov review): on a wide screen the filters sit in the toolbar as before; on a phone they fold behind "Filters", with a
+   sort, and each row is a card that shows its status, so a filtered list says what it was filtered by without scrolling sideways */
+.ctools .ftoggle,.ctools .fsort{display:none}
+.ctools .fsel{display:contents}
+.csrc .sep{display:none}
+.csrc .cappm{display:none}
+.cdue .duew{display:none}
+@media (max-width:600px){
+  .ctools input[type=search]{flex:1 1 0;width:auto;min-width:0}
+  .ctools .ftoggle{display:inline-flex;align-items:center;min-height:42px;flex:none}
+  .ctools .ftoggle[aria-expanded="true"]{border-color:var(--ink)}
+  .ctools .fsel{display:none}
+  .ctools.open .fsel{display:flex;flex-wrap:wrap;gap:10px;width:100%}
+  .ctools.open .fsort{display:block}
+  .ctools .fsel .seg{flex-basis:100%}
+  .ctools .fsel .seg button{min-height:40px}
+  .tablewrap.cands{overflow:visible;border:none;background:none;border-radius:0}
+  .tablewrap.cands table,.tablewrap.cands tbody{display:block;width:100%;min-width:0}
+  .tablewrap.cands thead{display:none}
+  .tablewrap.cands tr{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"name call" "src claude" "stage stage" "next due";gap:4px 12px;padding:12px 14px;margin:0 0 8px;background:var(--card);border:1px solid var(--line);border-radius:10px}
+  .tablewrap.cands td{display:block;padding:0;border:none;min-width:0;max-width:none;background:none!important}
+  .tablewrap.cands td.cname{grid-area:name}
+  .tablewrap.cands td.cname .clamp2{-webkit-line-clamp:1}
+  .tablewrap.cands td.ccall{grid-area:call;text-align:right}
+  .tablewrap.cands td.csrc{grid-area:src;font-size:13px;color:var(--muted)}
+  .tablewrap.cands td.csrc br{display:none}
+  .tablewrap.cands td.csrc .sep,.tablewrap.cands td.csrc .cappm{display:inline}
+  .tablewrap.cands td.cclaude{grid-area:claude;text-align:right}
+  .tablewrap.cands td.cclaude::before{content:"Claude ";font-size:12px;color:var(--muted)}
+  .tablewrap.cands td.cclaude:empty::before{content:none}
+  .tablewrap.cands td.cclaude br{display:none}
+  .tablewrap.cands td.cclaude .conf{margin-left:6px}
+  .tablewrap.cands td.capplied{display:none}
+  .tablewrap.cands td.cstage{grid-area:stage;margin-top:2px}
+  .tablewrap.cands td.cstage .stl{display:inline}
+  .tablewrap.cands td.cstage .cgrp{display:inline;font-size:13px}
+  .tablewrap.cands td.cstage .cgrp::before{content:" · "}
+  .tablewrap.cands td.cstage .wsflag{margin:0 0 0 8px}
+  .tablewrap.cands td.cnext{grid-area:next;font-size:13.5px}
+  .tablewrap.cands td.cdue{grid-area:due;text-align:right;font-size:13px;color:var(--muted)}
+  .tablewrap.cands td.cdue .duew{display:inline}
+}
+@media (max-width:600px){.clampbox>.linkbtn{min-height:40px;padding:0 12px 0 0}}
 
 /* Decisions (12 Nov): three steps in the record, each row with the name of the person who makes the call */
 ul.dsteps{list-style:none;margin:0;padding:4px 14px;background:var(--bg);border:1px solid var(--line);border-radius:8px;display:flex;flex-direction:column}
@@ -576,3 +768,83 @@ ul.dsteps{list-style:none;margin:0;padding:4px 14px;background:var(--bg);border:
   .onbrow .onba{order:3;flex-basis:100%}.onb .phase h3{flex-wrap:wrap;gap:2px 10px}
   .onbscore{grid-template-columns:1fr}.onbpoints li{grid-template-columns:1fr;gap:4px}.onbpoints .pill{justify-self:start}
   .onbnewrow{flex-wrap:wrap;gap:2px 10px}.onbnewrow b{max-width:100%}.onbnewrow>span:not(.cmeta){flex-basis:100%;order:3}}
+/* The Decisions steps inside the redesigned card's Decision panel. In the 320px column (and on a phone) each row stacks: the person's name,
+   the control under it, then the reason with the step's Save at the end of its line. Where the panel itself is wide (the one column under
+   about 900px), a row reads name, control, reason and Save on one line, as the 12 Nov block did. */
+.decision ul.dsteps{padding:2px 12px}
+.decision .dstep{gap:6px;padding:9px 0}
+.decision .drow{grid-template-columns:minmax(0,1fr) max-content;gap:6px 10px}
+.decision .drow>.dwho{grid-column:1/-1}
+.decision .drow>.seg{grid-column:1/-1;justify-self:start}
+.decision .drow>input,.decision .drow>textarea,.decision .drow>.dreason{grid-column:1;min-width:0}
+.decision .drow>.btn,.decision .drow>.dact{grid-column:2;justify-content:flex-end;align-self:end;margin-bottom:5px}
+.decision .drow>textarea{padding-block:8px}
+.decision .drow.ro>.dwho{grid-column:1}
+.decision .drow.ro>.pill,.decision .drow.ro>.muted{grid-column:2;justify-self:end}
+.decision .drow.ro>.dreason{grid-column:1/-1}
+.decision .drow.ro>.dreason:empty{display:none}
+.decision .drow.ro>.cmeta{grid-column:1/-1}
+.decision .dstep .hint{font-size:13px;line-height:1.4;color:var(--muted)}
+.decision .dact .saved:empty{display:none}
+@container dpanel (min-width:600px){
+  .decision .drow{grid-template-columns:130px max-content minmax(0,1fr) max-content;gap:8px 12px}
+  .decision .drow>.dwho,.decision .drow>.seg,.decision .drow>input,.decision .drow>textarea,.decision .drow>.dreason,.decision .drow>.btn,.decision .drow>.dact,.decision .drow.ro>.cmeta,
+  .decision .drow.ro>.dwho,.decision .drow.ro>.pill,.decision .drow.ro>.muted,.decision .drow.ro>.dreason{grid-column:auto}
+  .decision .drow.ro>.pill,.decision .drow.ro>.muted{justify-self:start}
+  .decision .drow.ro>.dreason:empty{display:block}
+}
+@media (max-width:600px){
+  .decision .drow>.seg{justify-self:stretch}
+  .decision .drow{row-gap:8px}
+  dialog.record textarea.fit{min-height:42px}
+  .decision .drow>.btn,.decision .drow>.dact{margin-bottom:1px}
+}
+/* The card after the 14 Nov review */
+/* Next call: what stands now (the record's Next step) under the call's name; a booking whose day has passed says so in its eyebrow */
+.callnow{font-size:14px;line-height:1.5;color:var(--text);max-width:75ch;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.callnow .lbl{margin-right:4px}
+.callhd .eyebrow.late{color:var(--warn)}
+/* the robots' empty "After the call": one quiet line in the call's list, nothing to open */
+.subps .subwait{display:flex;align-items:baseline;gap:12px;padding:10px 14px;min-height:44px;border-top:1px solid var(--line);color:var(--muted)}
+.subps .subwait:first-child{border-top:none}
+.subps .subwait .subt{color:var(--muted);font-weight:500}
+/* Next step in the Decision panel: wraps and grows with its text */
+.form textarea.fit{min-height:0;resize:none;line-height:1.45;overflow-y:auto}
+/* Messages: the earlier messages behind one fold, the screening message once sent as one line, no empty concern */
+.convolist{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.convo details.convomore>summary{font-size:13px}
+.rsec-b>.convo:first-child{border-top:none;padding-top:0;margin-top:0}
+.scrpanel.noconcern{grid-template-columns:minmax(0,1fr)}
+.scrsent .scrtext{margin-top:8px;padding:10px 12px;background:var(--bg);border:1px solid var(--line);border-radius:8px;font-size:13.5px;line-height:1.5;white-space:pre-line;overflow-wrap:anywhere;max-width:75ch}
+/* Phones: the dialog scrolls under its sticky name bar, so every scroll the app makes (a section it opens, the record reopened at the work
+   sample, Scorecards from the Work sample) stops below the bar (14 Nov review: they landed under it) */
+@media (max-width:600px){
+  dialog.record[open]{scroll-padding-top:calc(56px + max(12px, env(safe-area-inset-top)))}
+  details.rsec,#scoreblock,#wsblock,#scform{scroll-margin-top:8px}
+}
+/* The Decision panel after the second 14 Nov review: one Save; a call made is one line (whose, the call, the reason, the day, Edit); a
+   step before its stage is one quiet line; who is meant to decide is a note above the row that edits; the sections a card may need
+   before their step are one line at its end */
+.decision [hidden]{display:none!important}
+.decision .dnote{font-size:13px;line-height:1.4;color:var(--muted)}
+.decision .dedit{display:flex;flex-direction:column;gap:6px;min-width:0}
+.decision .dlater{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 10px;width:100%;padding:0;margin:0;background:none;border:none;font:inherit;text-align:left;color:inherit}
+button.dlater{cursor:pointer}
+button.dlater::after{content:"+";margin-left:auto;font-family:var(--m);font-size:14px;color:var(--muted)}
+button.dlater:hover .lbl{color:var(--ink)}
+/* a call made: whose, the call and Edit on one line, the reason and the day under it (beside them where the panel is wide) */
+.decision .drow.ro{grid-template-columns:minmax(0,1fr) max-content max-content;row-gap:2px}
+.decision .drow.ro>.dwho{grid-column:1;grid-row:1}
+.decision .drow.ro>.pill,.decision .drow.ro>.muted{grid-column:2;grid-row:1;justify-self:end}
+.decision .drow.ro>.dedit-btn{grid-column:3;grid-row:1}
+.decision .drow.ro>.dreason{grid-column:1/-1;grid-row:2;font-size:13.5px;line-height:1.45}
+.decision .drow.ro>.dreason .cmeta{white-space:nowrap}
+.decision .dclaude{text-transform:none;letter-spacing:.02em}
+.decision .dadd{align-self:flex-start}
+.decision .dact .linkbtn{font-size:13px}
+.saved.warn{color:var(--warn)}
+@container dpanel (min-width:600px){.decision .drow.ro{grid-template-columns:130px max-content minmax(0,1fr) max-content}
+  .decision .drow.ro>.pill,.decision .drow.ro>.muted{justify-self:start}.decision .drow.ro>.dreason{grid-column:3;grid-row:1}.decision .drow.ro>.dedit-btn{grid-column:4;grid-row:1}}
+@media (max-width:600px){.decision .linkbtn.small{min-height:40px;padding:0 4px}button.dlater{min-height:40px;align-items:center}}
+.reclater{font-size:13.5px;line-height:1.5;padding:2px 4px;display:flex;flex-wrap:wrap;gap:4px 8px;align-items:baseline}
+@media (max-width:600px){.reclater .linkbtn{min-height:40px}}
