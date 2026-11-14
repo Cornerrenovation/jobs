@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Claude setup · Corner Hiring</title>
+<link rel="icon" href="../../img/favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Red+Hat+Display:wght@400;500;600;700&family=Red+Hat+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#e4e4dd; --bg-2:#d9d9d1; --card:#f4f4ef; --ink:#1c1c1c; --text:#333; --muted:#5f5f5a;
+  --line:rgba(106,100,100,.22); --accent:#9a7446; --ok:#3f7f41; --ok-bg:rgba(63,127,65,.12); --code:#efefe9;
+  --f:"Red Hat Display",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  --m:"Red Hat Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--f);font-size:16px;line-height:1.55}
+a{color:var(--ink);text-underline-offset:3px}
+h1,h2,h3{margin:0;color:var(--ink);font-weight:600;line-height:1.2;letter-spacing:-.01em;text-wrap:balance}
+.wrap{max-width:780px;margin:0 auto;padding:40px 16px 72px}
+.eyebrow{font-family:var(--m);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+header h1{font-size:clamp(30px,6vw,44px);margin:10px 0 14px}
+header p.lead{font-size:18px;color:var(--ink);margin:0 0 18px;max-width:620px}
+.facts{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 8px;padding:0;list-style:none}
+.facts li{font-family:var(--m);font-size:12.5px;background:var(--card);border:1px solid var(--line);border-radius:999px;padding:5px 11px}
+.progress{margin:26px 0 10px;display:flex;align-items:center;gap:12px}
+.bar{flex:1;height:6px;background:var(--bg-2);border-radius:99px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--ink);transition:width .25s}
+.progress span{font-family:var(--m);font-size:12.5px;color:var(--muted);white-space:nowrap}
+section.step{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:22px 22px 18px;margin:14px 0}
+section.step.done{border-color:rgba(63,127,65,.45)}
+.head{display:flex;gap:14px;align-items:flex-start}
+.num{flex:none;width:32px;height:32px;border-radius:50%;background:var(--ink);color:var(--bg);font:600 15px/32px var(--f);text-align:center}
+.step.done .num{background:var(--ok)}
+.head h2{font-size:21px;margin-top:3px}
+.head .time{font-family:var(--m);font-size:12px;color:var(--muted);margin-top:4px}
+.body{margin:12px 0 0 46px}
+.body p{margin:0 0 10px}
+ol.sub,ul.sub{margin:0 0 10px;padding-left:20px}
+ol.sub li,ul.sub li{margin:0 0 6px}
+code,.say{font-family:var(--m);font-size:13.5px;background:var(--code);border:1px solid var(--line);border-radius:6px;padding:1px 6px}
+.say{display:block;padding:10px 12px;margin:6px 0 8px;white-space:pre-wrap;color:var(--ink)}
+.expect{border-left:3px solid var(--ok);background:var(--ok-bg);padding:8px 12px;border-radius:0 8px 8px 0;margin:6px 0 12px;font-size:15px}
+.expect b{color:var(--ok)}
+.check{display:inline-flex;align-items:center;gap:8px;margin-top:6px;font:500 14px var(--f);color:var(--ink);cursor:pointer;user-select:none}
+.check input{width:18px;height:18px;accent-color:var(--ok)}
+.note{font-size:14.5px;color:var(--muted)}
+h2.sec{font-size:22px;margin:38px 0 6px}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;font-size:15px}
+th,td{text-align:left;vertical-align:top;padding:11px 14px;border-bottom:1px solid var(--line)}
+th{font-family:var(--m);font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:500}
+tr:last-child td{border-bottom:0}
+.daily{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 22px}
+.daily ul{margin:0;padding-left:20px}
+footer{margin-top:40px;font-size:14px;color:var(--muted)}
+@media (max-width:560px){.body{margin-left:0}.wrap{padding-top:28px}section.step{padding:18px 16px 14px}th,td{padding:10px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="eyebrow">Corner Hiring · for Yana</div>
+  <h1>Set up Claude for sourcing</h1>
+  <p class="lead">Four steps, about 20 minutes, no terminal. At the end Claude knows how Corner searches, screens and logs for every role you hire, and you've checked that it works.</p>
+  <ul class="facts">
+    <li>Claude Pro or higher</li><li>GitHub account</li><li>Mac or Windows</li>
+  </ul>
+  <div class="progress"><div class="bar"><i id="bar"></i></div><span id="count">0 of 4 done</span></div>
+</header>
+
+<section class="step" id="s1">
+  <div class="head"><div class="num">1</div><div><h2>Your accounts</h2><div class="time">5 minutes · today</div></div></div>
+  <div class="body">
+    <ol class="sub">
+      <li><b>Claude.</b> Claude Code comes with the Pro plan and above; the free plan doesn't include it. If your plan is free, write a comment on the "Set up Claude" task in your Onboarding tab before you pay for anything.</li>
+      <li><b>GitHub.</b> Sign in at <a href="https://github.com" target="_blank" rel="noopener">github.com</a>, or create a free account. Write your GitHub username as a comment on the same task.</li>
+      <li><b>The invitation.</b> Kostya then invites you to Corner's private hiring repo. Accept it from the GitHub email, or at <a href="https://github.com/Cornerrenovation/hiring" target="_blank" rel="noopener">github.com/Cornerrenovation/hiring</a>.</li>
+    </ol>
+    <label class="check"><input type="checkbox" data-step="s1"> Invitation accepted</label>
+  </div>
+</section>
+
+<section class="step" id="s2">
+  <div class="head"><div class="num">2</div><div><h2>Get the hiring repo on your computer</h2><div class="time">5 minutes</div></div></div>
+  <div class="body">
+    <ol class="sub">
+      <li>Install <a href="https://desktop.github.com" target="_blank" rel="noopener">GitHub Desktop</a> and sign in with your GitHub account.</li>
+      <li>File › Clone repository › <b>Cornerrenovation/hiring</b> › choose a folder you'll find again, for example Documents › Clone.</li>
+    </ol>
+    <p class="note">The repo holds the sourcing skill, the scorecards and playbooks it reads, and your search logs. GitHub Desktop is also how you'll save your work and get updates.</p>
+    <label class="check"><input type="checkbox" data-step="s2"> The hiring folder is on my computer</label>
+  </div>
+</section>
+
+<section class="step" id="s3">
+  <div class="head"><div class="num">3</div><div><h2>Open it in Claude</h2><div class="time">5 minutes</div></div></div>
+  <div class="body">
+    <ol class="sub">
+      <li>Install the Claude desktop app from <a href="https://claude.ai/download" target="_blank" rel="noopener">claude.ai/download</a> and sign in with your Claude account.</li>
+      <li>Click the <b>Code</b> tab. This is Claude Code, the version that works with files.</li>
+      <li>Click the project folder control next to the environment selector and choose the <b>hiring</b> folder from step 2 (the one with README.md in it). If Claude asks whether you trust this folder, say yes: it's Corner's.</li>
+    </ol>
+    <label class="check"><input type="checkbox" data-step="s3"> Claude is open in the hiring folder</label>
+  </div>
+</section>
+
+<section class="step" id="s4">
+  <div class="head"><div class="num">4</div><div><h2>Check that it works</h2><div class="time">5 minutes · three checks</div></div></div>
+  <div class="body">
+    <p><b>Check 1: the skill is there.</b> Type:</p>
+    <span class="say">Which skills do you have in this folder?</span>
+    <div class="expect"><b>You should see</b> corner-sourcing in the answer.</div>
+
+    <p><b>Check 2: it knows Corner.</b> Type:</p>
+    <span class="say">What does the corner-sourcing skill cover? Three lines.</span>
+    <div class="expect"><b>You should see</b> version v0.1, the three roles in order (Kitchen Sales Designer, then Project Manager, then Technical Designer) and "pool first" as the first step of a search.</div>
+
+    <p><b>Check 3: your work reaches Kostya.</b> Type:</p>
+    <span class="say">Add my first feedback: how this setup went, in one line.</span>
+    <div class="expect"><b>You should see</b> Claude add a line to FEEDBACK.md. Then in GitHub Desktop: the change shows on the left; write "Setup check" as the summary, click Commit to main, then Push origin.</div>
+
+    <p>All three passed? Comment <b>Claude ready</b> on the "Set up Claude" task. Your feedback line reaches Kostya with the next sync.</p>
+    <label class="check"><input type="checkbox" data-step="s4"> All three checks passed</label>
+  </div>
+</section>
+
+<h2 class="sec">If something's off</h2>
+<table>
+  <thead><tr><th>What you see</th><th>What to do</th></tr></thead>
+  <tbody>
+    <tr><td>corner-sourcing isn't in Check 1</td><td>Claude is open in the wrong folder. Choose the hiring folder itself, the one that has README.md, then ask again.</td></tr>
+    <tr><td>The Code tab asks you to upgrade</td><td>Your Claude plan is free. Comment on the task; don't pay before Kostya answers.</td></tr>
+    <tr><td>GitHub Desktop can't find Cornerrenovation/hiring</td><td>The invitation isn't accepted yet, or you're signed in with a different GitHub account.</td></tr>
+    <tr><td>Push origin is refused</td><td>Click Fetch origin, then Pull, then Push origin again.</td></tr>
+    <tr><td>Anything else</td><td>Comment on the task with a screenshot. It reaches Kostya in Slack.</td></tr>
+  </tbody>
+</table>
+
+<h2 class="sec">Every day after this</h2>
+<div class="daily">
+  <ul>
+    <li><b>Start of the day:</b> GitHub Desktop › Fetch origin, then Pull. That brings any update to the skill or the documents.</li>
+    <li><b>Work:</b> open the Code tab in the hiring folder and ask in your own words: "plan today's sales designer search", "check my message to Brenda before I send it", "write today's search log". Claude prepares and checks; you send every message yourself.</li>
+    <li><b>End of the day:</b> commit and push in GitHub Desktop, so your search log and feedback reach Kostya.</li>
+    <li><b>When the skill is wrong or missing something,</b> tell Claude. It writes your words into FEEDBACK.md, and Kostya goes through it with you every week.</li>
+  </ul>
+  <p class="note" style="margin:12px 0 0">LinkedIn and Studio through Chrome come on Friday, with the LinkedIn and AI reader guide.</p>
+</div>
+
+<footer>Corner Renovation · Hiring · v1 · 14 Nov 2026</footer>
+</div>
+<script>
+(function(){
+  var KEY = "corner-claude-setup-v1";
+  var boxes = document.querySelectorAll("input[data-step]");
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || "{}") || {}; } catch (e) { saved = {}; }
+  function paint(){
+    var n = 0;
+    boxes.forEach(function(b){ var s = document.getElementById(b.dataset.step); if (b.checked){ n++; s.classList.add("done"); } else s.classList.remove("done"); });
+    document.getElementById("bar").style.width = (n / boxes.length * 100) + "%";
+    document.getElementById("count").textContent = n + " of " + boxes.length + " done";
+  }
+  boxes.forEach(function(b){
+    b.checked = !!saved[b.dataset.step];
+    b.addEventListener("change", function(){
+      saved[b.dataset.step] = b.checked;
+      try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch (e) {}
+      paint();
+    });
+  });
+  paint();
+})();
+</script>
+</body>
+</html>
