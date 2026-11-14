@@ -9,13 +9,18 @@
   /* the four kinds of onboarding task, in the same logic as ok / warn / bad: an ink for the word, the same hue at 12% behind it */
   --call:#34588a; --call-bg:rgba(52,88,138,.22); --watch:#6b4a8c; --watch-bg:rgba(107,74,140,.22);
   --read:#1f5c66; --read-bg:rgba(31,122,112,.22); --do:#8a4712; --do-bg:rgba(214,128,38,.26);
-  --f:"Red Hat Display",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  /* Red Hat Display has no Cyrillic: Golos Text, loaded for its Cyrillic only (Google serves it by unicode-range), sets a Work.ua name in a
+     face that pairs with it rather than the system's (14 Nov live QA: "Шуляк Марія" read heavier, in another font, than "Marta"). Only its
+     400 and 500 load: the 500 stands in for the 600 of names and titles, its stems as thick as Red Hat Display's 600 (its own 600 read
+     heavier, 14 Nov live QA), and html's font-synthesis keeps the browser from thickening it. */
+  --f:"Red Hat Display","Golos Text",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
   --m:"Red Hat Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
   color-scheme:light;
 }
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--f);font-size:15px;line-height:1.5}
+html{font-synthesis:style}  /* no fake bold: a weight the page hasn't loaded takes the nearest real one (Golos Text's 500 for a 600, above) */
 a{color:var(--ink);text-underline-offset:3px}
 h1,h2,h3{margin:0;color:var(--ink);font-weight:600;line-height:1.2;letter-spacing:-.01em;text-wrap:balance}
 h2{font-size:22px}h3{font-size:15.5px}
@@ -67,6 +72,14 @@ nav.views button[aria-pressed="true"]{opacity:1;background:rgba(255,255,255,.12)
 .who{display:flex;align-items:center;gap:12px;color:var(--bg);opacity:.85;flex:none}
 .signout{color:var(--bg);font-size:12.5px}
 @media (max-width:760px){.who #who{display:none}}
+/* Phones (14 Nov live QA: at 390px the views had about 100px, "Checklists" cut to "C", the current view off screen): the HIRING label gives
+   way. Wherever the views don't fit (a phone, a window under about 1100px), an edge of the bar fades while more of them sit past it: fl and
+   fr, set by app.js (fadeTabs), which also scrolls the current view just into sight, clear of the fade (14 Nov live QA: words were cut hard at
+   the bar's left edge on a phone, and at both edges from 601 to 1100px). */
+@media (max-width:600px){header.top{gap:10px}.brand span{display:none}}
+nav.views.fr{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 28px),transparent);mask-image:linear-gradient(90deg,#000 calc(100% - 28px),transparent)}
+nav.views.fl{-webkit-mask-image:linear-gradient(90deg,transparent,#000 28px);mask-image:linear-gradient(90deg,transparent,#000 28px)}
+nav.views.fl.fr{-webkit-mask-image:linear-gradient(90deg,transparent,#000 28px,#000 calc(100% - 28px),transparent);mask-image:linear-gradient(90deg,transparent,#000 28px,#000 calc(100% - 28px),transparent)}
 
 /* Page */
 .wrap{max-width:1180px;margin:0 auto;padding:28px max(20px,env(safe-area-inset-left,0px)) 96px}
@@ -91,11 +104,20 @@ tr:last-child td{border-bottom:none}
 tr.clickable{cursor:pointer}tr.clickable:hover td{background:var(--white)}
 td .name{font-weight:600;color:var(--ink)}
 td.wrapcell{min-width:220px;max-width:360px}
-td.actions{white-space:nowrap}
-td.actions .btn{margin-right:4px}
+/* the buttons wrap inside their cell (14 Nov live QA: three corrections and Open ran past the table's edge, Open out of view) */
+td.actions{white-space:normal;min-width:140px}
+td.actions .btn{margin:0 4px 4px 0}
 /* Outreach tracker: one row per prospect, the date of each step */
 tr.trk td:first-child{min-width:170px}
 tr.trk td:nth-last-child(2){min-width:150px}
+/* Under 1180px those minimums go, so the tracker fits its box down to about 1000px, and its buttons stay pinned at the box's right edge, a
+   soft shadow at their side, where the dates still scroll under them (14 Nov live QA: from 1100px down, Open and the corrections sat past the
+   box's edge behind a sideways scroll, with no cue) */
+@media (max-width:1179px){
+  tr.trk td:first-child,tr.trk td:nth-last-child(2),td.actions{min-width:0}
+  tr.trk td.actions,.tablewrap:has(tr.trk) th:last-child{position:sticky;right:0;z-index:1;background:var(--card);box-shadow:-10px 0 12px -10px rgba(28,28,28,.18)}
+  tbody tr.trk:nth-child(even) td.actions{background:linear-gradient(rgba(255,255,255,.35),rgba(255,255,255,.35)) var(--card)}
+}
 tr.trk td.step{white-space:nowrap;font-variant-numeric:tabular-nums}
 tr.trk td.step.done{color:var(--ink);font-weight:600}
 tr.trk td.step.done::before{content:"✓ ";color:var(--ok)}
@@ -131,7 +153,9 @@ tr.trk td.step small{display:block;font-weight:400;margin-top:2px}
 .sbar span{display:block;height:100%;background:var(--ink);border-radius:99px;transition:width .3s}
 .snum{display:flex;flex-direction:column;gap:2px;align-items:flex-end;font-size:26px;font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums;line-height:1}
 .snum small{font-family:var(--m);font-size:11px;font-weight:400;color:var(--muted);white-space:nowrap}
-.sconv{display:flex;align-items:center;gap:10px;justify-content:flex-start;min-width:0}
+/* the second row's share repeats the conversion beside it: hidden while that column shows, its line kept (14 Nov live QA) */
+@media (min-width:901px){.snum .convdup{visibility:hidden}}
+.sconv{display:flex;align-items:center;gap:6px 10px;justify-content:flex-start;min-width:0;flex-wrap:wrap}  /* the weakest-step pill wraps whole, not "WEAKEST S…" (14 Nov live QA) */
 .sconv b{font-size:18px;font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
 .sconv small{font-size:12.5px;color:var(--muted);white-space:nowrap}
 .stagelist{display:flex;flex-direction:column;gap:4px;padding:6px 22px 16px;border-top:1px solid var(--line)}
@@ -220,19 +244,29 @@ input.tick:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
 .what p{margin:4px 0 0;font-size:13.5px}
 .smeta{font-family:var(--m);font-size:11px;color:var(--muted);margin-top:2px}
 
-/* This week and Posts: the launch kit as the checklist page shows it */
-.kit{display:flex;flex-direction:column;gap:16px;max-width:960px}
+/* This week and Posts: the launch kit as the checklist page shows it. This week spans the column like every other view; Posts keeps a
+   reading measure for its texts (14 Nov live QA: This week stopped 180px short of the other views' edge and wrapped its tile labels) */
+.kit{display:flex;flex-direction:column;gap:16px}
+.kit.posts{max-width:960px}
 .kit>*{margin:0}
 .kit h2{font-size:21px;margin-top:28px;padding-bottom:10px;border-bottom:1px solid var(--line)}
 .kit h2.first{margin-top:0}
 .status{display:flex;flex-direction:column;gap:6px}
-.srow-s{display:grid;grid-template-columns:220px minmax(110px,max-content) 1fr 150px;gap:16px;align-items:center;padding:12px 18px;background:var(--card);border:1px solid var(--line);border-radius:10px;font-size:14px}
-@media (max-width:860px){.srow-s{grid-template-columns:1fr 1fr}.srow-s .snext{grid-column:1/-1}}
-.srow-s .pill{max-width:none}
+/* Launch status: fixed columns under the table's own header line, so Status, Next and Who line up from row to row; a long status or owner
+   wraps inside its column (14 Nov live QA: each row sized its own status column, and an owner ran past the card's edge) */
+.srow-s{display:grid;grid-template-columns:220px 180px 1fr 170px;gap:16px;align-items:center;padding:12px 18px;background:var(--card);border:1px solid var(--line);border-radius:10px;font-size:14px}
+.srow-s.shead{background:none;border-color:transparent;padding-block:0;font-family:var(--m);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.srow-s.shead>:last-child{text-align:right}
+/* two columns from 1000px down, Next under them at full width (14 Nov live QA: from 861 to 1000px the fixed columns left Next about 205px,
+   rows of six to nine lines beside a Who column holding one short name) */
+@media (max-width:1000px){.srow-s{grid-template-columns:1fr 1fr}.srow-s .snext{grid-column:1/-1}.srow-s.shead{display:none}}
+/* a status too long for its column wraps line by line, each line's tint the width of its words (14 Nov live QA: a wrapped pill filled the
+   column, wider than its text; a box that wraps can't hug its text, an inline one can) */
+.srow-s .pill{display:inline;white-space:normal;border-radius:10px;padding:3px 8px;-webkit-box-decoration-break:clone;box-decoration-break:clone}
 .schan{font-weight:600;color:var(--ink)}
 .snext{color:var(--text);max-width:none}
-.swho{font-family:var(--m);font-size:11.5px;color:var(--muted);text-align:right;white-space:nowrap}
-@media (max-width:860px){.swho{text-align:left}}
+.swho{font-family:var(--m);font-size:11.5px;color:var(--muted);text-align:right}
+@media (max-width:1000px){.swho{text-align:left}}
 .dcard ul.opts{padding-left:18px;display:flex;flex-direction:column;gap:6px;font-size:14px;line-height:1.55;color:var(--text)}
 .dcard .pick{font-size:14px;line-height:1.55;display:flex;flex-direction:column;gap:2px;margin-top:2px}
 .dcard .pick b{font-family:var(--m);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:500}
@@ -263,7 +297,10 @@ details.fold.plain p{font-size:14px;margin:0}
 .dcard{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;display:flex;flex-direction:column;gap:10px;min-width:0;align-items:flex-start}
 .dcard h3{font-size:15.5px}
 .pill.live{background:var(--ok-bg);color:var(--ok)}.pill.pool{background:var(--warn-bg);color:var(--warn)}
-ol.moves{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:8px;counter-reset:m}
+/* the moves keep the reading width they had before This week spanned the column, and a Detail fold's "+" follows its word (14 Nov live QA:
+   1140px cards with their text stopping near 68ch, the "+" about 1060px right of "Detail") */
+ol.moves{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:8px;counter-reset:m;max-width:960px}
+ol.moves details.fold>summary{justify-content:flex-start}
 ol.moves li{counter-increment:m;display:flex;flex-direction:column;gap:6px;padding:14px 18px 14px 52px;position:relative;background:var(--card);border:1px solid var(--line);border-radius:12px;max-width:none}
 ol.moves li::before{content:counter(m);position:absolute;left:18px;top:15px;font-family:var(--m);font-size:12px;color:var(--muted)}
 ol.moves li>div{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
@@ -338,7 +375,7 @@ dialog.record .dhead h2{font-size:24px;margin-top:2px;overflow-wrap:anywhere}
 /* Main column and Decision panel. The panel spans both rows and its inner box sticks, so it stays beside the sections as they scroll. */
 .reclayout{display:grid;grid-template-columns:minmax(0,1fr) 320px;grid-template-rows:auto 1fr;grid-template-areas:"next side" "rest side";column-gap:24px;align-items:start}
 .reclayout.solo{display:block;max-width:720px}
-.recnext{grid-area:next;min-width:0;margin-bottom:12px}
+.recnext{grid-area:next;min-width:0;margin-bottom:12px;display:flex;flex-direction:column;gap:12px}  /* a card without a call sheet: the Next step panel, then Claude's read */
 .recside{grid-area:side;align-self:stretch;min-width:0}
 .recrest{grid-area:rest;display:flex;flex-direction:column;gap:12px;min-width:0}
 .decision{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:12px;container:dpanel/inline-size}
@@ -347,7 +384,8 @@ dialog.record .dhead h2{font-size:24px;margin-top:2px;overflow-wrap:anywhere}
 .recside .decision{position:sticky;top:0;max-height:max(280px,calc(var(--rbh,80vh) - 52px));overflow:auto;padding-bottom:0}
 /* Save and its "Saved" stay at the panel's foot while the steps and the fields scroll above them (beside the main column only). The panel
    scrolls a focused field clear of that bar (second 14 Nov review: Tab put Due and a step's controls under it, WCAG 2.4.11). */
-@media (min-width:901px){.recside .decision .formfoot{position:sticky;bottom:0;z-index:1;margin:2px -16px 0;padding:12px 16px 14px;background:var(--card);border-top:1px solid var(--line)}
+/* Its soft top shadow says the panel goes on under it (14 Nov live QA: Notes sat cut in half above the bar, with no other cue). */
+@media (min-width:901px){.recside .decision .formfoot{position:sticky;bottom:0;z-index:1;margin:2px -16px 0;padding:12px 16px 14px;background:var(--card);border-top:1px solid var(--line);box-shadow:0 -10px 12px -10px rgba(28,28,28,.18)}
   .recside .decision{scroll-padding-bottom:88px}}
 .recside .decision .form{grid-template-columns:minmax(0,1fr)}
 .recside .decision .form.inner{grid-template-columns:minmax(0,1fr)}
@@ -439,7 +477,7 @@ details.sheetp .subps{background:var(--card)}
 .answer p{font-size:14.5px;line-height:1.6;max-width:72ch;padding:12px 14px;background:var(--bg);border-radius:8px;border:1px solid var(--line)}
 .lbl{font-family:var(--m);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 .readhead{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}
-.readhead h3{font-size:18px;margin-top:2px}
+.readhead h3{font-size:18px;margin-top:2px;letter-spacing:.01em}  /* the headings' -.01em ran the c of "Decline" into its l at 18px (14 Nov live QA) */
 .readhead .muted{font-weight:400;font-size:14.5px}
 .why{font-size:15px;line-height:1.55;max-width:72ch}
 .critgroup{display:flex;flex-direction:column;gap:6px}
@@ -527,7 +565,8 @@ details.q ul{margin:4px 0 0;padding-left:16px;display:flex;flex-direction:column
 .sorth[aria-sort="ascending"] .arrow,.sorth[aria-sort="descending"] .arrow{opacity:1}
 .sorth:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
 .conf{font-family:var(--m);font-size:11.5px;white-space:nowrap}
-.conf-high{color:var(--ok)}.conf-medium{color:var(--text)}.conf-low{color:var(--warn)}
+/* one quiet ink: colour is the call's (14 Nov live QA: a green "High" under a red DECLINE read as a second verdict) */
+.conf-high,.conf-medium,.conf-low{color:var(--muted)}
 
 /* Screening answers as a structured block */
 .scr{display:flex;flex-direction:column;gap:10px;margin-top:4px}
@@ -547,6 +586,8 @@ details.q ul{margin:4px 0 0;padding-left:16px;display:flex;flex-direction:column
 .scrwho{display:flex;flex-direction:column;gap:6px}
 .scrwho .name{font-size:15.5px;font-weight:600;text-align:left}
 .scrwho .chips{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+/* a label wraps with its call, never apart from it (14 Nov live QA: "Kostya:" at a line's end, his pill alone on the next) */
+.scrwho .cpair{display:inline-flex;gap:6px;align-items:center;white-space:nowrap}
 .scrpanel{display:grid;grid-template-columns:minmax(200px,1fr) minmax(260px,1.4fr);gap:18px}
 .scrcol{display:flex;flex-direction:column;gap:8px;min-width:0}
 .scrpanel .concern{font-size:14.5px;line-height:1.55;color:var(--ink)}
@@ -640,6 +681,10 @@ label.wsask{flex-direction:row;align-items:center;gap:6px;flex:none;padding-top:
 td.cstage{min-width:118px;max-width:170px}
 td.cstage .stl{display:block;font-weight:500;color:var(--ink);line-height:1.35}
 td.cstage .stl.closed{color:var(--muted)}
+/* A closed record's note says what happened, quiet like its status; a due day passed reads "late" (14 Nov live QA). The late rule's four
+   classes also beat the phone card's muted due. */
+td.cnext.closed{color:var(--muted)}
+.tablewrap.cands td.cdue.late{color:var(--warn);font-weight:600}
 td.cstage>.muted{display:block;font-size:12px;line-height:1.35;margin-top:2px}
 td.cstage .wsflag{margin-top:6px}
 /* A fold's one-line summary is for when it is closed: open, the content says it (and Results doesn't show its chips twice) */
@@ -714,8 +759,10 @@ ul.dsteps{list-style:none;margin:0;padding:4px 14px;background:var(--bg);border:
 .onbrow .seg button[data-v="done"][aria-pressed="true"]{background:var(--ok-bg);color:var(--ok)}
 .onbmain{flex:1;min-width:0;display:flex;gap:6px 10px;align-items:baseline;flex-wrap:wrap}
 .onbmain .stitle{font-size:15px;line-height:1.35;text-decoration:none;cursor:default;overflow-wrap:anywhere}
-.onbmain a.stitle{cursor:pointer}
-.onbmain a.stitle:hover{text-decoration:underline;text-underline-offset:3px}
+/* a title that opens its material is underlined at rest, lightly, and darker on hover: a phone has no hover, and the Monday briefs say
+   "click this task's title" (14 Nov live QA) */
+.onbmain a.stitle{cursor:pointer;text-decoration:underline;text-decoration-color:var(--muted);text-underline-offset:3px}
+.onbmain a.stitle:hover{text-decoration-color:var(--ink)}
 .onbtask.done .onbmain a.stitle:hover{text-decoration:line-through underline}
 .onbc{display:inline-flex;gap:6px;align-items:center;flex:none;font-family:var(--m);font-size:12px}
 .onbc[aria-expanded="true"]{border-color:var(--ink)}
@@ -801,9 +848,13 @@ ul.dsteps{list-style:none;margin:0;padding:4px 14px;background:var(--bg);border:
 }
 /* The card after the 14 Nov review */
 /* Next call: what stands now (the record's Next step) under the call's name; a booking whose day has passed says so in its eyebrow */
-.callnow{font-size:14px;line-height:1.5;color:var(--text);max-width:75ch;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+/* The Now line shows whole at every width (14 Nov live QA: cut after three lines, while the Show more under it opened only the meta line) */
+.callnow{font-size:14px;line-height:1.5;color:var(--text);max-width:75ch;overflow-wrap:anywhere}
 .callnow .lbl{margin-right:4px}
-.callhd .eyebrow.late{color:var(--warn)}
+.callhd .eyebrow.late,.callnow .lbl.late{color:var(--warn)}
+/* The Due field's "N days overdue" */
+.duelate{font-size:13px;line-height:1.4;color:var(--warn)}
+.duelate:empty{display:none}
 /* the robots' empty "After the call": one quiet line in the call's list, nothing to open */
 .subps .subwait{display:flex;align-items:baseline;gap:12px;padding:10px 14px;min-height:44px;border-top:1px solid var(--line);color:var(--muted)}
 .subps .subwait:first-child{border-top:none}
@@ -828,7 +879,10 @@ ul.dsteps{list-style:none;margin:0;padding:4px 14px;background:var(--bg);border:
 .decision [hidden]{display:none!important}
 .decision .dnote{font-size:13px;line-height:1.4;color:var(--muted)}
 .decision .dedit{display:flex;flex-direction:column;gap:6px;min-width:0}
-.decision .dlater{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 10px;width:100%;padding:0;margin:0;background:none;border:none;font:inherit;text-align:left;color:inherit}
+/* one row: a hint too long for the 320px panel wraps inside itself, so the "+" stays on the step's first line (14 Nov live QA: step 2's
+   dropped to a line of its own) */
+.decision .dlater{display:flex;flex-wrap:nowrap;align-items:baseline;gap:2px 10px;width:100%;padding:0;margin:0;background:none;border:none;font:inherit;text-align:left;color:inherit}
+.decision .dlater>.lbl{flex:none}.decision .dlater>.small{min-width:0}
 button.dlater{cursor:pointer}
 button.dlater::after{content:"+";margin-left:auto;font-family:var(--m);font-size:14px;color:var(--muted)}
 button.dlater:hover .lbl{color:var(--ink)}

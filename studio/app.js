@@ -7,8 +7,10 @@
   const h = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const localDay = (d) => d.toLocaleDateString("en-CA");  // YYYY-MM-DD in the viewer's time zone (UTC is a day ahead in Brazil after 21:00)
   const today = () => localDay(new Date());
-  // a date without a time is a calendar day: read it at local noon, or UTC midnight shows as the day before west of Greenwich
-  const fmt = (iso) => { if (!iso) return ""; const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(iso) ? iso + "T12:00:00" : iso); return isNaN(d) ? iso : d.toLocaleDateString("en-GB", { day: "numeric", month: "short" }); };
+  // a date without a time is a calendar day: read it at local noon, or UTC midnight shows as the day before west of Greenwich. A day in
+  // another year carries it ("17 Jan 2025": 14 Nov live QA, an earlier round's "applied 17 Jan" read as this January)
+  const fmt = (iso) => { if (!iso) return ""; const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(iso) ? iso + "T12:00:00" : iso);
+    return isNaN(d) ? iso : d.toLocaleDateString("en-GB", { day: "numeric", month: "short", ...(d.getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}) }); };
   const fmtTime = (iso) => { const d = new Date(iso); return isNaN(d) ? iso : d.toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); };
   // Stage model v2 (5 Nov), the same in the Worker: each stored stage has a status label and a stage group. The funnel order is the one
   // the Worker keeps "reached" in (the furthest stage a candidate got to, even after they were closed).
@@ -77,7 +79,8 @@
     if (tab) { tab.hidden = !plans.length;
       // first in the row for the person the plan is for (it is their week), last for its managers
       const nav = tab.parentNode, own = plans.some((p) => p.person_email === state.boot.who);
-      if (own && nav.firstElementChild !== tab) nav.prepend(tab); else if (!own && nav.lastElementChild !== tab) nav.append(tab); }
+      if (own && nav.firstElementChild !== tab) nav.prepend(tab); else if (!own && nav.lastElementChild !== tab) nav.append(tab);
+      showTab(); }  // a tab put first moves the current one along
   }
   const roles = () => state.boot.roles;
   const roleOf = (id) => roles().find((r) => r.id === id) || { id, short: id, name: id };
@@ -140,6 +143,11 @@
   const groupOfStage = (s) => (GROUPS.find(([, st]) => st.includes(s)) || [""])[0];
   const groupOf = (c) => groupOfStage(ORDER.includes(c.stage || "applied") ? c.stage || "applied" : reachedOf(c)) || "Screening";
   const isClosedStage = (c) => CLOSED.includes(c.stage);
+  // In play: not closed, not hired, not from an earlier round. Only such a record has a call still to make or a due day that can pass: late in
+  // the list, overdue on the record (14 Nov live QA: "5 Nov" read like "16 Nov" on 14 Nov). daysLate takes the Due field's value when given.
+  const inPlay = (c) => !isClosedStage(c) && c.stage !== "hired" && !isClosedRole(roleOf(c.role_id));
+  const daysLate = (c, v) => { const d = dayOf(v === undefined ? c.due : v);
+    return d && d < today() && inPlay(c) ? Math.round((new Date(today() + "T12:00:00") - new Date(d + "T12:00:00")) / 864e5) : 0; };
   // Funnel order with closed stages after the open ones (a received test assignment just after a sent one)
   const stageRank = (c) => { const s = c.stage || "applied", i = ORDER.indexOf(s), k = CLOSED.indexOf(s);
     return i >= 0 ? i * 2 + (s === "work sample" && c.ws_file ? 1 : 0) : k >= 0 ? 1000 + k * 100 + reachedIdx(c) : 500; };
@@ -169,10 +177,26 @@
   }
 
   // ---------- shell ----------
+  // Where the views scroll sideways in the bar (a phone, a window under about 1100px), the bar moves only as far as it takes to show the
+  // current one whole, 28px clear of the edge's fade, and not at all when it is already in sight (14 Nov live QA: at 390px only "This week"
+  // showed, Candidates sat off screen; then, centred at every width, the view before it was cut at the bar's left edge, "CORNER ecklists").
+  // The bar alone scrolls; scrollIntoView would move the page too.
+  function showTab() { const b = document.querySelector('nav.views button[aria-pressed="true"]'), nav = b && b.parentNode; if (!nav) return;
+    const r = b.getBoundingClientRect(), n = nav.getBoundingClientRect();
+    if (r.left < n.left + 28) nav.scrollLeft -= n.left + 28 - r.left; else if (r.right > n.right - 28) nav.scrollLeft += r.right - (n.right - 28);
+    fadeTabs(); }
+  // An edge of the bar fades only while more views sit past it (fl, fr in studio.css), so a cut word reads as more to scroll and the first and
+  // last views are crisp at either end
+  function fadeTabs() { const nav = $("nav.views"), x = nav.scrollLeft, more = nav.scrollWidth - nav.clientWidth;
+    nav.classList.toggle("fl", x > 1); nav.classList.toggle("fr", x < more - 1); }
+  $("nav.views").addEventListener("scroll", fadeTabs, { passive: true });
+  if (window.ResizeObserver) new ResizeObserver(() => showTab()).observe($("nav.views"));  // and again when the bar narrows (a window made smaller)
+  if (document.fonts) document.fonts.ready.then(() => showTab());  // the web font's widths, not the fallback's
   function setView(v) {
     state.view = v; store.set("studio-view", v);
     if (v !== "onboarding") state.onbVisit = null;  // leaving the Onboarding tab ends the visit: what was new then counts as seen
     document.querySelectorAll("nav.views button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.view === v));
+    showTab();
     return render();
   }
   document.querySelectorAll("nav.views button").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
@@ -224,12 +248,17 @@
   function bindSeg(el, name, onPick) {
     el.querySelectorAll(`[data-seg="${name}"] button`).forEach((b) => b.addEventListener("click", () => { const f = b.closest("form"); if (f) f.dataset.dirty = "1"; onPick(b.dataset.v); }));
   }
-  const roleSeg = () => seg("role", [["all", "All roles"]].concat(openRoles().map((r) => [r.id, r.short]), roles().some(isClosedRole) ? [["closed", "Earlier rounds"]] : []), state.roleFilter);
+  // The role buttons. noClosed leaves "Earlier rounds" out; allLabel names "all" where it means less than every role (Candidates: "All open
+  // roles", 14 Nov live QA)
+  const roleSeg = ({ noClosed = false, allLabel = "All roles" } = {}) => seg("role", [["all", allLabel]].concat(openRoles().map((r) => [r.id, r.short]),
+    !noClosed && roles().some(isClosedRole) ? [["closed", "Earlier rounds"]] : []), state.roleFilter);
   const inRole = (c) => state.roleFilter === "all" || c.role_id === state.roleFilter || (state.roleFilter === "closed" && isClosedRole(roleOf(c.role_id)));
   const pill = (text, kind) => text ? `<span class="pill ${kind || ""}" title="${h(text)}">${h(text)}</span>` : "";
   const callPill = (c) => pill(c, c === "Shortlist" || c === "Go" ? "ok" : c === "Decline" || c === "No" ? "bad" : c ? "warn" : "");
-  // The list's Call cell: the latest call and where it was made ("No" over "Interview · Kostya"), others at that step counted
-  const latestCell = (c) => { const l = latestCall(c); if (!l) return "";
+  // The list's Call cell: the latest call and where it was made ("No" over "Interview · Kostya"), others at that step counted. With no call
+  // yet on a record in play, whose call it is, as the record's header says (14 Nov live QA: the cell was blank on every such row).
+  const latestCell = (c) => { const l = latestCall(c), rec = roleOf(c.role_id).recruiter;
+    if (!l) return inPlay(c) ? `<span class="muted small">${rec ? `${h(firstName(rec))}'s call · not made` : "No call yet"}</span>` : "";
     return `${callPill(l.call)}<br><span class="muted small">${h(STEPN[l.step])}${l.by ? " · " + h(firstName(l.by)) : ""}${l.all.length > 1 ? ` +${l.all.length - 1}` : ""}</span>`; };
   const confWord = (c) => c ? `<span class="conf conf-${h(c.toLowerCase())}">${h(c)}</span>` : "";
   const table = (cols, rows) => `<div class="tablewrap"><table><thead><tr>${cols.map((c) => `<th>${h(c)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
@@ -240,21 +269,35 @@
   const oneLine = (s) => String(s).replace(/\s*[\r\n]+\s*/g, " ");
 
   // ---------- This week and Posts: the launch kit, rendered by the checklist builder and synced as documents ----------
+  // The week a This week page covers, from its file's name, as the documents write it (week_2026-11-09.md: "Mon 9 to Sun 15 Nov 2026").
+  // Its days without fmt, which adds the year to a day outside this one: the years are added here (14 Nov live QA: "Dec 2026 2026").
+  const weekSpan = (iso) => { const a = new Date(iso + "T12:00:00"), b = new Date(a); b.setDate(a.getDate() + 6);
+    const wd = (x) => x.toLocaleDateString("en-GB", { weekday: "short" }), dm = (x) => x.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+    return `${wd(a)} ${a.getMonth() === b.getMonth() ? a.getDate() : dm(a)}${a.getFullYear() !== b.getFullYear() ? " " + a.getFullYear() : ""} to ${wd(b)} ${dm(b)} ${b.getFullYear()}`; };
   async function renderDocView(view, slug) {
     const d = await api("docs/" + slug);
     const back = slug === "posts" ? `<p class="crumbs"><button type="button" class="linkbtn" data-back="checklists">← Checklists</button><span class="muted"> · </span><button type="button" class="linkbtn" data-back="week">This week</button></p>` : "";
-    view.innerHTML = `${back}${slug === "posts" ? head("Posts", "Every text here is ready to paste. Settings for LinkedIn and Work.ua are folded under each post.") : ""}<section class="kit ${slug}">${d.html || "<p class='muted'>Not synced yet.</p>"}</section>`;
+    // This week has a title and its dates, as the other views have (14 Nov live QA: it opened on "Right now", with no week on the page)
+    const wk = /(\d{4}-\d{2}-\d{2})\.md$/.exec(d.path || "");
+    view.innerHTML = `${back}${slug === "posts" ? head("Posts", "Every text here is ready to paste. Settings for LinkedIn and Work.ua are folded under each post.")
+      : slug === "this-week" ? head("This week", wk ? h(weekSpan(wk[1])) : "") : ""}<section class="kit ${slug}">${d.html || "<p class='muted'>Not synced yet.</p>"}</section>`;
     const strip = view.querySelector("[data-live-strip]");
     if (strip) {
+      // The tiles are the app's own, a dash in each until the live counts load: never the figures and labels the document was built with on
+      // launch day (14 Nov live QA: "0 applications so far" showed on every load). The counts include closed candidates, which the Pipeline
+      // leaves out, and "shortlist" is counted as the Pipeline's Source of hire counts it (passedStage). Labels short enough for one line in
+      // five tiles, and what they include said once under them (14 Nov live QA: four of the five labels wrapped at 1440px).
+      const labels = ["roles on the jobs site", "applications so far", "new applicants today", "reached the shortlist", "queued for outreach"];
+      const draw = (vals) => { strip.innerHTML = labels.map((l, i) => `<div class="kpi"><b>${h(vals ? vals[i] : "–")}</b><span>${h(l)}</span></div>`).join(""); };
+      strip.insertAdjacentHTML("afterend", `<p class="muted small">These counts include closed candidates, which the Pipeline leaves out, and applicants from every source. Outreach is the LinkedIn sequence.</p>`);
+      draw();
       await need("candidates", "outreach");
       const t = today(), cands = state.candidates.filter((c) => !isClosedRole(roleOf(c.role_id)));
-      const tiles = [[roles().filter((r) => ["live", "pool"].includes(r.state)).length, "roles on the jobs site"], [cands.length, "applications so far"],
+      draw([roles().filter((r) => ["live", "pool"].includes(r.state)).length, cands.length,
         // New today by the date they applied. A record without that date counts only while it still sits at "applied":
         // imports of earlier applicants (Yuliia's PM channels on 18 Oct) arrive with a stage already and are not today's news.
-        [cands.filter((c) => c.applied ? c.applied.slice(0, 10) === t : (c.created_at && localDay(new Date(c.created_at)) === t && (c.stage || "applied") === "applied")).length, "new applicants today, all sources"],
-        [cands.filter((c) => c.your_call === "Shortlist").length, "shortlisted so far"],
-        [state.outreach.filter((o) => (o.status || "queued").startsWith("queued")).length, "queued for LinkedIn outreach"]];
-      strip.innerHTML = tiles.map(([v, l]) => `<div class="kpi"><b>${h(v)}</b><span>${h(l)}</span></div>`).join("");
+        cands.filter((c) => c.applied ? c.applied.slice(0, 10) === t : (c.created_at && localDay(new Date(c.created_at)) === t && (c.stage || "applied") === "applied")).length,
+        cands.filter(passedStage).length, state.outreach.filter((o) => (o.status || "queued").startsWith("queued")).length]);
     }
     view.querySelectorAll("section.posts > p.muted:first-child").forEach((p) => p.remove());
     view.querySelectorAll('a[href="#posts"]').forEach((a) => { a.removeAttribute("target"); a.addEventListener("click", (e) => { e.preventDefault(); setView("posts"); }); });
@@ -286,9 +329,20 @@
     const reached = FUNNEL.map((_, i) => active.filter((c) => idx(c) >= i));
     const applied = reached[0].length, top = applied || 1;
     const pct = (a, b) => (b ? Math.round(100 * a / b) + "%" : "–");
-    // the bottleneck is the weakest step among stages with at least 5 people entering it
+    // The bottleneck is the weakest step judged on known outcomes: of everyone who got to the step before, by the furthest step they reached,
+    // the share who moved on, among those who moved on or were closed there, with at least 5 of them. Open candidates still at the step
+    // before haven't failed it yet (14 Nov live QA: with the tests still out, Second interview read 0% and was named the weakest step).
+    const furthest = (c) => { const i = FUNNEL.findIndex(([, st]) => st.includes(reachedOf(c))); return i < 0 ? 0 : i; };
     let bottleneck = null;
-    FUNNEL.forEach((_, i) => { if (i && reached[i - 1].length >= 5) { const r = reached[i].length / reached[i - 1].length; if (!bottleneck || r < bottleneck.r) bottleneck = { i, r }; } });
+    FUNNEL.forEach((_, i) => { if (!i) return; const known = list.filter((c) => furthest(c) >= i || (furthest(c) === i - 1 && isClosed(c)));
+      if (known.length >= 5) { const moved = known.filter((c) => furthest(c) >= i).length, r = moved / known.length;
+        if (!bottleneck || r < bottleneck.r) bottleneck = { i, r, moved, known: known.length }; } });
+    // The flag carries the rate it was judged on: the row's own % counts open candidates too (14 Nov live QA: "67% from triaged" was flagged
+    // while "25% from messaged", too few known outcomes to rate, was not, and nothing beside them said why)
+    const judged = bottleneck ? `${bottleneck.moved} of ${bottleneck.known} moved on` : "";
+    // Under each count, its share of everyone who applied; on the second row that share is the conversion beside it, so it is hidden there
+    // where that column shows, keeping the count level with the others without saying it twice (14 Nov live QA: the uncaptioned count sat
+    // lower), and stays at 900px and under, where the column gives way. Outreach does the same.
     const rows = FUNNEL.map(([title], i) => {
       const n = reached[i].length, prev = i ? reached[i - 1].length : null, here = active.filter((c) => idx(c) === i);
       const open = !!state.open[title];
@@ -296,14 +350,14 @@
         <button type="button" class="stagerow" data-toggle="${h(title)}" aria-expanded="${open}">
           <span class="sname">${h(title)}<small>${here.length ? `${here.length} here now` : "nobody here now"}</small></span>
           <span class="sbar"><span style="width:${n ? Math.max(2, Math.round(100 * n / top)) : 0}%"></span></span>
-          <span class="snum">${n}<small>${i > 1 ? `${pct(n, applied)} of applied` : i === 1 ? "" : "reached"}</small></span>
-          <span class="sconv">${i ? `<b>${pct(n, prev)}</b><small>from ${h(FUNNEL[i - 1][0].toLowerCase())}</small>` : ""}${bottleneck && bottleneck.i === i ? pill("weakest step", "warn") : ""}</span>
+          <span class="snum">${n}<small>${i > 1 ? `${pct(n, applied)} of applied` : i === 1 ? `<span class="convdup">${pct(n, applied)} of applied</span>` : "reached"}</small></span>
+          <span class="sconv">${i ? `<b>${pct(n, prev)}</b><small>from ${h(FUNNEL[i - 1][0].toLowerCase())}</small>` : ""}${bottleneck && bottleneck.i === i ? `${pill("weakest step", "warn")}<small class="sjudged">${h(judged)}</small>` : ""}</span>
         </button>
         ${open ? `<div class="stagelist">${here.length ? here.map((c) => `<button type="button" class="srow" data-id="${h(c.id)}"><span class="name">${h(c.name)}</span><span class="muted">${h(roleName(c.role_id))}${c.sources ? " · " + h(c.sources) : ""}</span>${latestCall(c) ? callPill(latestCall(c).call) : ""}${c.due ? `<span class="muted">due ${h(fmt(c.due))}</span>` : ""}${pill(statusOf(c))}</button>`).join("") : `<p class="muted">Nobody at this stage right now.</p>`}</div>` : ""}
       </div>`;
     }).join("");
     const strip = [[active.length, "active candidates"], [closed.length, "closed"], [pct(reached[FUNNEL.length - 1].length, applied), "applied to hired"],
-      [bottleneck ? FUNNEL[bottleneck.i][0] : "–", bottleneck ? "weakest step" : "weakest step (needs 5+ per stage)"]];
+      [bottleneck ? FUNNEL[bottleneck.i][0] : "–", bottleneck ? `weakest step · ${judged}` : "weakest step (needs 5+ decided per step)"]];
     // Source of hire: everyone by the furthest stage they reached, closed candidates included; a referral counts as Referral
     const bySource = {}; list.forEach((c) => { (bySource[sourceOf(c)] = bySource[sourceOf(c)] || []).push(c); });
     const atLeast = (cs, st) => cs.filter((c) => reachedIdx(c) >= stageIdx(st)).length;
@@ -313,7 +367,7 @@
     const referred = list.filter((c) => (c.referred_by || "").trim());
     const bountyTable = referred.length ? table(["Candidate", "Role", "Referred by", "Stage", "Hired on", "Bounty", "Bounty due"], referred.map((c) =>
       `<tr class="clickable" data-id="${h(c.id)}"><td><span class="name">${h(c.name)}</span></td><td>${h(roleName(c.role_id))}</td><td>${h(c.referred_by)}</td><td>${pill(statusOf(c))}</td><td>${h(fmt(c.hired_at))}</td><td>${c.bounty ? h(c.bounty) : '<span class="muted">not set yet</span>'}</td><td>${c.bounty_due ? (c.bounty_due <= today() ? `<b>${h(fmt(c.bounty_due))} · due</b>` : h(fmt(c.bounty_due))) : '<span class="muted">at hire + 90 days</span>'}</td></tr>`)) : "";
-    view.innerHTML = head("Pipeline", "Each stage counts everyone who reached it or went further. Closed candidates sit in their own row and don't count against the conversions. Click a stage to see who is there now.", roleSeg()) +
+    view.innerHTML = head("Pipeline", "Each stage counts everyone who reached it or went further. Closed candidates sit in their own row and don't count against the conversions. The weakest step is judged only on people whose outcome there is known. Click a stage to see who is there now.", roleSeg()) +
       `<div class="strip four">${strip.map(([v, t]) => `<div class="kpi"><b>${h(v)}</b><span>${h(t)}</span></div>`).join("")}</div>
       <div class="funnel">${rows}
       <div class="stage closedrow"><button type="button" class="stagerow" data-toggle="Closed" aria-expanded="${!!state.open.Closed}"><span class="sname">Closed<small>rejected, withdrawn, not now, pool, earlier rounds</small></span><span class="sbar"></span><span class="snum">${closed.length}</span><span class="sconv"></span></button>
@@ -334,7 +388,8 @@
     const q = state.search.trim().toLowerCase();
     // Source and Call filters (Yuliia's request, 18 Oct); options count within the chosen role. Call is the latest call (14 Nov review):
     // the furthest step decided, so an interview's No is found as one, not as the Shortlist that came before it.
-    const base = state.candidates.filter(inRole);
+    // "All open roles" (14 Nov live QA): an earlier round's records stay under Earlier rounds, out of the live searches' rows and counts.
+    const base = state.candidates.filter((c) => inRole(c) && (state.roleFilter !== "all" || !isClosedRole(roleOf(c.role_id))));
     const callOf = callKey, agentOf = (c) => blindNow(c) ? "blind" : c.agent_call || "none", confOf = (c) => blindNow(c) ? "blind" : c.confidence || "none", cvOf = (c) => c.cv_check || "none";
     const count = (f, rows) => { const m = {}; (rows || base).forEach((c) => { m[f(c)] = (m[f(c)] || 0) + 1; }); return m; };
     const srcCounts = count(sourceOf), callCounts = count(callOf), agentCounts = count(agentOf), confCounts = count(confOf), cvCounts = count(cvOf);
@@ -354,7 +409,8 @@
       (state.agentFilter === "all" || agentOf(c) === state.agentFilter) && (state.confFilter === "all" || confOf(c) === state.confFilter) &&
       (state.cvFilter === "all" || cvOf(c) === state.cvFilter) &&
       (!q || [c.name, c.headline, c.location, c.sources, c.email, c.stage, statusOf(c), groupOf(c), c.your_call, c.agent_call].join(" ").toLowerCase().includes(q)));
-    // Sorting: click a column header; click again to reverse. Calls sort Shortlist, Hold, Decline, then none; confidence High to Low.
+    // Sorting: click a column header; click again to reverse, a third time for the latest change first again (14 Nov live QA: there was no
+    // way back). Calls sort Shortlist, Hold, Decline, then none; confidence High to Low.
     const SORTS = { name: (c) => (c.name || "").toLowerCase(), applied: (c) => c.applied || c.created_at || "", agent: (c) => blindNow(c) ? 4 : CALL_RANK[c.agent_call] ?? 3,
       conf: (c) => blindNow(c) ? 4 : CONF_RANK[c.confidence] ?? 3, your: callRank, stage: stageRank, due: (c) => c.due || "~" };
     const sk = state.sort.key, sd = state.sort.dir;
@@ -369,27 +425,40 @@
       odd.length ? `<optgroup label="Other">${odd.map(stOpt).join("")}</optgroup>` : ""}</select>`;
     const srcSel = `<select id="fsrc" aria-label="Source">${opt("all", "All sources", state.srcFilter)}${Object.entries(srcCounts).sort((a, b) => b[1] - a[1]).map(([v, n]) => opt(v, `${v} (${n})`, state.srcFilter)).join("")}</select>`;
     const callSel = `<select id="fcall" aria-label="Call">${opt("all", "Call: any", state.callFilter)}${CALL_KEYS.concat([["none", "No call yet"]]).map(([v, l]) => opt(v, `Call: ${l} (${callCounts[v] || 0})`, state.callFilter)).join("")}</select>`;
-    const agentSel = `<select id="fagent" aria-label="Agent call">${opt("all", "Agent call: any", state.agentFilter)}${[["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"], ["none", "Not read yet"]].concat(agentCounts.blind ? [["blind", "Hidden, blind batch"]] : []).map(([v, l]) => opt(v, `Agent call: ${l} (${agentCounts[v] || 0})`, state.agentFilter)).join("")}</select>`;
+    // Claude's call has one name, the column's (14 Nov live QA: "Claude", "Agent call" and "Claude's call" for the same thing)
+    const agentSel = `<select id="fagent" aria-label="Claude's call">${opt("all", "Claude: any", state.agentFilter)}${[["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"], ["none", "Not read yet"]].concat(agentCounts.blind ? [["blind", "Hidden, blind batch"]] : []).map(([v, l]) => opt(v, `Claude: ${l} (${agentCounts[v] || 0})`, state.agentFilter)).join("")}</select>`;
     const confSel = `<select id="fconf" aria-label="Confidence">${opt("all", "Confidence: any", state.confFilter)}${[["High", "High"], ["Medium", "Medium"], ["Low", "Low"]].map(([v, l]) => opt(v, `Confidence: ${l} (${confCounts[v] || 0})`, state.confFilter)).join("")}</select>`;
     const cvSel = `<select id="fcv" aria-label="CV check">${opt("all", "CV check: any", state.cvFilter)}${[["Pass", "Pass"], ["Not pass", "Not pass"], ["none", "Not checked"]].map(([v, l]) => opt(v, `CV check: ${l} (${cvCounts[v] || 0})`, state.cvFilter)).join("")}</select>`;
     // Compact (Kostya, 27 Oct): role sits above the source, confidence under Claude's call, long text clamps to two lines,
-    // so Next step and Due fit without scrolling sideways
-    const cols = [["Name", "name"], ["Role · source", ""], ["Applied", "applied"], ["Claude", "agent"], ["Call", "your"], ["Stage", "stage"], ["Next step", ""], ["Due", "due"]];
+    // so Next step and Due fit without scrolling sideways. The stage column leads with the status, and a closed status's rows hold what
+    // happened last, not a step to take (14 Nov live QA).
+    const cols = [["Name", "name"], ["Role · source", ""], ["Applied", "applied"], ["Claude", "agent"], ["Call", "your"], ["Status · stage", "stage"],
+      [closedSt.includes(state.statusFilter) ? "Last note" : "Next step", ""], ["Due", "due"]];
     const th = ([label, key]) => key ? `<th><button type="button" class="sorth" data-sort="${key}" aria-sort="${sk === key ? (sd > 0 ? "ascending" : "descending") : "none"}">${h(label)}<span class="arrow">${sk === key ? (sd > 0 ? "↑" : "↓") : "↕"}</span></button></th>` : `<th>${h(label)}</th>`;
     // On a phone the column headers give way to cards, so the sort is a select inside the filters
     const SORT_OPTS = [["", 1, "Sort: latest change"], ["applied", -1, "Sort: applied, newest"], ["name", 1, "Sort: name"], ["stage", 1, "Sort: stage"], ["due", 1, "Sort: due"],
       ["agent", 1, "Sort: Claude's call"], ["conf", 1, "Sort: confidence"], ["your", 1, "Sort: call"]];
     const sortSel = `<select id="fsort" class="fsort" aria-label="Sort">${SORT_OPTS.map(([k, d, l]) => `<option value="${k}|${d}"${(SORTS[sk] ? sk : "") === k ? " selected" : ""}>${h(l)}</option>`).join("")}</select>`;
+    // The order is said under the title (14 Nov live QA: every header showed ↕ over a list in latest-change order)
+    const SORT_SAY = { name: "name", applied: "applied", agent: "Claude's call", conf: "confidence", your: "call", stage: "stage", due: "due" };
+    const orderSay = SORTS[sk] ? `sorted by ${SORT_SAY[sk]} ${sd > 0 ? "↑" : "↓"}` : "latest change first";
     // What is filtering the list: the search and every filter not at "any" (the role's buttons stay in sight). Clear filters puts them back.
+    // The phone's Filters button counts a sort too, which sits behind it.
     const picked = [state.stageFilter, state.statusFilter, state.srcFilter, state.agentFilter, state.confFilter, state.callFilter, state.cvFilter].filter((v) => v !== "all").length;
-    const on = picked + (q ? 1 : 0), clear = `<button type="button" class="linkbtn" data-fclear>Clear filters</button>`;
+    const on = picked + (q ? 1 : 0), clear = `<button type="button" class="linkbtn" data-fclear>Clear filters</button>`, behind = picked + (SORTS[sk] ? 1 : 0);
     // Each row as a table row; on a phone as a card (studio.css): the name and the status with its group, the calls, the next step and due.
     // On a phone the Applied column gives way to the card's second line, which carries the date (14 Nov review: "· applied 18 Oct").
-    const row = (c) => `<tr class="clickable" data-id="${h(c.id)}"><td class="cname"><span class="name">${h(c.name)}</span><span class="muted clamp2">${h(c.headline || c.location || "")}</span></td><td class="csrc"><span class="muted small">${h(roleName(c.role_id))}</span><span class="sep"> · </span><br>${h(sourceShort(c.sources))}${c.applied ? `<span class="cappm"> · applied ${h(fmt(c.applied))}</span>` : ""}${c.referred_by ? `<br><span class="muted">referred by ${h(c.referred_by)}</span>` : ""}</td><td class="nowrap capplied">${h(fmt(c.applied))}</td><td class="cclaude">${blindNow(c) ? pill("blind") : callPill(c.agent_call)}${blindNow(c) || !c.confidence ? "" : `<br>${confWord(c.confidence)}`}</td><td class="ccall">${latestCell(c)}</td><td class="cstage"><span class="stl${isClosedStage(c) ? " closed" : ""}">${h(statusOf(c))}</span><span class="muted small cgrp">${h(groupOf(c))}</span>${c.ws_file && statusOf(c) !== WS_RECEIVED ? `<span class="wsflag" title="${h(c.ws_file)}">Work sample</span>` : ""}</td><td class="cnext"><span class="clamp2" title="${h(c.next_step)}">${h(c.next_step)}</span></td><td class="nowrap cdue">${c.due ? `<span class="duew">due </span>${h(fmt(c.due))}` : ""}</td></tr>`;
-    view.innerHTML = head("Candidates", `${list.length} of ${state.candidates.length}${on ? ` · ${on} filter${on > 1 ? "s" : ""} on · ${clear}` : ""}`, `<button type="button" class="btn" id="add">Add candidate</button>`) +
-      `<div class="toolbar ctools${state.filtersOpen ? " open" : ""}"><input type="search" id="q" placeholder="Search name, headline, source, stage" value="${h(state.search)}">
-        <button type="button" class="btn ghost ftoggle" id="ftoggle" aria-expanded="${state.filtersOpen ? "true" : "false"}" aria-controls="fsel">Filters${picked ? ` · ${picked}` : ""}</button>
-        <div class="fsel" id="fsel">${stageSel}${statusSel}${srcSel}${agentSel}${confSel}${callSel}${cvSel}${sortSel}${roleSeg()}</div></div>
+    // A record imported without an application date shows the day it was added, which the Applied sort goes by (14 Nov live QA); a due day
+    // passed on a record in play reads "late".
+    const row = (c) => { const late = daysLate(c) > 0, added = !c.applied && c.created_at ? fmt(c.created_at) : "";
+      return `<tr class="clickable" data-id="${h(c.id)}"><td class="cname"><span class="name">${h(c.name)}</span><span class="muted clamp2">${h(c.headline || c.location || "")}</span></td><td class="csrc"><span class="muted small">${h(roleName(c.role_id))}</span><span class="sep"> · </span><br>${h(sourceShort(c.sources))}${c.applied ? `<span class="cappm"> · applied ${h(fmt(c.applied))}</span>` : added ? `<span class="cappm"> · added ${h(added)}</span>` : ""}${c.referred_by ? `<br><span class="muted">referred by ${h(c.referred_by)}</span>` : ""}</td><td class="nowrap capplied">${c.applied ? h(fmt(c.applied)) : added ? `<span class="muted" title="No application date: the day the record was added to Studio">added ${h(added)}</span>` : ""}</td><td class="cclaude">${blindNow(c) ? pill("blind") : callPill(c.agent_call)}${blindNow(c) || !c.confidence ? "" : `<br>${confWord(c.confidence)}`}</td><td class="ccall">${latestCell(c)}</td><td class="cstage"><span class="stl${isClosedStage(c) ? " closed" : ""}">${h(statusOf(c))}</span><span class="muted small cgrp">${h(groupOf(c))}</span>${c.ws_file && statusOf(c) !== WS_RECEIVED ? `<span class="wsflag" title="${h(c.ws_file)}">Work sample</span>` : ""}</td><td class="cnext${isClosedStage(c) ? " closed" : ""}"><span class="clamp2" title="${h(c.next_step)}">${h(c.next_step)}</span></td><td class="nowrap cdue${late ? " late" : ""}">${c.due ? `<span class="duew">due </span>${h(fmt(c.due))}${late ? " · late" : ""}` : ""}</td></tr>`; };
+    // Counted against the role buttons' own records; under All open roles the earlier rounds' are named apart (14 Nov live QA: "76 of 80"
+    // with nothing filtered read like a filter stuck on)
+    const earlier = state.roleFilter === "all" ? state.candidates.filter((c) => isClosedRole(roleOf(c.role_id))).length : 0;
+    view.innerHTML = head("Candidates", `${list.length} of ${base.length}${earlier ? ` · ${earlier} in earlier rounds` : ""} · ${orderSay}${on ? ` · ${on} filter${on > 1 ? "s" : ""} on · ${clear}` : ""}`, `<button type="button" class="btn" id="add">Add candidate</button>`) +
+      `<div class="toolbar ctools${state.filtersOpen ? " open" : ""}"><input type="search" id="q" placeholder="Search name, source, stage" value="${h(state.search)}">
+        <button type="button" class="btn ghost ftoggle" id="ftoggle" aria-expanded="${state.filtersOpen ? "true" : "false"}" aria-controls="fsel">Filters${behind ? ` · ${behind}` : ""}</button>
+        <div class="fsel" id="fsel">${stageSel}${statusSel}${srcSel}${agentSel}${confSel}${callSel}${cvSel}${sortSel}${roleSeg({ allLabel: "All open roles" })}</div></div>
       ${list.length ? `<div class="tablewrap cands"><table><thead><tr>${cols.map(th).join("")}</tr></thead><tbody>${list.map(row).join("")}</tbody></table></div>`
         : on ? `<div class="card empty">No candidates match these filters. ${clear}</div>`
         : `<div class="card empty">No candidates match. They arrive from the jobs site, LinkedIn and Work.ua through the daily check-in, or add one by hand.</div>`}`;
@@ -410,7 +479,7 @@
     $("#fagent", view).addEventListener("change", (e) => { state.agentFilter = e.target.value; renderCandidates(view); });
     $("#fconf", view).addEventListener("change", (e) => { state.confFilter = e.target.value; renderCandidates(view); });
     view.querySelectorAll("[data-sort]").forEach((b) => b.addEventListener("click", () => {
-      const k = b.dataset.sort; state.sort = { key: k, dir: state.sort.key === k ? -state.sort.dir : 1 }; renderCandidates(view); }));
+      const k = b.dataset.sort; state.sort = state.sort.key !== k ? { key: k, dir: 1 } : state.sort.dir === 1 ? { key: k, dir: -1 } : { key: "", dir: 1 }; renderCandidates(view); }));
     view.querySelectorAll("tr.clickable").forEach((tr) => tr.addEventListener("click", () => openCandidate(tr.dataset.id)));
     $("#add", view).addEventListener("click", () => openCandidate(null));
   }
@@ -544,11 +613,14 @@
       const [word, kind] = kindOf(d, r); return `<li class="crow"><span class="pill ${kind}">${h(word)}</span><div class="cbody"><span class="clabel">${h(d.label)}</span>${r.evidence ? `<span class="ev">${h(r.evidence)}</span>` : ""}${r.field ? `<span class="cmeta">From ${h(r.field)}</span>` : ""}</div></li>`; };
     const ko = defs.filter((d) => d.kind === "knockout"), plus = defs.filter((d) => d.kind === "plus"), minus = defs.filter((d) => d.kind === "minus"), other = defs.filter((d) => !["knockout", "plus", "minus"].includes(d.kind));
     const count = (list, pred) => list.filter((d) => { const r = resultOf(d); return r && pred(r); }).length;
+    // Knockouts that fail first, then unclear, not checked, passes (14 Nov live QA: a Decline's reasons sat under the passes, off a phone's
+    // first screen); the sort is stable, so the scorecard's order holds within each
+    const koRank = (d) => { const r = resultOf(d); return !r ? 2 : r.result === "not met" ? 0 : r.result === "met" ? 3 : 1; };
     if (!c.agent_call && !res.length) return `<p class="muted">The next robot run reads the application against the ${h(roleName(c.role_id))} scorecard: completeness, knockouts, markers, then a proposal.</p>`;
     return `<div class="readhead"><h3>${c.agent_call ? `${h(c.agent_call)}${c.confidence ? ` <span class="muted">· ${h(c.confidence.toLowerCase())} confidence</span>` : ""}` : '<span class="muted">No call yet</span>'}</h3>
         <span class="cmeta">${h(c.rules_version || (last && last.rules_version) || "")}${last ? ` · ${h(fmt(last.at))}` : ""}</span></div>
       ${c.why ? `<p class="why">${h(c.why)}</p>` : ""}
-      ${ko.length ? `<div class="critgroup"><span class="lbl">Knockouts · ${count(ko, (r) => r.result === "not met")} failed of ${ko.length}</span><ul class="critlist">${ko.map(row).join("")}</ul></div>` : ""}
+      ${ko.length ? `<div class="critgroup"><span class="lbl">Knockouts · ${count(ko, (r) => r.result === "not met")} failed of ${ko.length}</span><ul class="critlist">${ko.slice().sort((a, b) => koRank(a) - koRank(b)).map(row).join("")}</ul></div>` : ""}
       ${plus.length ? `<div class="critgroup"><span class="lbl">Markers for · ${count(plus, (r) => r.result === "met")} of ${plus.length}</span><ul class="critlist">${plus.map(row).join("")}</ul></div>` : ""}
       ${minus.length ? `<div class="critgroup"><span class="lbl">Red flags · ${count(minus, (r) => r.result === "met")} of ${minus.length}</span><ul class="critlist">${minus.map(row).join("")}</ul></div>` : ""}
       ${other.length ? `<div class="critgroup"><span class="lbl">Criteria</span><ul class="critlist">${other.map(row).join("")}</ul></div>` : ""}
@@ -591,15 +663,23 @@
     const links = [c.linkedin ? linkChip(c.linkedin, "LinkedIn") : "", cvOpen(c, "chip link"),
       m && Number(m.size) > 0 ? `<a class="chip link" href="${API}worksample/${encodeURIComponent(c.id)}/file" target="_blank" rel="noopener" title="${h(m.filename || c.ws_file || "")}">Open work sample ↗</a>` : wsLink ? linkChip(wsLink, "Work sample") : "",
       c.email ? `<a class="chip link mail" href="mailto:${h(c.email.trim())}" title="${h(c.email)}">${h(c.email.trim())}</a>` : ""].filter(Boolean);
-    // the stage group only when it says something the status doesn't ("Hired" "Hired", "Offer" "Offer" read twice: 14 Nov review)
-    const grp = groupOf(c), sameWord = grp.toLowerCase() === statusOf(c).toLowerCase();
+    // the stage group only when it says something the status doesn't ("Hired" "Hired", "Offer" "Offer" read twice: 14 Nov review), nor
+    // when the status names it ("In screening" "Screening", "1st interview done" "First interview": 14 Nov live QA). Rejected, Replied,
+    // Screen call done keep it.
+    const grp = groupOf(c), norm = (s) => s.toLowerCase().replace(/\b1st\b/g, "first").replace(/\b2nd\b/g, "second"), sameWord = norm(statusOf(c)).includes(norm(grp));
+    // Claude's call names its step like the people's, and goes quiet once a person has made the screening call (14 Nov live QA: a red
+    // "Claude · Decline" stayed beside Kostya's Shortlist and every later Go)
     return `<div class="rchips"><span class="pill st ${kind}" title="Status">${h(statusOf(c))}</span>${sameWord ? "" : `<span class="pill grp" title="Stage">${h(grp)}</span>`}${callChip(c)}${
-      !hideClaude && !blindNow(c) && c.agent_call ? pill("Claude · " + c.agent_call, callKind(c.agent_call)) : ""}</div>
+      !hideClaude && !blindNow(c) && c.agent_call ? pill("Screening · Claude: " + c.agent_call, c.your_call ? "" : callKind(c.agent_call)) : ""}</div>
       <p class="rmeta">${facts.map(h).join(" · ")}</p>${links.length ? `<div class="rlinks">${links.join("")}</div>` : ""}`;
   }
   const setHead = (c, hideClaude) => { if (isOpen(c.id)) $("#recsub").innerHTML = headHtml(c, hideClaude); };
-  // the Next call panel's "Now" line follows a saved Next step at once, like the header
-  const setNow = (c) => { const el = isOpen(c.id) && $("#callnow"); if (el) { el.innerHTML = callNowHtml(c); el.hidden = !c.next_step; el.title = nowText(c); } };
+  // the Next call panel's "Now" line follows a saved Next step at once, like the header (and the Next step panel of a card without a call
+  // sheet shows or goes with it)
+  const setNow = (c) => { const el = isOpen(c.id) && $("#callnow"); if (el) { el.innerHTML = callNowHtml(c); el.hidden = !c.next_step; el.title = nowText(c);
+    const p = el.closest(".nowp"); if (p) { p.hidden = !c.next_step; $(".eyebrow", p).textContent = nowName(c); } } };
+  // a closed record's Next step says what happened, as the list's "Last note" (14 Nov live QA)
+  const nowName = (c) => isClosedStage(c) ? "Last note" : "Next step";
   // Section summaries, one line each
   function cardsSummary(c) {
     const cards = cardsFor(c.id), rub = rubricOf(c.role_id);
@@ -647,6 +727,8 @@
   // names it, and a save that leaves the field empty keeps it (it used to come back empty, and the Worker then set hired_at to today).
   const dayOf = (v) => /^\d{4}-\d{2}-\d{2}/.test(v || "") ? v.slice(0, 10) : "";
   const dateField = (name, v) => `<input name="${name}" type="date" value="${h(dayOf(v))}">${v && !dayOf(v) ? `<span class="muted small">Stored as “${h(v)}”: pick a day to replace it.</span>` : ""}`;
+  // Under the Due field, how long its day has passed (14 Nov live QA); it follows the field as it is changed (marks, in bindRecordForm)
+  const lateSay = (n) => n ? `${n} day${n > 1 ? "s" : ""} overdue` : "";
   // The Decision panel (5 Nov, with the Decisions of 12 Nov; one Save since the second 14 Nov review). The three steps, then the record's
   // fields, then Save at the panel's foot, which saves everything changed in it: the record's fields that changed (only those) and each
   // step's decision that changed. 1 · Screening is the record's own call and moves the stage as before; 2 · Interview and 3 · Second
@@ -664,7 +746,7 @@
           ${id ? `<li class="dstep" id="dstep-interview">${decisionStep(c, "interview")}</li><li class="dstep" id="dstep-second">${decisionStep(c, "second")}</li>` : ""}
         </ul>
         <label><span class="lbl">Stage</span>${stageSelect(c)}</label>
-        <label><span class="lbl">Due</span>${dateField("due", c.due)}</label>
+        <label><span class="lbl">Due</span>${dateField("due", c.due)}<span class="duelate" data-duelate>${lateSay(daysLate(c))}</span></label>
         <label class="full"><span class="lbl">Next step</span><textarea name="next_step" class="fit oneline" rows="2" data-max="168">${h(c.next_step)}</textarea></label>
         <label class="full"><span class="lbl">Notes</span><textarea name="notes">${h(c.notes)}</textarea></label>
         <details class="fold plain more full"><summary>Referral and hire fields</summary><div class="form inner">
@@ -701,8 +783,12 @@
       const read = section("read", "Claude's read", readSummary(c), readBlock(c), !sheets.length);
       // The main column opens on the Next call panel; a card without a call sheet opens on Claude's read instead, so on a narrow screen,
       // where the Decision panel comes right after this first part, the evidence comes before the form (14 Nov review: a phone opened a
-      // screening card on an empty form, with Claude's read 900px down)
-      openRecord(c.name, "", `<div class="reclayout"><div class="recnext">${sheets.length ? nextCallHtml(c, sheets[0]) : read}</div>
+      // screening card on an empty form, with Claude's read 900px down). Its Next step comes first all the same, in a slim panel (14 Nov live
+      // QA: a booked interview showed only in the Decision panel's field, under the Save bar); setNow keeps it with the Next step saved. Not
+      // #sec-next, which is a call sheet's.
+      const nowp = `<section class="callp nowp" aria-label="Next step"${c.next_step ? "" : " hidden"}><div class="callhd"><span class="eyebrow">${nowName(c)}</span></div>
+        <div class="callb"><p class="callnow" id="callnow" title="${h(nowText(c))}">${callNowHtml(c)}</p></div></section>`;
+      openRecord(c.name, "", `<div class="reclayout"><div class="recnext">${sheets.length ? nextCallHtml(c, sheets[0]) : nowp + read}</div>
         <div class="recside">${decisionHtml(c, id)}</div>
         <div class="recrest">${(sheets.length ? read : "") + sectionList(c, sheets).filter((x) => x[3]).map(([k, t, sm, b]) => section(k, t, sm, b, asked(c, k))).join("") + laterHtml(c)}</div></div>`, id, headHtml(c));
       if (focus) openSec(focus, true);
@@ -724,7 +810,8 @@
     if (isClosedStage(c)) return "";
     const w = wsOf(c), can = [rubricOf(c.role_id) && !cardsOn(c) ? ["cards", "Scorecards"] : null,
       w && !w.failed && !wsOn(c) && wsInRubric(c) && !isClosedRole(roleOf(c.role_id)) ? ["ws", "Work sample"] : null].filter(Boolean);
-    return can.length ? `<p class="reclater" id="reclater"><span class="muted">Before their step:</span> ${can.map(([k, t]) => `<button type="button" class="linkbtn" data-secask="${k}">${t}</button>`).join('<span class="muted"> · </span>')}</p>` : "";
+    // "Open early" says what the link does (14 Nov live QA: "Before their step:" didn't)
+    return can.length ? `<p class="reclater" id="reclater"><span class="muted">Open early:</span> ${can.map(([k, t]) => `<button type="button" class="linkbtn" data-secask="${k}">${t}</button>`).join('<span class="muted"> · </span>')}</p>` : "";
   }
   function bindLater(c) {
     document.querySelectorAll("#reclater [data-secask]").forEach((b) => b.addEventListener("click", () => {
@@ -766,8 +853,9 @@
     const screenDirty = () => { const d = changed(); return "your_call" in d || "your_reason" in d; };
     const say = (t, bad) => { saved.textContent = t; saved.classList.toggle("bad", !!bad); saved.classList.toggle("warn", t === "Not saved yet"); };
     let saving = 0;
-    // "Not saved yet" on each step changed and at the foot, and no "Saved" while anything is
+    // "Not saved yet" on each step changed and at the foot, and no "Saved" while anything is; and the Due field's "overdue" for its day now
     const marks = () => {
+      const dl = f.querySelector("[data-duelate]"); if (dl && f.elements.due) dl.textContent = lateSay(daysLate(c, f.elements.due.value));
       decRows().forEach((row) => { const m = $("[data-dmark]", row); if (!rowDirty(row)) { m.textContent = ""; m.classList.remove("bad", "warn"); } else if (!m.classList.contains("bad")) { m.textContent = "Not saved yet"; m.classList.add("warn"); } });
       const sm = f.querySelector("[data-dscreen] [data-dmark]");
       if (sm) { sm.textContent = screenDirty() ? "Not saved yet" : ""; sm.classList.toggle("warn", screenDirty()); }
@@ -1062,18 +1150,21 @@
   }
   // rec: the panel inside a candidate's record, where the header already has Open CV and LinkedIn and the Messages section lays out the
   // conversation and the reply itself (see messagesHtml). A concern not written yet leaves no empty label.
+  // The message box fits its text (about 62 characters a line in this column; the reply draft's box does the same), Copy is the one dark
+  // button, and on Screening a card with no LinkedIn application says so (14 Nov live QA: a fixed 7-row box cut the message mid-line, and
+  // the help line pointed at an Application button the card didn't have).
   function screenPanel(c, rec) {
     if (!c.screen_concern && !c.screen_message) return `<p class="muted small">No concern written yet. Claude writes one for every shortlisted candidate.</p>${rec ? "" : convoHtml(c) + replyHtml(c)}`;
     const application = urlsIn(c.cv).filter((u) => /linkedin\.com\/hiring\/applicants/.test(u)).map((u) => `<a class="btn ghost small" href="${h(u)}" target="_blank" rel="noopener">Application ↗</a>`).join("");
     return `<div class="scrpanel${c.screen_concern ? "" : " noconcern"}" data-sid="${h(c.id)}" data-stage="${h(c.stage || "applied")}">
       ${c.screen_concern ? `<div class="scrcol"><span class="lbl">Concern to verify</span><p class="concern">${h(c.screen_concern)}</p></div>` : ""}
-      <div class="scrcol"><span class="lbl">Message to send on LinkedIn</span><textarea class="scrmsg" rows="7" aria-label="Message to ${h(c.name)}">${h(c.screen_message)}</textarea>
+      <div class="scrcol"><span class="lbl">Message to send on LinkedIn</span><textarea class="scrmsg" rows="${Math.min(18, Math.max(5, (c.screen_message || "").split("\n").reduce((n, l) => n + 1 + Math.floor(l.length / 62), 0)))}" aria-label="Message to ${h(c.name)}">${h(c.screen_message)}</textarea>
         <div class="pact"><button type="button" class="btn small" data-copy>Copy</button><button type="button" class="btn ghost small" data-savemsg hidden>Save the edit</button>
           ${wasSent(c) ? `<span class="pill ok">sent${c.last_contact ? " " + h(fmt(c.last_contact)) : ""}</span>`
             : isClosedStage(c) || isClosedRole(roleOf(c.role_id)) ? `<span class="muted small">Not sent · the record is closed</span>` : `<button type="button" class="btn ghost small" data-sent>Mark as sent</button>`}
-          ${rec ? "" : cvOpen(c, "btn small")}
+          ${rec ? "" : cvOpen(c, "btn ghost small")}
           ${!rec && c.linkedin ? `<a class="btn ghost small" href="${h(c.linkedin)}" target="_blank" rel="noopener">LinkedIn ↗</a>` : ""}
-          ${application}</div>
+          ${application || (rec ? "" : '<span class="muted small">No LinkedIn application on file</span>')}</div>
         ${c.latest_reply && !repliedAt(c) ? `<div class="answer"><span class="lbl">Latest reply</span><p>${h(c.latest_reply)}</p></div>` : ""}</div>${rec ? "" : convoHtml(c) + replyHtml(c)}</div>`;
   }
   // Once the screening message is sent (or the candidate is past it): the concern it checks, the message as one line that opens to its text
@@ -1319,7 +1410,11 @@
     if (!AI_RESULT.test(t) || callsShown(c)) return t;
     const kept = t.split(/(?<=[.;!?])\s+/).filter((s) => !AI_RESULT.test(s)).join(" ").replace(/[\s;,:]+$/, "");
     return `${kept ? kept.replace(/([^.!?])$/, "$1.") + " " : ""}The AI card's result is folded until you score.`; };
-  const callNowHtml = (c) => c.next_step ? `<span class="lbl">Now${c.due ? ` · due ${h(fmt(c.due))}` : ""}</span> ${h(nowText(c))}` : "";
+  // A due day passed on a record in play reads "overdue" in the warn ink (14 Nov live QA: "due 5 Nov" on 14 Nov read like "due 16 Nov").
+  // A record not in play (closed, hired, an earlier round) has nothing pending: the line alone, no "Now" and no due day (14 Nov live QA:
+  // "LAST NOTE" over "NOW · DUE 5 NOV Warm decline sent"); the panel's eyebrow says what it is.
+  const callNowHtml = (c) => { if (!c.next_step) return ""; if (!inPlay(c)) return h(nowText(c)); const late = daysLate(c) > 0;
+    return `<span class="lbl${late ? " late" : ""}">Now${c.due ? ` · ${late ? "overdue, " : ""}due ${h(fmt(c.due))}` : ""}</span> ${h(nowText(c))}`; };
   // The Next call panel: the newest sheet's name, what stands now, its meta line, and its four groups. "Latest call" once its results are
   // filled; "Booked call · date passed" once its day is behind us without results. The panel itself doesn't fold, its groups do (second
   // 14 Nov review: a click on the Now line, to select a time, folded the panel on every card, and the fold was remembered).
@@ -1365,18 +1460,21 @@
   }
   async function renderScreening(view) {
     await need("candidates"); await loadMsgs();
+    if (state.roleFilter === "closed") state.roleFilter = "all";  // Screening leaves earlier rounds out, so it doesn't offer them (14 Nov live QA)
     const all = state.candidates.filter(inScreening).filter(inRole);
     const pick = { tosend: (c) => !wasSent(c), sent: wasSent, replied: hasReply, all: () => true }[state.screenFilter] || (() => true);
     const list = all.filter(pick).sort((a, b) => (state.screenFilter === "replied" ? repliedAt(b).localeCompare(repliedAt(a)) : 0) || (wasSent(a) - wasSent(b)) || a.role_id.localeCompare(b.role_id) || (CONF_RANK[a.confidence] ?? 3) - (CONF_RANK[b.confidence] ?? 3) || a.name.localeCompare(b.name));
     const toSend = all.filter((c) => !wasSent(c)).length, noConcern = all.filter((c) => !c.screen_concern).length, replied = all.filter(hasReply).length, drafts = all.filter((c) => c.reply_draft).length;
-    view.innerHTML = head("Screening", `One message per shortlisted candidate, asking the one thing we need to verify. ${toSend} to send · ${all.length - toSend} sent · ${replied} replied${drafts ? ` · ${drafts} repl${drafts > 1 ? "ies" : "y"} drafted` : ""}${noConcern ? ` · ${noConcern} without a concern yet` : ""}`,
-      seg("scrf", [["tosend", "To send"], ["sent", "Sent"], ["replied", `Replied · ${replied}`], ["all", "All"]], state.screenFilter)) +
-      `<div class="toolbar">${roleSeg()}</div>
-      <p class="muted small">Everyone with a Shortlist call, and everyone Claude shortlisted who has no call yet. Edit the message if you want, copy it into LinkedIn (the Application button opens their application, where messaging is free), then mark it sent: the candidate moves to "messaged".</p>
+    // Each filter gives its count; Claude's call is labelled as a person's is; Claude's read folds, as on the record, under the CV check
+    // (14 Nov live QA: the whole read ran past the window, the concern and the message a third of the card, the CV check below it)
+    view.innerHTML = head("Screening",`One message per shortlisted candidate, asking the one thing we need to verify. ${toSend} to send · ${all.length - toSend} sent · ${replied} replied${drafts ? ` · ${drafts} repl${drafts > 1 ? "ies" : "y"} drafted` : ""}${noConcern ? ` · ${noConcern} without a concern yet` : ""}`,
+      seg("scrf", [["tosend", `To send · ${toSend}`], ["sent", `Sent · ${all.length - toSend}`], ["replied", `Replied · ${replied}`], ["all", `All · ${all.length}`]], state.screenFilter)) +
+      `<div class="toolbar">${roleSeg({ noClosed: true })}</div>
+      <p class="muted small">Everyone with a Shortlist call, and everyone Claude shortlisted who has no call yet. Edit the message if you want, copy it into LinkedIn (where a card has an Application button, it opens their LinkedIn application, where messaging is free), then mark it sent: the candidate moves to "messaged".</p>
       ${list.length ? list.map((c) => `<article class="card scrcard"><div class="scrwho"><button type="button" class="linkbtn name" data-open="${h(c.id)}">${h(c.name)}</button>
           <span class="muted small">${h(c.id)} · ${h(roleName(c.role_id))}${c.location ? " · " + h(c.location) : ""}</span>
-          <div class="chips">${callPill(c.agent_call)}${confWord(c.confidence)}${c.your_call ? `<span class="muted small">${h(callBy(c) ? firstName(callBy(c)) : "call")}:</span>${callPill(c.your_call)}` : ""}</div>
-          ${c.why ? `<p class="small">${h(c.why)}</p>` : ""}${cvCheck(c)}</div>${screenPanel(c)}</article>`).join("")
+          <div class="chips">${c.agent_call ? `<span class="cpair"><span class="muted small">Claude:</span>${callPill(c.agent_call)}${confWord(c.confidence)}</span>` : confWord(c.confidence)}${c.your_call ? `<span class="cpair"><span class="muted small">${h(callBy(c) ? firstName(callBy(c)) : "call")}:</span>${callPill(c.your_call)}</span>` : ""}</div>
+          ${cvCheck(c)}${c.why ? `<details class="fold plain"><summary>Claude's read</summary><p class="small">${h(c.why)}</p></details>` : ""}</div>${screenPanel(c)}</article>`).join("")
         : `<div class="card empty">${state.screenFilter === "tosend" ? "Nothing left to send." : "Nobody here yet."}</div>`}`;
     bindSeg(view, "scrf", (v) => { state.screenFilter = v; renderScreening(view); });
     bindSeg(view, "role", (v) => { state.roleFilter = v; renderScreening(view); });
@@ -1749,18 +1847,25 @@
       const k = c.role_id + "|" + rulesOf(c), g = groups[k] = groups[k] || { key: k, role: c.role_id, ver: rulesOf(c), all: [], done: [] };
       g.all.push(c); if (C.includes(c.your_call)) g.done.push(c);
     });
-    // newest decision first, so the block opens on the role being decided now
-    const last = (x) => x.done.reduce((m, c) => (c.updated_at || "") > m ? c.updated_at : m, "");
-    const list = Object.values(groups).filter((g) => g.done.length).sort((a, b) => last(b).localeCompare(last(a)) || b.done.length - a.done.length);
+    // Role by role in the app's order, the open roles before the closed and archived ones, each role's newest rules first and "no version"
+    // last; the block opens on an open role's first measurement still open (under 50 decided). 14 Nov live QA: ordered by updated_at, which
+    // every robot write moves, it opened on an old, complete version and reshuffled after each run (no field says when a call was made); then,
+    // by roles.sort, the robots' login opened on the archived TA search's.
+    const ri = (x) => { const n = roles().length, i = roles().findIndex((r) => r.id === x.role); return i < 0 ? 2 * n : (isClosedRole(roles()[i]) ? n : 0) + i; };
+    const vnum = (v) => v === "no version" ? null : v.slice(1).split(".").map(Number);
+    const vcmp = (a, b) => { const x = vnum(a), y = vnum(b); if (!x || !y) return !x - !y;
+      for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] || 0) !== (y[i] || 0)) return (y[i] || 0) - (x[i] || 0); return 0; };
+    const list = Object.values(groups).filter((g) => g.done.length).sort((a, b) => ri(a) - ri(b) || vcmp(a.ver, b.ver));
     const eyebrow = `<span class="eyebrow">Triage · Claude's call vs the person's call</span>`;
     if (!list.length) return `<div class="group">${eyebrow}<div class="card empty">Nobody has made a call on a record Claude read yet.</div></div>`;
-    const g = list.find((x) => x.key === state.calGroup) || list[0];
+    const g = list.find((x) => x.key === state.calGroup) || list.find((x) => x.done.length < 50 && !isClosedRole(roleOf(x.role))) || list[0];
     const n = (arr, a, y) => arr.filter((c) => (!a || claudeCall(c) === a) && (!y || c.your_call === y)).length;
     const pct = (x, d) => d ? Math.round(100 * x / d) + "%" : "–";
     const label = (x) => `${roleName(x.role)} · ${x.ver}`;
     const rows = list.map((x) => { const d = x.done, agree = d.filter((c) => claudeCall(c) === c.your_call).length, sl = n(d, "Shortlist");
       const miss = d.filter((c) => c.your_call === "Shortlist" && claudeCall(c) !== "Shortlist").length;
-      return `<tr${x === g ? ' class="here"' : ""}><td><span class="name">${h(label(x))}</span></td><td>${d.length} <span class="muted">${d.length >= 50 ? "· complete" : "of 50"}</span></td><td>${pct(agree, d.length)} <span class="muted">${agree}</span></td>
+      // each figure says what it counts, on one line (14 Nov live QA: "40% 39", "98 · complete" over two lines, and "31 of 50" read as records)
+      return `<tr${x === g ? ' class="here"' : ""}><td><span class="name nowrap">${h(label(x))}</span></td><td class="nowrap">${d.length} <span class="muted">· ${d.length >= 50 ? "closed" : "closes at 50"}</span></td><td class="nowrap">${agree} of ${d.length} <span class="muted">· ${pct(agree, d.length)}</span></td>
         <td>${sl ? `${n(d, "Shortlist", "Shortlist")} of ${sl}` : "–"}</td><td>${miss}</td><td>${n(d, "Shortlist", "Decline")}</td><td>${C.map((a) => `${n(d, a)}/${n(x.all, a)}`).join(" · ")}</td></tr>`; });
     const mx = C.map((a) => `<tr><th>${callPill(a)}</th>${C.map((y) => `<td class="${a === y ? "diag" : ""}">${n(g.done, a, y) || ""}</td>`).join("")}<td>${n(g.done, a)}</td><td class="muted">${n(g.all, a) - n(g.done, a)}</td></tr>`).join("");
     const off = g.done.filter((c) => c.agent_call !== c.your_call).sort((a, b) => CALL_RANK[a.your_call] - CALL_RANK[b.your_call] || (a.name || "").localeCompare(b.name || ""));
@@ -1776,7 +1881,7 @@
     const row = (c) => `<tr class="clickable" data-id="${h(c.id)}"><td><span class="name">${h(c.name)}</span><br><span class="muted">${h(c.id)}</span></td>
       <td>${callPill(claudeCall(c))}${c.cv_check === "Not pass" ? ' <span class="muted small">the CV check</span>' : ""} ${confWord(c.confidence)}<br><span class="muted small">${h(c.why)}</span></td><td>${callPill(c.your_call)}${callBy(c) ? `<br><span class="muted small">${h(firstName(callBy(c)))}</span>` : ""}</td><td>${h(c.your_reason) || '<span class="muted">no reason</span>'}</td></tr>`;
     return `${batchHtml}<div class="group">${eyebrow}${list.length > 1 ? seg("calgroup", list.map((x) => [x.key, label(x)]), g.key) : ""}
-      ${table(["Role · rules", "Decided", "Same call", "Claude's Shortlists kept", "Misses", "Noise", "Decided of Claude's Shortlist · Hold · Decline"], rows)}
+      ${table(["Role · rules", "Decided", "Same call", "Claude's Shortlists kept", "Misses", "Noise", "Claude's S · H · D decided"], rows)}
       <p class="muted small">One measurement per scorecard version: a new version starts a new row, so the current one stays the baseline. A CV check of "Not pass" counts as Claude\'s Decline, since only a person judges the CV\'s design. A measurement closes at 50 decided records. Misses can only appear where Claude's Holds and Declines also get a person's call: ${n(g.done, "Hold") + n(g.done, "Decline")} of ${n(g.all, "Hold") + n(g.all, "Decline")} so far for ${h(label(g))}.</p></div>
       <div class="group"><span class="eyebrow">${h(label(g))} · rows are Claude's call, columns the person's call</span><div class="tablewrap"><table class="mx"><thead><tr><th></th>${C.map((y) => `<th>${h(y)}</th>`).join("")}<th>Decided</th><th>Not decided</th></tr></thead><tbody>${mx}</tbody></table></div></div>
       <div class="group"><span class="eyebrow">Different calls · ${off.length}</span>${off.length ? table(["Candidate", "Claude", "Call", "Reason"], off.map(row)) : '<p class="muted">None.</p>'}</div>
@@ -1908,7 +2013,10 @@
     : o.accepted || o.status === "already connected" ? today() : o.invite_sent ? addWorkDays(o.invite_sent, 10) : "";
   function nextActions(o) {  // [label, patch, confirm question]
     const t = today(), acts = [];
-    if (o.call_booked || appliedOut(o)) return acts;  // the drawer takes a booking (or an application) off again
+    // booked, applied, withdrawn, or closed before the sequence ended (the campaign's close of 9 Nov): Open only, whose drawer takes a booking
+    // (or an application) off again and records a late reply (14 Nov live QA: those rows still offered "Follow-up 2 sent"). A row closed by
+    // its own last follow-up keeps Replied and Call booked, the likeliest corrections after it; its step buttons are all used.
+    if (o.call_booked || appliedOut(o) || o.status === "withdrawn" || (o.status === "closed" && !o.followup2_sent)) return acts;
     const connected = connectedOut(o);
     if (!o.invite_sent && !connected) acts.push(["Invite sent", { invite_sent: t, step: "1", status: "invited", next_action: "wait for acceptance", due: addWorkDays(t, 10) }]);
     else if (!connected) {
@@ -1933,17 +2041,22 @@
     const unapproved = state.templates.filter((x) => x.approved !== "Yes").length;
     // The tracker: everyone invited, then how many accepted, answered and booked a call. Each step counts everyone who got that far.
     const invited = list.filter((o) => o.invite_sent), acc = invited.filter(connectedOut), ans = invited.filter(answeredOut), calls = invited.filter((o) => o.call_booked);
-    const before = list.filter((o) => !o.invite_sent && connectedOut(o)).length, queued = list.filter((o) => !o.invite_sent && !connectedOut(o)).length;
+    // A closed row is never queued, and the closed ones are counted apart (14 Nov live QA: the 9 Nov close overwrote "already connected" on
+    // the one prospect never invited, who then read "1 queued"). The run's sentence shows only while someone is still in the sequence.
+    const before = list.filter((o) => !o.invite_sent && connectedOut(o)).length, queued = list.filter((o) => !o.invite_sent && !connectedOut(o) && !doneOut(o)).length;
+    const closedN = list.filter((o) => ["withdrawn", "closed"].includes(o.status)).length, running = list.some((o) => !doneOut(o) && !answeredOut(o));
     const pct = (a, b) => (b ? Math.round(100 * a / b) + "%" : "–");
     const steps = [
-      ["Invited", invited.length, [queued && `${queued} queued`, before && `${before} connected before, not counted`].filter(Boolean).join(" · ") || "connection requests sent", "", ""],
+      ["Invited", invited.length, [queued && `${queued} queued`, before && `${before} connected before, not counted`, closedN && `${closedN} of ${list.length} prospects closed`].filter(Boolean).join(" · ") || "connection requests sent", "", ""],
       ["Accepted", acc.length, `${invited.filter((o) => !connectedOut(o) && o.status !== "withdrawn").length} waiting`, pct(acc.length, invited.length), "of invited"],
       ["Replied", ans.length, `${acc.filter((o) => !answeredOut(o) && o.message1_sent && !doneOut(o)).length} messaged, no answer yet`, pct(ans.length, acc.length), "of accepted"],
       ["Call booked", calls.length, `${calls.filter((o) => o.call_at && new Date(o.call_at) >= new Date()).length} coming up`, pct(calls.length, ans.length), "of replied"]];
     const top = invited.length || 1;
-    const funnel = steps.map(([title, n, note, conv, of], i) => `<div class="stage"><div class="stagerow static"><span class="sname">${h(title)}<small>${h(note)}</small></span>
+    // as on the Pipeline, the second row's share of the top is the conversion beside it: hidden where that column shows (14 Nov live QA:
+    // "31% of invited" twice on Accepted), kept at 900px and under, where the column gives way (a bare "5" there: 14 Nov live QA)
+    const funnel = steps.map(([title, n, note, conv, of], i) =>`<div class="stage"><div class="stagerow static"><span class="sname">${h(title)}<small>${h(note)}</small></span>
       <span class="sbar"><span style="width:${n ? Math.max(2, Math.round(100 * n / top)) : 0}%"></span></span>
-      <span class="snum">${n}<small>${i ? `${pct(n, invited.length)} of invited` : "sent"}</small></span>
+      <span class="snum">${n}<small>${i > 1 ? `${pct(n, invited.length)} of invited` : i ? `<span class="convdup">${pct(n, invited.length)} of invited</span>` : "sent"}</small></span>
       <span class="sconv">${i ? `<b>${conv}</b><small>${of}</small>` : ""}</span></div></div>`).join("");
     const rank = (o) => o.call_booked ? 0 : answeredOut(o) ? 1 : connectedOut(o) ? 2 : o.invite_sent ? 3 : 4;
     const groups = {}; list.forEach((o) => { const g = o.campaign || "No campaign"; (groups[g] = groups[g] || []).push(o); });
@@ -1958,13 +2071,13 @@
     view.innerHTML = head("Outreach", `${list.length} prospects · ${due} due today or earlier`) +
       (unapproved ? `<div class="card note"><b>${unapproved} of ${state.templates.length} templates aren't approved yet.</b> Nothing is sent until they are. <button type="button" class="linkbtn" data-go="templates">Review templates</button></div>` : "") +
       `<div class="funnel">${funnel}</div>
-      <p class="muted">Sequence: connection request (with a note while the month's free notes last) → message 1 with the booking link within a working day of acceptance → follow-ups at +3 and +5 working days. A reply or a booked call stops it. The outreach run sends these on weekdays at 11:00 and fills in the dates; the buttons are for corrections.</p>
+      <p class="muted">Sequence: connection request (with a note while the month's free notes last) → message 1 with the booking link within a working day of acceptance → follow-ups at +3 and +5 working days. A reply or a booked call stops it. ${running ? "The outreach run sends these on weekdays at 11:00 and fills in the dates; the buttons are for corrections." : "Nobody is in the sequence now, so the outreach run has nothing to send."}</p>
       ${Object.entries(groups).sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0])).map(([g, rows]) => `<div class="group"><span class="eyebrow">${h(g)}</span>${table(["Prospect", "Invited", "Accepted", "Message 1", "Follow-ups", "Replied", "Call booked", "Next", ""],
         rows.slice().sort((a, b) => rank(a) - rank(b) || String(a.id).localeCompare(String(b.id))).map((o) => `<tr class="trk"><td><span class="name">${o.linkedin ? `<a href="${h(o.linkedin)}" target="_blank" rel="noopener">${h(o.name)}</a>` : h(o.name)}</span><br><span class="muted">${h(o.company || o.location || "")}</span></td>
-          ${o.invite_sent ? stepCell(o.invite_sent) : `<td class="step none">${connectedOut(o) ? "connected before" : "queued"}</td>`}${stepCell(o.accepted)}${stepCell(o.message1_sent)}
+          ${o.invite_sent ? stepCell(o.invite_sent) : `<td class="step none">${connectedOut(o) ? "connected before" : doneOut(o) ? "not invited" : "queued"}</td>`}${stepCell(o.accepted)}${stepCell(o.message1_sent)}
           ${o.followup1_sent ? `<td class="step done">${[o.followup1_sent, o.followup2_sent].filter(Boolean).map((d) => h(fmt(d))).join(" · ")}</td>` : '<td class="step none">–</td>'}
           ${stepCell(o.replied, o.latest_reply)}${callCell(o)}<td>${nextCell(o)}</td>
-          <td class="actions">${nextActions(o).map(([label, patch, ask]) => `<button type="button" class="btn ghost small" data-id="${h(o.id)}" data-patch='${h(JSON.stringify(patch))}'${ask ? ` data-confirm="${h(ask)}"` : ""}>${h(label)}</button>`).join("")}<button type="button" class="btn ghost small" data-open="${h(o.id)}">Open</button></td></tr>`))}</div>`).join("") || '<div class="card empty">No prospects queued.</div>'}`;
+          <td class="actions"><button type="button" class="btn ghost small" data-open="${h(o.id)}">Open</button>${nextActions(o).map(([label, patch, ask]) => `<button type="button" class="btn ghost small" data-id="${h(o.id)}" data-patch='${h(JSON.stringify(patch))}'${ask ? ` data-confirm="${h(ask)}"` : ""}>${h(label)}</button>`).join("")}</td></tr>`))}</div>`).join("") || '<div class="card empty">No prospects queued.</div>'}`;
     view.querySelectorAll("[data-go]").forEach((b) => b.addEventListener("click", () => setView(b.dataset.go)));
     view.querySelectorAll("[data-cand]").forEach((b) => b.addEventListener("click", () => openCandidate(b.dataset.cand)));
     view.querySelectorAll("button[data-patch]").forEach((b) => b.addEventListener("click", async () => {
@@ -2191,6 +2304,7 @@
         <form class="onbscore" data-score><label><span class="lbl">Score, %</span><input name="score" type="number" inputmode="numeric" min="0" max="100" step="1" required value="${h(score)}" aria-label="Score for ${h(t.title)}, in percent"></label>
           <label><span class="lbl">Note to ${h(name)}</span><textarea name="note" rows="2" maxlength="2000" placeholder="Needed under ${pass}%: what to look at again">${h(note)}</textarea></label>
           <div class="formfoot">${failed(t)}<span class="cmeta">${a.score != null ? `${h(s.label)} · ${h(whoName(a.score_by))}, ${h(fmtTime(a.score_at))}` : `${pass}% or more passes`}</span>${a.score != null ? '<button type="button" class="linkbtn" data-unscore>Take it back</button>' : ""}<button type="submit" class="btn small">${a.score != null ? "Change" : "Confirm"}</button></div></form></div>`; };
+    // the comment button shows a count only when there are comments (14 Nov live QA: a "0" on each of the 32 rows)
     const row = (t) => { const list = by[t.id] || [], n = list.length, open = !!state.onbOpen[t.id], when = [t.time, t.with_whom].filter(Boolean).join(" · ");
       const fresh = !state.onbRead[t.id] && list.some(isNew), s = t.takes_answer ? stand(t) : null;
       const opener = s ? `<button type="button" class="btn ghost small onba ${s.k}" data-open aria-expanded="${open}">${h(s.label)}</button>`
@@ -2198,7 +2312,7 @@
       return `<li class="step onbtask ${t.status === "done" ? "done" : ""}" data-task="${h(t.id)}"><div class="onbrow">
           ${seg("onbst", ONB_STATUS, t.status)}
           <div class="onbmain">${link(t)}<span class="pill kind-${h(t.kind)}">${h(t.kind)}</span>${when ? `<span class="cmeta">${h(when)}</span>` : ""}</div>
-          ${opener}<button type="button" class="btn ghost small onbc" data-thread aria-expanded="${open}" aria-label="${n} comment${n === 1 ? "" : "s"} on ${h(t.title)}${fresh ? ", new" : ""}">${ONB_ICON}<span>${n}</span>${fresh ? '<i class="onbdot"></i>' : ""}</button></div>
+          ${opener}<button type="button" class="btn ghost small onbc" data-thread aria-expanded="${open}" aria-label="${n} comment${n === 1 ? "" : "s"} on ${h(t.title)}${fresh ? ", new" : ""}">${ONB_ICON}${n ? `<span>${n}</span>` : ""}${fresh ? '<i class="onbdot"></i>' : ""}</button></div>
         ${open ? `<div class="onbopen">${t.note ? `<p class="onbbrief">${linkify(t.note)}</p>` : ""}${t.takes_answer ? (person ? mine(t) : theirs(t)) : ""}${thread(t)}</div>` : ""}</li>`; };
     // for a manager: what the person wrote since he last opened the tab, newest first, one line each
     let strip = "";
@@ -2303,10 +2417,24 @@
   }
 
   // ---------- activity ----------
+  // People's changes first, the robots' a click away, and a sync line names its role and table (14 Nov live QA: 14 of the 15 lines on screen
+  // were robot syncs reading "0 added, 4 updated (sd)", the one change a person made at the bottom; and only the latest 200 load)
   async function renderActivity(view) {
     const rows = await api("activity?limit=200");
-    view.innerHTML = head("Activity", "Every change, newest first") +
-      (rows.length ? table(["When", "Who", "What"], rows.map((a) => `<tr><td class="mono muted nowrap">${h(fmtTime(a.at))}</td><td class="nowrap">${h(whoName(a.who))}</td><td class="wrapcell">${h(a.summary)}</td></tr>`)) : '<div class="card empty">Nothing yet.</div>');
+    const robot = (a) => !/@/.test(a.who || ""), bots = rows.filter(robot).length;  // a person signs in with an email; a robot's token has none
+    // Any table's count line, its role added only when it has one (14 Nov live QA: a templates sync read "2 added, 0 updated"); a line that
+    // says what it saved (a scorecard, the criteria) stays as written
+    const what = (a) => { const t = /^(\w+)\.upsert$/.exec(a.kind || ""), s = String(a.summary || "");
+      if (!t || !/^\d+ added, \d+ updated/.test(s)) return s;
+      const body = a.scope && s.endsWith(` (${a.scope})`) ? s.slice(0, -a.scope.length - 3) : s;
+      return a.scope ? `${roleName(a.scope)} ${t[1]}: ${body}` : `${t[1][0].toUpperCase() + t[1].slice(1)}: ${body}`; };
+    const draw = () => { const f = state.actFilter || "people", shown = rows.filter((a) => f === "all" || (f === "robots") === robot(a));
+      view.innerHTML = head("Activity", `The latest ${rows.length} change${rows.length === 1 ? "" : "s"}, newest first`,
+        seg("actf", [["people", `People · ${rows.length - bots}`], ["robots", `Robots · ${bots}`], ["all", `All · ${rows.length}`]], f)) +
+        (shown.length ? table(["When", "Who", "What"], shown.map((a) => `<tr><td class="mono muted nowrap">${h(fmtTime(a.at))}</td><td class="nowrap">${h(whoName(a.who))}</td><td class="wrapcell">${h(what(a))}</td></tr>`))
+          : `<div class="card empty">${!rows.length ? "Nothing yet." : f === "people" ? "No changes by people among these." : "No changes by the robots among these."}</div>`);
+      bindSeg(view, "actf", (v) => { state.actFilter = v; draw(); }); };
+    draw();
   }
 
   // ---------- drawer and documents ----------
