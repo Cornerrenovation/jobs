@@ -38,8 +38,12 @@
   const CALLS = ["", "Shortlist", "Hold", "Decline"];
   const VIEWS = ["week", "checklists", "pipeline", "candidates", "screening", "calibration", "outreach", "templates", "activity", "onboarding", "posts"];
   const CALL_RANK = { Shortlist: 0, Hold: 1, Decline: 2 }, CONF_RANK = { High: 0, Medium: 1, Low: 2 };
-  // A blind calibration batch (scorecard section 7): Claude's call on these records stays hidden everywhere until a person has made theirs.
-  const blindNow = (c) => !!(c.calib_batch && !c.your_call);
+  // Each person's screening rows of a candidate (19 Nov, "calls"): the open record's own read (freshest), else the lists' (need "screens"),
+  // else null (not read here: the record's one call stands in).
+  const screensOf = (c) => !has("calls") || !c || !c.id ? null : (isOpen(c.id) && state.reasonBy[c.id]) || (state.screens || {})[c.id] || (state.screens ? [] : null);
+  // A blind calibration batch (scorecard section 7): Claude's call on these records stays hidden until a person has made theirs; with a
+  // call per person, until the viewer has made their own (review, 19 Nov).
+  const blindNow = (c) => { if (!c.calib_batch) return false; const rs = screensOf(c); return rs ? !(rs.find((r) => r.by === state.boot.who) || {}).call : !c.your_call; };
   // Names come from one place: the Worker's people table (login email → the name shown), sent with bootstrap. A login that isn't in it
   // yet shows as the first part of its address.
   const people = () => (state.boot && state.boot.people) || [];
@@ -47,7 +51,7 @@
     : (people().find((x) => x.email === by) || {}).name || by.replace(/@.*/, "").replace(/^\w/, (c) => c.toUpperCase());
   const firstName = (by) => whoName(by).split(" ")[0];
   const state = { view: "week", boot: null, roleFilter: "all", role: null, filter: "all", candidates: null, results: null, outreach: null, templates: null, search: "", open: {},
-    showClosed: false, justCreated: null, cards: null, cardStage: {}, cardEdit: null, srcFilter: "all", callFilter: "all", agentFilter: "all", confFilter: "all",
+    showClosed: false, justCreated: null, cards: null, cardStage: {}, cardEdit: null, srcFilter: "all", callFilter: "all", agentFilter: "all", confFilter: "all", personFilters: {}, screens: null,
     sort: { key: "", dir: 1 }, screenFilter: "tosend", calGroup: "", cvFilter: "all", stageFilter: "all", statusFilter: "all", resBy: {}, wsBy: {}, decBy: {}, reasonBy: {},
     decisions: null, secAsk: {}, dOpen: {}, carry: null,
     subOpen: {}, focusSec: "", onb: null, onbPlan: "", onbOpen: {}, onbDraft: {}, onbAnswer: {}, onbScore: {}, onbErr: {}, onbVisit: null, onbRead: {} };
@@ -108,7 +112,9 @@
       const here = decsOf(c).filter((d) => d.step === step && d.call).sort((a, b) => (b.at || "").localeCompare(a.at || ""));
       if (here.length) return { step, call: here[0].call, by: here[0].by, all: here };
     }
-    return c.your_call ? { step: "screening", call: c.your_call, by: callBy(c), all: [{ call: c.your_call, by: callBy(c) }] } : null;
+    // screening: the record's call (the latest), with every person's call there, newest first, so disagreement shows in the list and header
+    const rs = (screensOf(c) || []).filter((r) => r.call).sort((a, b) => (b.call_at || "").localeCompare(a.call_at || "")).map((r) => ({ call: r.call, by: r.by, at: r.call_at }));
+    return c.your_call ? { step: "screening", call: c.your_call, by: callBy(c), all: rs.length ? rs : [{ call: c.your_call, by: callBy(c) }] } : null;
   }
   // The Call filter's values and the Call sort: the furthest step first, a Go before a No
   const CALL_KEYS = [["second|Go", "2nd interview: Go"], ["second|No", "2nd interview: No"], ["interview|Go", "Interview: Go"], ["interview|No", "Interview: No"],
@@ -124,11 +130,16 @@
       // earlier read, except the open record's own.
       decisions: () => api("decisions", "GET", null, []).then((rows) => {
         Object.keys(state.decBy).forEach((k) => { if (!isOpen(k)) delete state.decBy[k]; });
-        return rows.reduce((m, d) => ((m[d.candidate_id] = m[d.candidate_id] || []).push(d), m), {}); }) };
+        return rows.reduce((m, d) => ((m[d.candidate_id] = m[d.candidate_id] || []).push(d), m), {}); }),
+      // each person's screening call, by candidate (19 Nov, "calls"), for the filter by person
+      // (read now, they replace what records opened earlier read, except the open record's own, as for the decisions)
+      screens: () => has("calls") ? api("reasons", "GET", null, []).then((rows) => {
+        Object.keys(state.reasonBy).forEach((k) => { if (!isOpen(k)) delete state.reasonBy[k]; });
+        return rows.reduce((m, r) => ((m[r.candidate_id] = m[r.candidate_id] || []).push(r), m), {}); }) : Promise.resolve({}) };
     const missing = keys.filter((k) => !state[k]);
     (await Promise.all(missing.map((k) => typeof load[k] === "function" ? load[k]() : api(load[k])))).forEach((v, i) => { state[missing[i]] = v; });
   }
-  const forget = () => { state.boot = null; state.candidates = null; state.summary = null; state.resBy = {}; state.cards = null; state.outreach = null; state.templates = null; state.msgs = null; state.onb = null; state.decisions = null; };
+  const forget = () => { state.boot = null; state.candidates = null; state.summary = null; state.resBy = {}; state.cards = null; state.outreach = null; state.templates = null; state.msgs = null; state.onb = null; state.decisions = null; state.screens = null; };
 
   // ---------- shared candidate logic ----------
   const stageIdx = (s) => ORDER.indexOf(s || "");
@@ -320,7 +331,7 @@
 
   // ---------- pipeline: a vertical funnel with conversions ----------
   async function renderPipeline(view) {
-    await need("candidates", "decisions");
+    await need("candidates", "decisions", "screens");
     const list = state.candidates.filter(inRole);
     const isClosed = (c) => CLOSED.includes(c.stage) || isClosedRole(roleOf(c.role_id));  // an earlier round is closed as a whole
     const active = list.filter((c) => !isClosed(c));
@@ -384,7 +395,7 @@
 
   // ---------- candidates ----------
   async function renderCandidates(view) {
-    await need("candidates", "decisions");
+    await need("candidates", "decisions", "screens");
     const q = state.search.trim().toLowerCase();
     // Source and Call filters (Yuliia's request, 18 Oct); options count within the chosen role. Call is the latest call (14 Nov review):
     // the furthest step decided, so an interview's No is found as one, not as the Shortlist that came before it.
@@ -404,9 +415,18 @@
     const closedSt = CLOSED.map((x) => STATUS[x]);
     const odd = Object.keys(statusCounts).filter((l) => !STATUS_LIST.includes(l));  // a stage the app doesn't know, so nobody is unfindable
     if (state.statusFilter !== "all" && !stGroups.flatMap(([, l]) => l).concat(closedSt, odd).includes(state.statusFilter)) state.statusFilter = "all";
+    // Each person's screening call (Kostya, 19 Nov: "filter candidates by each person's call (Yana, me, Claude, whoever)"): one filter per
+    // person who made a call, the viewer always among them, each Shortlist, Hold, Decline or "No call yet", and they combine ("Yana:
+    // Shortlist" with "Kostya: No call yet"). Claude's is the Claude filter.
+    const personCall = (c, who) => ((screensOf(c) || []).find((r) => r.by === who) || {}).call || "none";
+    const callers = has("calls") ? [...new Set([state.boot.who, ...base.flatMap((c) => (screensOf(c) || []).filter((r) => r.call && r.by).map((r) => r.by))])]
+      .sort((a, b) => { const i = (x) => { const n = people().findIndex((p) => p.email === x); return n < 0 ? 99 : n; }; return i(a) - i(b) || a.localeCompare(b); }) : [];
+    Object.keys(state.personFilters).forEach((w) => { if (!callers.includes(w) || state.personFilters[w] === "all") delete state.personFilters[w]; });
+    const personPicked = Object.entries(state.personFilters);
     const list = base.filter((c) => inStage(c) && (state.statusFilter === "all" || statusOf(c) === state.statusFilter) &&
       (state.srcFilter === "all" || sourceOf(c) === state.srcFilter) && (state.callFilter === "all" || callOf(c) === state.callFilter) &&
       (state.agentFilter === "all" || agentOf(c) === state.agentFilter) && (state.confFilter === "all" || confOf(c) === state.confFilter) &&
+      personPicked.every(([who, v]) => personCall(c, who) === v) &&
       (state.cvFilter === "all" || cvOf(c) === state.cvFilter) &&
       (!q || [c.name, c.headline, c.location, c.sources, c.email, c.stage, statusOf(c), groupOf(c), c.your_call, c.agent_call].join(" ").toLowerCase().includes(q)));
     // Sorting: click a column header; click again to reverse, a third time for the latest change first again (14 Nov live QA: there was no
@@ -427,6 +447,8 @@
     const callSel = `<select id="fcall" aria-label="Call">${opt("all", "Call: any", state.callFilter)}${CALL_KEYS.concat([["none", "No call yet"]]).map(([v, l]) => opt(v, `Call: ${l} (${callCounts[v] || 0})`, state.callFilter)).join("")}</select>`;
     // Claude's call has one name, the column's (14 Nov live QA: "Claude", "Agent call" and "Claude's call" for the same thing)
     const agentSel = `<select id="fagent" aria-label="Claude's call">${opt("all", "Claude: any", state.agentFilter)}${[["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"], ["none", "Not read yet"]].concat(agentCounts.blind ? [["blind", "Hidden, blind batch"]] : []).map(([v, l]) => opt(v, `Claude: ${l} (${agentCounts[v] || 0})`, state.agentFilter)).join("")}</select>`;
+    const personSel = callers.map((who) => { const n = count((c) => personCall(c, who)), name = firstName(who), cur = state.personFilters[who] || "all";
+      return `<select data-fperson="${h(who)}" aria-label="${h(name)}'s call">${opt("all", `${name}: any`, cur)}${[["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"], ["none", "No call yet"]].map(([v, l]) => opt(v, `${name}: ${l} (${n[v] || 0})`, cur)).join("")}</select>`; }).join("");
     const confSel = `<select id="fconf" aria-label="Confidence">${opt("all", "Confidence: any", state.confFilter)}${[["High", "High"], ["Medium", "Medium"], ["Low", "Low"]].map(([v, l]) => opt(v, `Confidence: ${l} (${confCounts[v] || 0})`, state.confFilter)).join("")}</select>`;
     const cvSel = `<select id="fcv" aria-label="CV check">${opt("all", "CV check: any", state.cvFilter)}${[["Pass", "Pass"], ["Not pass", "Not pass"], ["none", "Not checked"]].map(([v, l]) => opt(v, `CV check: ${l} (${cvCounts[v] || 0})`, state.cvFilter)).join("")}</select>`;
     // Compact (Kostya, 27 Oct): role sits above the source, confidence under Claude's call, long text clamps to two lines,
@@ -444,7 +466,7 @@
     const orderSay = SORTS[sk] ? `sorted by ${SORT_SAY[sk]} ${sd > 0 ? "↑" : "↓"}` : "latest change first";
     // What is filtering the list: the search and every filter not at "any" (the role's buttons stay in sight). Clear filters puts them back.
     // The phone's Filters button counts a sort too, which sits behind it.
-    const picked = [state.stageFilter, state.statusFilter, state.srcFilter, state.agentFilter, state.confFilter, state.callFilter, state.cvFilter].filter((v) => v !== "all").length;
+    const picked = [state.stageFilter, state.statusFilter, state.srcFilter, state.agentFilter, state.confFilter, state.callFilter, state.cvFilter].filter((v) => v !== "all").length + personPicked.length;
     const on = picked + (q ? 1 : 0), clear = `<button type="button" class="linkbtn" data-fclear>Clear filters</button>`, behind = picked + (SORTS[sk] ? 1 : 0);
     // Each row as a table row; on a phone as a card (studio.css): the name and the status with its group, the calls, the next step and due.
     // On a phone the Applied column gives way to the card's second line, which carries the date (14 Nov review: "· applied 18 Oct").
@@ -458,7 +480,7 @@
     view.innerHTML = head("Candidates", `${list.length} of ${base.length}${earlier ? ` · ${earlier} in earlier rounds` : ""} · ${orderSay}${on ? ` · ${on} filter${on > 1 ? "s" : ""} on · ${clear}` : ""}`, `<button type="button" class="btn" id="add">Add candidate</button>`) +
       `<div class="toolbar ctools${state.filtersOpen ? " open" : ""}"><input type="search" id="q" placeholder="Search name, source, stage" value="${h(state.search)}">
         <button type="button" class="btn ghost ftoggle" id="ftoggle" aria-expanded="${state.filtersOpen ? "true" : "false"}" aria-controls="fsel">Filters${behind ? ` · ${behind}` : ""}</button>
-        <div class="fsel" id="fsel">${stageSel}${statusSel}${srcSel}${agentSel}${confSel}${callSel}${cvSel}${sortSel}${roleSeg({ allLabel: "All open roles" })}</div></div>
+        <div class="fsel" id="fsel">${stageSel}${statusSel}${srcSel}${agentSel}${personSel}${confSel}${callSel}${cvSel}${sortSel}${roleSeg({ allLabel: "All open roles" })}</div></div>
       ${list.length ? `<div class="tablewrap cands"><table><thead><tr>${cols.map(th).join("")}</tr></thead><tbody>${list.map(row).join("")}</tbody></table></div>`
         : on ? `<div class="card empty">No candidates match these filters. ${clear}</div>`
         : `<div class="card empty">No candidates match. They arrive from the jobs site, LinkedIn and Work.ua through the daily check-in, or add one by hand.</div>`}`;
@@ -466,7 +488,7 @@
     qel.addEventListener("input", (e) => { state.search = e.target.value; renderCandidates(view); qel.focus(); });
     if (q) { qel.focus(); qel.setSelectionRange(qel.value.length, qel.value.length); }
     view.querySelectorAll("[data-fclear]").forEach((b) => b.addEventListener("click", () => {
-      Object.assign(state, { search: "", stageFilter: "all", statusFilter: "all", srcFilter: "all", agentFilter: "all", confFilter: "all", callFilter: "all", cvFilter: "all" });
+      Object.assign(state, { search: "", stageFilter: "all", statusFilter: "all", srcFilter: "all", agentFilter: "all", personFilters: {}, confFilter: "all", callFilter: "all", cvFilter: "all" });
       renderCandidates(view); }));
     $("#ftoggle", view).addEventListener("click", () => { state.filtersOpen = !state.filtersOpen; renderCandidates(view); });
     $("#fsort", view).addEventListener("change", (e) => { const [k, d] = e.target.value.split("|"); state.sort = { key: k, dir: Number(d) || 1 }; renderCandidates(view); });
@@ -477,6 +499,7 @@
     $("#fcall", view).addEventListener("change", (e) => { state.callFilter = e.target.value; renderCandidates(view); });
     $("#fcv", view).addEventListener("change", (e) => { state.cvFilter = e.target.value; renderCandidates(view); });
     $("#fagent", view).addEventListener("change", (e) => { state.agentFilter = e.target.value; renderCandidates(view); });
+    view.querySelectorAll("[data-fperson]").forEach((s) => s.addEventListener("change", (e) => { state.personFilters[s.dataset.fperson] = e.target.value; renderCandidates(view); }));
     $("#fconf", view).addEventListener("change", (e) => { state.confFilter = e.target.value; renderCandidates(view); });
     view.querySelectorAll("[data-sort]").forEach((b) => b.addEventListener("click", () => {
       const k = b.dataset.sort; state.sort = state.sort.key !== k ? { key: k, dir: 1 } : state.sort.dir === 1 ? { key: k, dir: -1 } : { key: "", dir: 1 }; renderCandidates(view); }));
@@ -866,14 +889,8 @@
       else if (!any && saved.textContent === "Not saved yet") say("");
     };
     // a step's edit row shown (Edit, Change, Add, Decide now) or put back (Cancel), and its values back to what is stored
-    // ronly: the viewer's reason alone, under a colleague's call (Add your reason, Edit on their own line): the call buttons stay hidden,
-    // the call's line stays in view, and the box asks for nothing more
-    const show = (step, on, ronly) => { const row = f.querySelector(`[data-dedit-row="${step}"]`), ro = f.querySelector(`[data-dro="${step}"]`), add = f.querySelector(`[data-dadd="${step}"]`), note = f.querySelector(`#dstep-${step} [data-dnote]`);
-      const mine = f.querySelector(`#dstep-${step} [data-dmine]`);  // the viewer's own reason line: in the box while it is open
-      const r = !!(on && ronly);
-      if (row) row.hidden = !on; if (ro) ro.hidden = !!on && !r; if (add) add.hidden = !!on; if (note) note.hidden = !on || r; if (mine) mine.hidden = !!on;
-      if (step === "screening" && row) { const sg = row.querySelector('[data-seg="yourcall"]'), wh = row.querySelector("[data-dwho-call]"), ta = row.querySelector('textarea[name="your_reason"]');
-        if (sg) sg.hidden = r; if (wh) wh.textContent = r ? "Your reason" : wh.dataset.dwhoCall; if (ta && ta.dataset.ph) ta.placeholder = r ? ta.dataset.phR : ta.dataset.ph; }
+    const show = (step, on) => { const row = f.querySelector(`[data-dedit-row="${step}"]`), ro = f.querySelector(`[data-dro="${step}"]`), add = f.querySelector(`[data-dadd="${step}"]`), note = f.querySelector(`#dstep-${step} [data-dnote]`);
+      if (row) row.hidden = !on; if (ro) ro.hidden = !!on; if (add) add.hidden = !!on; if (note) note.hidden = !on;
       if (on && row) row.querySelectorAll("textarea").forEach(fitArea); };
     const press = (root, name, v) => root.querySelectorAll(`[data-seg="${name}"] button`).forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === v && !!v));
     const reset = (step) => {
@@ -912,8 +929,7 @@
     // edits put back in their fields and steps, still to be saved: carried over a redraw, or a save that failed
     const apply = (edits) => {
       for (const [k, v] of Object.entries(edits.fields || {})) { const el = f.elements[k]; if (!el || el instanceof RadioNodeList) continue; el.value = v; if (el.tagName === "TEXTAREA") fitArea(el); }
-      if (edits.fields && ("your_call" in edits.fields || "your_reason" in edits.fields)) { press(f, "yourcall", f.elements.your_call.value);
-        show("screening", true, !("your_call" in edits.fields) && !!reasonsOf(c) && !!callBy(c) && callBy(c) !== state.boot.who); }
+      if (edits.fields && ("your_call" in edits.fields || "your_reason" in edits.fields)) { press(f, "yourcall", f.elements.your_call.value); show("screening", true); }
       for (const [step, v] of Object.entries(edits.decs || {})) {
         if (!f.querySelector(`.drow[data-dstep="${step}"]`)) { state.dOpen[`${c.id}|${step}`] = true; redraw(step); }
         const row = f.querySelector(`.drow[data-dstep="${step}"]`); if (!row) continue;
@@ -927,6 +943,7 @@
       const raw = changed(), data = { ...raw };
       ["due", "hired_at"].forEach((k) => { if (k in data && !data[k] && c[k] && !dayOf(c[k])) delete data[k]; });  // see dateField
       ["next_step", "your_reason"].forEach((k) => { if (typeof data[k] === "string") data[k] = oneLine(data[k]); });  // one line, as the fields always held
+      if (typeof data.your_reason === "string") data.your_reason = data.your_reason.trim();  // as the Worker stores it
       if (!id) {  // a new record: everything filled in
         const all = snap(); ["next_step", "your_reason"].forEach((k) => { if (typeof all[k] === "string") all[k] = oneLine(all[k]); });
         await api("candidates", "POST", all); Object.assign(init, snap()); forget(); await render(true); closeRecord(true); return;
@@ -941,15 +958,16 @@
       // Worker moves it when the call changes (its EARLY stages); the Worker decides it from the stage it holds.
       const before = { ...c }, wasBlind = blindNow(c), called = "your_call" in data, initBefore = { ...init };
       const local = { ...data }, stageNow = "stage" in data ? data.stage : c.stage || "applied";
-      if (called && ["applied", "triaged", "confirmed", "declined"].includes(stageNow))
-        local.stage = data.your_call === "Decline" ? "declined" : data.your_call === "Shortlist" ? "confirmed" : c.agent_call ? "triaged" : "applied";
+      // Per person (calls): the viewer's own call and reason, at once; the record's call is the latest one made, its reason the call maker's
+      const reasoned = (called || "your_reason" in data) && !!reasonsOf(c), reasonsBefore = state.reasonBy[c.id];
+      const after = reasoned ? screenAfter(c, data) : null, recCall = after ? after.call : data.your_call;
+      if (after) { state.reasonBy[c.id] = after.rows; Object.assign(local, { your_call: after.call, your_reason: after.reason }); }
+      if ((after ? after.call !== (before.your_call || "") : called) && ["applied", "triaged", "confirmed", "declined"].includes(stageNow))
+        local.stage = recCall === "Decline" ? "declined" : recCall === "Shortlist" ? "confirmed" : c.agent_call ? "triaged" : "applied";
       if ("stage" in data) data.stage_was = init.stage || "applied";
       Object.assign(c, local);
-      if (called) c.call_by = data.your_call ? state.boot.who : "";  // the Worker records who made the call; the step shows it at once
-      // the viewer's own reason, at once (reasons): theirs replaced or taken back, everyone else's as it was
-      const reasoned = "your_reason" in data && !!reasonsOf(c), reasonsBefore = state.reasonBy[c.id];
-      if (reasoned) { const me = state.boot.who, rest = reasonsOf(c).filter((r) => r.by !== me);
-        state.reasonBy[c.id] = data.your_reason ? rest.concat([{ candidate_id: c.id, by: me, reason: data.your_reason, at: new Date().toISOString() }]) : rest; }
+      if (after) Object.assign(c, { call_by: after.callBy, reason_by: after.reasonBy });
+      else if (called) c.call_by = data.your_call ? state.boot.who : "";  // the Worker records who made the call; the step shows it at once
       Object.assign(init, raw);
       if (local.stage && f.elements.stage) { const s = f.elements.stage; if (![...s.options].some((o) => o.value === local.stage)) s.add(new Option(local.stage, local.stage), 0); s.value = local.stage; init.stage = s.value; }
       const decBefore = decs.map((d) => d.row.dataset.init);
@@ -993,8 +1011,9 @@
       // what is stored now: the record (the Worker moves the stage, keeps reached, hired_at and bounty_due) and the decisions
       if (decs.length) { try { state.decBy[c.id] = await api("decisions?candidate_id=" + encodeURIComponent(c.id)); if (state.decisions) state.decisions[c.id] = state.decBy[c.id]; } catch (e2) {} }
       if (rec && rec.ok) { try { Object.assign(c, await api("candidates/" + encodeURIComponent(id))); } catch (e2) {} }
-      // the reasons as stored: after one's own, and after a call that changed hands (the record's reason follows its maker)
-      if (rec && rec.ok && (reasoned || called) && reasonsOf(c)) { try { state.reasonBy[c.id] = await api("reasons?candidate_id=" + encodeURIComponent(c.id)); } catch (e2) {} }
+      // each person's screening as stored, after every save of the record, so the step drawn again matches the record read just now (a
+      // colleague's call that arrived while the card was open included; review, 19 Nov)
+      if (rec && rec.ok && reasonsOf(c)) { try { state.reasonBy[c.id] = await api("reasons?candidate_id=" + encodeURIComponent(c.id)); } catch (e2) {} }
       if (isOpen(id) && f.isConnected) {
         dres.forEach((r, i) => { if (r.ok && !rowDirty(decs[i].row)) redraw(decs[i].step); });
         if (rec && rec.ok) {
@@ -1023,32 +1042,56 @@
   // record holds once)
   const roLine = (step, label, call, reason, at, act) => `<div class="drow ro"${act ? ` data-dro="${step}"` : ""}><span class="dwho">${h(label)}</span>${pill(call, callKind(call))}${act ? `<button type="button" class="linkbtn small dedit-btn" data-dedit="${step}">${h(act)}</button>` : ""}
       <span class="dreason">${h(reason)}${at ? `${reason ? " " : ""}<span class="cmeta">${h(fmt(at))}</span>` : ""}</span></div>`;
-  // A screening reason per person (19 Nov 2026, "reasons" from the Worker): the record keeps one call, and each person keeps their own
-  // reason, so a colleague's reason is never written over (Yana's text had replaced Kostya's on a call that stayed his). The Reason box
-  // is the viewer's own; everyone else's shows as a line of its own. On an older Worker the record has one reason, as before.
-  const reasonsOf = (c) => has("reasons") && c && c.id ? state.reasonBy[c.id] || null : null;
-  const myReason = (c) => { const rs = reasonsOf(c); if (!rs) return c.your_reason || ""; const m = rs.find((r) => r.by === state.boot.who); return m ? m.reason || "" : ""; };
-  // the viewer's own line (under a colleague's call) opens their reason box alone: the call stays its maker's and in view
-  const reasonLine = (r, me) => `<div class="drow ro"${r.by === me ? " data-dmine" : ""}><span class="dwho">${h(r.by ? `${firstName(r.by)}'s reason` : "Earlier reason")}</span>${r.by === me ? `<button type="button" class="linkbtn small dedit-btn" data-dedit="screening" data-ronly="1" aria-label="Edit your reason">Edit</button>` : ""}
-      <span class="dreason">${h(r.reason)}${r.at ? ` <span class="cmeta">${h(fmt(r.at))}</span>` : ""}</span></div>`;
-  // 1 · Screening: the record's own call. The row that edits it carries the viewer's name; the recruiter who is meant to make it is a note.
+  // The screening step per person (19 Nov 2026, "calls" from the Worker): each person makes their own call with their own reason, one line
+  // each, as 2 · Interview works, and nobody's is written over (Yana's text had replaced Kostya's reason on a call that stayed his). The
+  // record's call is the latest one made: it moves the stage, and the lists, the robots and the exports read it. The row that edits is the
+  // viewer's own. On an older Worker the record has one call and one reason, as before.
+  const reasonsOf = (c) => has("calls") && c && c.id ? state.reasonBy[c.id] || null : null;
+  // The person's rows and the record after a save of the viewer's own call and reason (data: what the form sends), the way the Worker works
+  // it out: the latest call is the record's, its maker's reason (else the newest) is the record's reason.
+  function screenAfter(c, data) {
+    const me = state.boot.who, rs = reasonsOf(c) || [], now = new Date().toISOString();
+    const mine = rs.find((r) => r.by === me) || { candidate_id: c.id, by: me, call: "", call_at: "", reason: "", at: "" };
+    const top = rs.reduce((m, r) => ((r.call_at || "") > m ? r.call_at : m), ""), callAt = now > top ? now : new Date(Date.parse(top) + 1).toISOString();
+    const call = "your_call" in data ? data.your_call : mine.call || "", reason = "your_reason" in data ? data.your_reason : mine.reason || "";
+    const own = { candidate_id: c.id, by: me, call, call_at: call !== (mine.call || "") ? (call ? callAt : "") : mine.call_at || "", reason, at: reason !== (mine.reason || "") ? (reason ? now : "") : mine.at || "" };
+    const rows = rs.filter((r) => r.by !== me).concat(call || reason ? [own] : []);
+    const latest = rows.filter((r) => r.call).reduce((m, r) => (!m || (r.call_at || "") > (m.call_at || "") || ((r.call_at || "") === (m.call_at || "") && r.by > m.by) ? r : m), null);
+    const callBy = latest ? latest.by : "", told = rows.filter((r) => r.reason);
+    const pick = (latest && told.find((r) => r.by === callBy)) || told.sort((a, b) => (b.at || "").localeCompare(a.at || "") || (b.by > a.by ? 1 : -1))[0];
+    return { rows, call: latest ? latest.call : "", callBy, reason: pick ? pick.reason : "", reasonBy: pick ? pick.by : "" };
+  }
+  // 1 · Screening. Per person (calls): one line per person who made a call or gave a reason, the viewer's last with Edit; the viewer's row
+  // is open while nobody has made a call, else behind "Add <name>'s call". On an older Worker: the record's one call, as before.
   function screenStep(c, id) {
     const me = state.boot.who, by = callBy(c), made = !!(id && c.your_call), rec = roleOf(c.role_id).recruiter;
     // Claude's call on the step's own line, and the rule it carries in the reason's placeholder (one line, not two, in the 320px panel)
     const claude = id && c.agent_call && !blindNow(c) ? c.agent_call : "";
-    const rs = id ? reasonsOf(c) : null, mine = rs ? rs.find((r) => r.by === me && r.reason) : null;
-    // the call's line carries its maker's reason; every other reason is a line of its own, the viewer's last
-    const callReason = rs ? ((rs.find((r) => r.by === by) || {}).reason || "") : c.your_reason;
-    // (with no call made yet the viewer's own reason is in the open box, not a line)
-    const others = rs ? rs.filter((r) => r.reason && r.by !== (made ? by : me)).sort((a, b) => (a.by === me) - (b.by === me)).map((r) => reasonLine(r, me)).join("") : "";
-    const note = made ? (by && by !== me ? `<span class="dnote" data-dnote hidden>${rs ? `A new call replaces ${h(firstName(by))}'s. Each person's reason stays.` : `Saving replaces ${h(firstName(by))}'s call.`}</span>` : "")
+    const label = `<span class="lbl">1 · Screening${claude ? `<span class="dclaude" title="Claude suggests ${h(claude)}. A call that differs needs its reason."> · Claude: ${h(claude)}</span>` : ""}</span>`;
+    const phCall = claude ? `Reason, needed if not ${claude}` : "Reason";
+    const editRow = (call, reason, open) => `<div class="dedit" data-dedit-row="screening"${open ? "" : " hidden"}><div class="drow" data-dscreen><span class="dwho">${h(myCall())}</span>${seg("yourcall", [["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"]], call || "")}<input type="hidden" name="your_call" value="${h(call || "")}">
+        <textarea name="your_reason" class="fit oneline" rows="1" placeholder="${h(phCall)}" aria-label="Reason for ${h(myCall().toLowerCase())}${claude ? `, needed when it differs from Claude's ${h(claude)}` : ""}">${h(reason || "")}</textarea>
+        <span class="dact"><span class="saved" data-dmark></span>${open ? "" : `<button type="button" class="linkbtn small" data-dcancel="screening">Cancel</button>`}</span></div></div>`;
+    const rows = id ? reasonsOf(c) : null;
+    if (rows) {
+      // a blind batch stays blind for the viewer until they have made their own call: the colleagues' lines wait too (review, 19 Nov)
+      const blind = blindNow(c);
+      const shown = rows.filter((r) => (r.call || r.reason) && (!blind || r.by === me)).sort((a, b) => (a.call_at || a.at || "").localeCompare(b.call_at || b.at || ""));
+      const mine = shown.find((r) => r.by === me);
+      // the record's call (the latest) carries a quiet mark when more than one person has made one
+      const many = shown.filter((r) => r.call).length > 1;
+      const line = (r) => `<div class="drow ro"${r.by === me ? ` data-dro="screening"` : ""}><span class="dwho">${h(r.by ? `${firstName(r.by)}'s call` : r.call ? "Earlier call" : "Earlier reason")}</span>${r.call ? pill(r.call, callKind(r.call)) : `<span class="muted small">no call</span>`}${r.by === me ? `<button type="button" class="linkbtn small dedit-btn" data-dedit="screening" aria-label="Edit your call">Edit</button>` : ""}
+        <span class="dreason">${h(r.reason)}${r.call_at || r.at ? `${r.reason ? " " : ""}<span class="cmeta">${h(fmt(r.call_at || r.at))}${many && r.call && r.by === by ? " · latest" : ""}</span>` : ""}</span></div>`;
+      // the viewer's row is open while nobody has made a call and they have no row of their own; else behind Edit or "Add <name>'s call"
+      const open = !mine && !shown.some((r) => r.call), note = open && rec && rec !== me ? `<span class="dnote">${h(firstName(rec))} makes this call.</span>` : "";
+      const add = !mine && !open ? `<button type="button" class="linkbtn small dadd" data-dadd="screening">Add ${h(myCall())}</button>` : "";
+      return `${label}${note}${shown.filter((r) => r.by !== me).map(line).join("")}${mine ? line(mine) : ""}${add}${editRow(mine && mine.call, mine && mine.reason, open)}`;
+    }
+    // an older Worker, or a new record: the record's one call and reason, as before
+    const note = made ? (by && by !== me ? `<span class="dnote" data-dnote hidden>Saving replaces ${h(firstName(by))}'s call.</span>` : "")
       : rec && rec !== me ? `<span class="dnote">${h(firstName(rec))} makes this call.</span>` : "";
-    const add = rs && made && by !== me && !mine ? `<button type="button" class="linkbtn small dadd" data-dadd="screening" data-ronly="1">Add your reason</button>` : "";
-    const ph = rs ? "Your reason" : "Reason", phCall = claude ? `${ph}, needed if not ${claude}` : ph;
-    return `<span class="lbl">1 · Screening${claude ? `<span class="dclaude" title="Claude suggests ${h(claude)}. A call that differs needs its reason."> · Claude: ${h(claude)}</span>` : ""}</span>${made ? roLine("screening", by ? `${firstName(by)}'s call` : "Call", c.your_call, callReason, "", by && by !== me ? "Change" : "Edit") : ""}${others}${note}${add}
-      <div class="dedit" data-dedit-row="screening"${made ? " hidden" : ""}><div class="drow" data-dscreen><span class="dwho" data-dwho-call="${h(myCall())}">${h(myCall())}</span>${seg("yourcall", [["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"]], c.your_call || "")}<input type="hidden" name="your_call" value="${h(c.your_call || "")}">
-        <textarea name="your_reason" class="fit oneline" rows="1" placeholder="${h(phCall)}" data-ph="${h(phCall)}" data-ph-r="${h(ph)}" aria-label="${rs ? "Your reason" : "Reason"} for the screening call${claude ? `, needed when it differs from Claude's ${h(claude)}` : ""}">${h(id ? myReason(c) : c.your_reason)}</textarea>
-        <span class="dact"><span class="saved" data-dmark></span>${made ? `<button type="button" class="linkbtn small" data-dcancel="screening">Cancel</button>` : ""}</span></div></div>`;
+    return `${label}${made ? roLine("screening", by ? `${firstName(by)}'s call` : "Call", c.your_call, c.your_reason, "", by && by !== me ? "Change" : "Edit") : ""}${note}
+      ${editRow(c.your_call, c.your_reason, !made)}`;
   }
   // 2 · Interview from the first interview's booking on, 3 · Second interview from the test assignment on; before that one quiet line, with
   // "Decide now" on an open record for when the stage lags behind what happened (14 Nov review: the two steps took 500px of the panel on
@@ -1087,7 +1130,7 @@
   // saved, one's own decision is taken back), and Enter in a reason saves the panel. New rows after a redraw are bound once.
   function bindDecisions(c) {
     const f = $("#cform"); if (!f) return;
-    const marks = () => f._marks && f._marks(), show = (step, on, ronly) => f._show && f._show(step, on, ronly);
+    const marks = () => f._marks && f._marks(), show = (step, on) => f._show && f._show(step, on);
     // the screening call: a click picks, a click on the picked one takes it back (the hidden field is what the form sends)
     f.querySelectorAll('[data-seg="yourcall"] button:not([data-bound])').forEach((b) => { b.dataset.bound = "1"; b.addEventListener("click", () => {
       const cur = f.elements.your_call; cur.value = cur.value === b.dataset.v ? "" : b.dataset.v;
@@ -1106,8 +1149,8 @@
       fitArea(ta); requestAnimationFrame(() => fitArea(ta));
     });
     const once = (sel, fn) => f.querySelectorAll(`${sel}:not([data-bound])`).forEach((b) => { b.dataset.bound = "1"; b.addEventListener("click", () => fn(b)); });
-    once("[data-dedit], [data-dadd]", (b) => { const step = b.dataset.dedit || b.dataset.dadd, ronly = !!b.dataset.ronly; show(step, true, ronly);
-      const row = f.querySelector(`[data-dedit-row="${step}"]`), t = row && (ronly ? row.querySelector("textarea") : row.querySelector('[data-seg] button[aria-pressed="true"]') || row.querySelector("[data-seg] button")); if (t) t.focus(); });
+    once("[data-dedit], [data-dadd]", (b) => { const step = b.dataset.dedit || b.dataset.dadd; show(step, true);
+      const row = f.querySelector(`[data-dedit-row="${step}"]`), t = row && (row.querySelector('[data-seg] button[aria-pressed="true"]') || row.querySelector("[data-seg] button")); if (t) t.focus(); });
     once("[data-dcancel]", (b) => { const step = b.dataset.dcancel; if (f._reset) f._reset(step); show(step, false); marks();
       const back = f.querySelector(`[data-dro="${step}"] [data-dedit], [data-dadd="${step}"]`); if (back) back.focus(); });
     once("[data-dnow]", (b) => { const step = b.dataset.dnow; state.dOpen[`${c.id}|${step}`] = true; const li = $("#dstep-" + step); li.innerHTML = decisionStep(c, step); bindDecisions(c);
@@ -1492,7 +1535,7 @@
     });
   }
   async function renderScreening(view) {
-    await need("candidates"); await loadMsgs();
+    await need("candidates", "screens"); await loadMsgs();
     if (state.roleFilter === "closed") state.roleFilter = "all";  // Screening leaves earlier rounds out, so it doesn't offer them (14 Nov live QA)
     const all = state.candidates.filter(inScreening).filter(inRole);
     const pick = { tosend: (c) => !wasSent(c), sent: wasSent, replied: hasReply, all: () => true }[state.screenFilter] || (() => true);
