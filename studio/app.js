@@ -48,7 +48,7 @@
   const firstName = (by) => whoName(by).split(" ")[0];
   const state = { view: "week", boot: null, roleFilter: "all", role: null, filter: "all", candidates: null, results: null, outreach: null, templates: null, search: "", open: {},
     showClosed: false, justCreated: null, cards: null, cardStage: {}, cardEdit: null, srcFilter: "all", callFilter: "all", agentFilter: "all", confFilter: "all",
-    sort: { key: "", dir: 1 }, screenFilter: "tosend", calGroup: "", cvFilter: "all", stageFilter: "all", statusFilter: "all", resBy: {}, wsBy: {}, decBy: {},
+    sort: { key: "", dir: 1 }, screenFilter: "tosend", calGroup: "", cvFilter: "all", stageFilter: "all", statusFilter: "all", resBy: {}, wsBy: {}, decBy: {}, reasonBy: {},
     decisions: null, secAsk: {}, dOpen: {}, carry: null,
     subOpen: {}, focusSec: "", onb: null, onbPlan: "", onbOpen: {}, onbDraft: {}, onbAnswer: {}, onbScore: {}, onbErr: {}, onbVisit: null, onbRead: {} };
   const store = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
@@ -770,9 +770,11 @@
     if (!c) { notice(`There's no candidate ${id} in the studio.`, true); return; }
     if (id) {  // the full row (CV, screening answers, written answer, first lines, the call sheets), this candidate's criteria and decisions
       // the work sample only from a Worker that has its routes (an older one would answer 404 into the console)
-      const [full, res, msgs, ws, dec] = await Promise.all([api("candidates/" + encodeURIComponent(id)), api("criteria/results?candidate_id=" + encodeURIComponent(id)), api("messages?candidate_id=" + encodeURIComponent(id)),
-        has("worksample") ? wsLoad(id) : null, api("decisions?candidate_id=" + encodeURIComponent(id), "GET", null, [])]);
+      const [full, res, msgs, ws, dec, why] = await Promise.all([api("candidates/" + encodeURIComponent(id)), api("criteria/results?candidate_id=" + encodeURIComponent(id)), api("messages?candidate_id=" + encodeURIComponent(id)),
+        has("worksample") ? wsLoad(id) : null, api("decisions?candidate_id=" + encodeURIComponent(id), "GET", null, []),
+        has("reasons") ? api("reasons?candidate_id=" + encodeURIComponent(id), "GET", null, null) : null]);
       Object.assign(c, full); state.resBy = state.resBy || {}; state.resBy[id] = res; state.msgsBy = state.msgsBy || {}; state.msgsBy[id] = msgs; state.wsBy[id] = ws; state.decBy[id] = dec;
+      if (why) state.reasonBy[id] = why; else delete state.reasonBy[id];
       if (state.decisions) state.decisions[id] = dec;
     }
     if (!id) openRecord("New candidate", roleName(c.role_id), `<div class="reclayout solo">${decisionHtml(c, id)}</div>`, null, "");
@@ -864,8 +866,14 @@
       else if (!any && saved.textContent === "Not saved yet") say("");
     };
     // a step's edit row shown (Edit, Change, Add, Decide now) or put back (Cancel), and its values back to what is stored
-    const show = (step, on) => { const row = f.querySelector(`[data-dedit-row="${step}"]`), ro = f.querySelector(`[data-dro="${step}"]`), add = f.querySelector(`[data-dadd="${step}"]`), note = f.querySelector(`#dstep-${step} [data-dnote]`);
-      if (row) row.hidden = !on; if (ro) ro.hidden = !!on; if (add) add.hidden = !!on; if (note) note.hidden = !on;
+    // ronly: the viewer's reason alone, under a colleague's call (Add your reason, Edit on their own line): the call buttons stay hidden,
+    // the call's line stays in view, and the box asks for nothing more
+    const show = (step, on, ronly) => { const row = f.querySelector(`[data-dedit-row="${step}"]`), ro = f.querySelector(`[data-dro="${step}"]`), add = f.querySelector(`[data-dadd="${step}"]`), note = f.querySelector(`#dstep-${step} [data-dnote]`);
+      const mine = f.querySelector(`#dstep-${step} [data-dmine]`);  // the viewer's own reason line: in the box while it is open
+      const r = !!(on && ronly);
+      if (row) row.hidden = !on; if (ro) ro.hidden = !!on && !r; if (add) add.hidden = !!on; if (note) note.hidden = !on || r; if (mine) mine.hidden = !!on;
+      if (step === "screening" && row) { const sg = row.querySelector('[data-seg="yourcall"]'), wh = row.querySelector("[data-dwho-call]"), ta = row.querySelector('textarea[name="your_reason"]');
+        if (sg) sg.hidden = r; if (wh) wh.textContent = r ? "Your reason" : wh.dataset.dwhoCall; if (ta && ta.dataset.ph) ta.placeholder = r ? ta.dataset.phR : ta.dataset.ph; }
       if (on && row) row.querySelectorAll("textarea").forEach(fitArea); };
     const press = (root, name, v) => root.querySelectorAll(`[data-seg="${name}"] button`).forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === v && !!v));
     const reset = (step) => {
@@ -904,7 +912,8 @@
     // edits put back in their fields and steps, still to be saved: carried over a redraw, or a save that failed
     const apply = (edits) => {
       for (const [k, v] of Object.entries(edits.fields || {})) { const el = f.elements[k]; if (!el || el instanceof RadioNodeList) continue; el.value = v; if (el.tagName === "TEXTAREA") fitArea(el); }
-      if (edits.fields && ("your_call" in edits.fields || "your_reason" in edits.fields)) { press(f, "yourcall", f.elements.your_call.value); show("screening", true); }
+      if (edits.fields && ("your_call" in edits.fields || "your_reason" in edits.fields)) { press(f, "yourcall", f.elements.your_call.value);
+        show("screening", true, !("your_call" in edits.fields) && !!reasonsOf(c) && !!callBy(c) && callBy(c) !== state.boot.who); }
       for (const [step, v] of Object.entries(edits.decs || {})) {
         if (!f.querySelector(`.drow[data-dstep="${step}"]`)) { state.dOpen[`${c.id}|${step}`] = true; redraw(step); }
         const row = f.querySelector(`.drow[data-dstep="${step}"]`); if (!row) continue;
@@ -937,13 +946,17 @@
       if ("stage" in data) data.stage_was = init.stage || "applied";
       Object.assign(c, local);
       if (called) c.call_by = data.your_call ? state.boot.who : "";  // the Worker records who made the call; the step shows it at once
+      // the viewer's own reason, at once (reasons): theirs replaced or taken back, everyone else's as it was
+      const reasoned = "your_reason" in data && !!reasonsOf(c), reasonsBefore = state.reasonBy[c.id];
+      if (reasoned) { const me = state.boot.who, rest = reasonsOf(c).filter((r) => r.by !== me);
+        state.reasonBy[c.id] = data.your_reason ? rest.concat([{ candidate_id: c.id, by: me, reason: data.your_reason, at: new Date().toISOString() }]) : rest; }
       Object.assign(init, raw);
       if (local.stage && f.elements.stage) { const s = f.elements.stage; if (![...s.options].some((o) => o.value === local.stage)) s.add(new Option(local.stage, local.stage), 0); s.value = local.stage; init.stage = s.value; }
       const decBefore = decs.map((d) => d.row.dataset.init);
       decs.forEach((d) => { d.row.dataset.init = JSON.stringify({ call: d.call, reason: d.reason }); const m = $("[data-dmark]", d.row); m.textContent = "Saving…"; m.classList.remove("warn", "bad"); });
       delete f.dataset.dirty;
       saving++; say("Saving…");
-      if (Object.keys(data).length) { setHead(c, wasBlind); setNow(c); if (called) redraw("screening"); }  // Claude's call stays hidden until a blind record is saved
+      if (Object.keys(data).length) { setHead(c, wasBlind); setNow(c); if (called || reasoned) redraw("screening"); }  // Claude's call stays hidden until a blind record is saved
       render(true);
       const quietly = (p) => p.then(() => ({ ok: true }), (err) => ({ ok: false, err }));
       const [rec, ...dres] = await Promise.all([Object.keys(data).length ? quietly(api("candidates/" + id, "PATCH", data)) : null,
@@ -952,6 +965,7 @@
       const failed = [];
       if (rec && !rec.ok) {
         Object.assign(c, before);
+        if (reasoned) { if (reasonsBefore) state.reasonBy[c.id] = reasonsBefore; else delete state.reasonBy[c.id]; }
         const err = rec.err, moved = err && err.status === 409 && err.data && err.data.stage;
         if (moved) {  // the stage changed while the card was open: nothing of the record was written; the card is drawn again from what is stored, with the rest still typed in it
           const { stage, ...rest } = raw, msg = `Not saved: the stage changed while the card was open (it is ${stageLabel(moved)} now). Your other changes are still here: check the stage and save again.`;
@@ -968,7 +982,9 @@
         failed.push(`the record (${(err && err.message) || err})`);
         if (isOpen(id) && f.isConnected) {  // the card back to what is stored, with what didn't go still in its fields
           setHead(c); setNow(c);
-          if (called) redraw("screening");
+          const later = (f._edits ? f._edits().fields : null) || {};  // and whatever was typed while the save was under way
+          Object.assign(raw, later);
+          if (called || reasoned) redraw("screening");
           if (local.stage && f.elements.stage) f.elements.stage.value = "stage" in raw ? raw.stage : initBefore.stage;
           apply({ fields: raw });
         }
@@ -977,6 +993,8 @@
       // what is stored now: the record (the Worker moves the stage, keeps reached, hired_at and bounty_due) and the decisions
       if (decs.length) { try { state.decBy[c.id] = await api("decisions?candidate_id=" + encodeURIComponent(c.id)); if (state.decisions) state.decisions[c.id] = state.decBy[c.id]; } catch (e2) {} }
       if (rec && rec.ok) { try { Object.assign(c, await api("candidates/" + encodeURIComponent(id))); } catch (e2) {} }
+      // the reasons as stored: after one's own, and after a call that changed hands (the record's reason follows its maker)
+      if (rec && rec.ok && (reasoned || called) && reasonsOf(c)) { try { state.reasonBy[c.id] = await api("reasons?candidate_id=" + encodeURIComponent(c.id)); } catch (e2) {} }
       if (isOpen(id) && f.isConnected) {
         dres.forEach((r, i) => { if (r.ok && !rowDirty(decs[i].row)) redraw(decs[i].step); });
         if (rec && rec.ok) {
@@ -1005,16 +1023,31 @@
   // record holds once)
   const roLine = (step, label, call, reason, at, act) => `<div class="drow ro"${act ? ` data-dro="${step}"` : ""}><span class="dwho">${h(label)}</span>${pill(call, callKind(call))}${act ? `<button type="button" class="linkbtn small dedit-btn" data-dedit="${step}">${h(act)}</button>` : ""}
       <span class="dreason">${h(reason)}${at ? `${reason ? " " : ""}<span class="cmeta">${h(fmt(at))}</span>` : ""}</span></div>`;
+  // A screening reason per person (19 Nov 2026, "reasons" from the Worker): the record keeps one call, and each person keeps their own
+  // reason, so a colleague's reason is never written over (Yana's text had replaced Kostya's on a call that stayed his). The Reason box
+  // is the viewer's own; everyone else's shows as a line of its own. On an older Worker the record has one reason, as before.
+  const reasonsOf = (c) => has("reasons") && c && c.id ? state.reasonBy[c.id] || null : null;
+  const myReason = (c) => { const rs = reasonsOf(c); if (!rs) return c.your_reason || ""; const m = rs.find((r) => r.by === state.boot.who); return m ? m.reason || "" : ""; };
+  // the viewer's own line (under a colleague's call) opens their reason box alone: the call stays its maker's and in view
+  const reasonLine = (r, me) => `<div class="drow ro"${r.by === me ? " data-dmine" : ""}><span class="dwho">${h(r.by ? `${firstName(r.by)}'s reason` : "Earlier reason")}</span>${r.by === me ? `<button type="button" class="linkbtn small dedit-btn" data-dedit="screening" data-ronly="1" aria-label="Edit your reason">Edit</button>` : ""}
+      <span class="dreason">${h(r.reason)}${r.at ? ` <span class="cmeta">${h(fmt(r.at))}</span>` : ""}</span></div>`;
   // 1 · Screening: the record's own call. The row that edits it carries the viewer's name; the recruiter who is meant to make it is a note.
   function screenStep(c, id) {
     const me = state.boot.who, by = callBy(c), made = !!(id && c.your_call), rec = roleOf(c.role_id).recruiter;
     // Claude's call on the step's own line, and the rule it carries in the reason's placeholder (one line, not two, in the 320px panel)
     const claude = id && c.agent_call && !blindNow(c) ? c.agent_call : "";
-    const note = made ? (by && by !== me ? `<span class="dnote" data-dnote hidden>Saving replaces ${h(firstName(by))}'s call.</span>` : "")
+    const rs = id ? reasonsOf(c) : null, mine = rs ? rs.find((r) => r.by === me && r.reason) : null;
+    // the call's line carries its maker's reason; every other reason is a line of its own, the viewer's last
+    const callReason = rs ? ((rs.find((r) => r.by === by) || {}).reason || "") : c.your_reason;
+    // (with no call made yet the viewer's own reason is in the open box, not a line)
+    const others = rs ? rs.filter((r) => r.reason && r.by !== (made ? by : me)).sort((a, b) => (a.by === me) - (b.by === me)).map((r) => reasonLine(r, me)).join("") : "";
+    const note = made ? (by && by !== me ? `<span class="dnote" data-dnote hidden>${rs ? `A new call replaces ${h(firstName(by))}'s. Each person's reason stays.` : `Saving replaces ${h(firstName(by))}'s call.`}</span>` : "")
       : rec && rec !== me ? `<span class="dnote">${h(firstName(rec))} makes this call.</span>` : "";
-    return `<span class="lbl">1 · Screening${claude ? `<span class="dclaude" title="Claude suggests ${h(claude)}. A call that differs needs its reason."> · Claude: ${h(claude)}</span>` : ""}</span>${made ? roLine("screening", by ? `${firstName(by)}'s call` : "Call", c.your_call, c.your_reason, "", by && by !== me ? "Change" : "Edit") : ""}${note}
-      <div class="dedit" data-dedit-row="screening"${made ? " hidden" : ""}><div class="drow" data-dscreen><span class="dwho">${h(myCall())}</span>${seg("yourcall", [["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"]], c.your_call || "")}<input type="hidden" name="your_call" value="${h(c.your_call || "")}">
-        <textarea name="your_reason" class="fit oneline" rows="1" placeholder="${claude ? `Reason, needed if not ${h(claude)}` : "Reason"}" aria-label="Reason for the screening call${claude ? `, needed when it differs from Claude's ${h(claude)}` : ""}">${h(c.your_reason)}</textarea>
+    const add = rs && made && by !== me && !mine ? `<button type="button" class="linkbtn small dadd" data-dadd="screening" data-ronly="1">Add your reason</button>` : "";
+    const ph = rs ? "Your reason" : "Reason", phCall = claude ? `${ph}, needed if not ${claude}` : ph;
+    return `<span class="lbl">1 · Screening${claude ? `<span class="dclaude" title="Claude suggests ${h(claude)}. A call that differs needs its reason."> · Claude: ${h(claude)}</span>` : ""}</span>${made ? roLine("screening", by ? `${firstName(by)}'s call` : "Call", c.your_call, callReason, "", by && by !== me ? "Change" : "Edit") : ""}${others}${note}${add}
+      <div class="dedit" data-dedit-row="screening"${made ? " hidden" : ""}><div class="drow" data-dscreen><span class="dwho" data-dwho-call="${h(myCall())}">${h(myCall())}</span>${seg("yourcall", [["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"]], c.your_call || "")}<input type="hidden" name="your_call" value="${h(c.your_call || "")}">
+        <textarea name="your_reason" class="fit oneline" rows="1" placeholder="${h(phCall)}" data-ph="${h(phCall)}" data-ph-r="${h(ph)}" aria-label="${rs ? "Your reason" : "Reason"} for the screening call${claude ? `, needed when it differs from Claude's ${h(claude)}` : ""}">${h(id ? myReason(c) : c.your_reason)}</textarea>
         <span class="dact"><span class="saved" data-dmark></span>${made ? `<button type="button" class="linkbtn small" data-dcancel="screening">Cancel</button>` : ""}</span></div></div>`;
   }
   // 2 · Interview from the first interview's booking on, 3 · Second interview from the test assignment on; before that one quiet line, with
@@ -1054,7 +1087,7 @@
   // saved, one's own decision is taken back), and Enter in a reason saves the panel. New rows after a redraw are bound once.
   function bindDecisions(c) {
     const f = $("#cform"); if (!f) return;
-    const marks = () => f._marks && f._marks(), show = (step, on) => f._show && f._show(step, on);
+    const marks = () => f._marks && f._marks(), show = (step, on, ronly) => f._show && f._show(step, on, ronly);
     // the screening call: a click picks, a click on the picked one takes it back (the hidden field is what the form sends)
     f.querySelectorAll('[data-seg="yourcall"] button:not([data-bound])').forEach((b) => { b.dataset.bound = "1"; b.addEventListener("click", () => {
       const cur = f.elements.your_call; cur.value = cur.value === b.dataset.v ? "" : b.dataset.v;
@@ -1073,8 +1106,8 @@
       fitArea(ta); requestAnimationFrame(() => fitArea(ta));
     });
     const once = (sel, fn) => f.querySelectorAll(`${sel}:not([data-bound])`).forEach((b) => { b.dataset.bound = "1"; b.addEventListener("click", () => fn(b)); });
-    once("[data-dedit], [data-dadd]", (b) => { const step = b.dataset.dedit || b.dataset.dadd; show(step, true);
-      const row = f.querySelector(`[data-dedit-row="${step}"]`), t = row && (row.querySelector('[data-seg] button[aria-pressed="true"]') || row.querySelector("[data-seg] button")); if (t) t.focus(); });
+    once("[data-dedit], [data-dadd]", (b) => { const step = b.dataset.dedit || b.dataset.dadd, ronly = !!b.dataset.ronly; show(step, true, ronly);
+      const row = f.querySelector(`[data-dedit-row="${step}"]`), t = row && (ronly ? row.querySelector("textarea") : row.querySelector('[data-seg] button[aria-pressed="true"]') || row.querySelector("[data-seg] button")); if (t) t.focus(); });
     once("[data-dcancel]", (b) => { const step = b.dataset.dcancel; if (f._reset) f._reset(step); show(step, false); marks();
       const back = f.querySelector(`[data-dro="${step}"] [data-dedit], [data-dadd="${step}"]`); if (back) back.focus(); });
     once("[data-dnow]", (b) => { const step = b.dataset.dnow; state.dOpen[`${c.id}|${step}`] = true; const li = $("#dstep-" + step); li.innerHTML = decisionStep(c, step); bindDecisions(c);
@@ -1879,7 +1912,7 @@
       return `<div class="group"><span class="eyebrow">Blind batch · ${h(name)} · ${d.length} of ${m.length} decided${d.length ? ` · same call ${agree} of ${d.length} (${pct(agree, d.length)}) · misses ${miss} · noise ${n(d, "Shortlist", "Decline")}` : ""}</span>
         ${left.length ? `<p class="muted small">Claude's call stays hidden on these until the call is saved. Open one, look at the CV, set the CV check and the call with a reason.</p><div class="chips">${left.map((c) => `<button type="button" class="chip linkbtn" data-bopen="${h(c.id)}">${h(c.name)}</button>`).join("")}</div>` : `<p class="muted small">All decided.</p>`}</div>`; }).join("");
     const row = (c) => `<tr class="clickable" data-id="${h(c.id)}"><td><span class="name">${h(c.name)}</span><br><span class="muted">${h(c.id)}</span></td>
-      <td>${callPill(claudeCall(c))}${c.cv_check === "Not pass" ? ' <span class="muted small">the CV check</span>' : ""} ${confWord(c.confidence)}<br><span class="muted small">${h(c.why)}</span></td><td>${callPill(c.your_call)}${callBy(c) ? `<br><span class="muted small">${h(firstName(callBy(c)))}</span>` : ""}</td><td>${h(c.your_reason) || '<span class="muted">no reason</span>'}</td></tr>`;
+      <td>${callPill(claudeCall(c))}${c.cv_check === "Not pass" ? ' <span class="muted small">the CV check</span>' : ""} ${confWord(c.confidence)}<br><span class="muted small">${h(c.why)}</span></td><td>${callPill(c.your_call)}${callBy(c) ? `<br><span class="muted small">${h(firstName(callBy(c)))}</span>` : ""}</td><td>${h(c.your_reason) || '<span class="muted">no reason</span>'}${c.your_reason && c.reason_by && c.reason_by !== callBy(c) ? `<br><span class="muted small">${h(firstName(c.reason_by))}'s reason</span>` : ""}</td></tr>`;
     return `${batchHtml}<div class="group">${eyebrow}${list.length > 1 ? seg("calgroup", list.map((x) => [x.key, label(x)]), g.key) : ""}
       ${table(["Role · rules", "Decided", "Same call", "Claude's Shortlists kept", "Misses", "Noise", "Claude's S · H · D decided"], rows)}
       <p class="muted small">One measurement per scorecard version: a new version starts a new row, so the current one stays the baseline. A CV check of "Not pass" counts as Claude\'s Decline, since only a person judges the CV\'s design. A measurement closes at 50 decided records. Misses can only appear where Claude's Holds and Declines also get a person's call: ${n(g.done, "Hold") + n(g.done, "Decline")} of ${n(g.all, "Hold") + n(g.all, "Decline")} so far for ${h(label(g))}.</p></div>
