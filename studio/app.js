@@ -54,7 +54,7 @@
     showClosed: false, justCreated: null, cards: null, cardStage: {}, cardEdit: null, srcFilter: "all", callFilter: "all", agentFilter: "all", confFilter: "all", personFilters: {}, screens: null,
     sort: { key: "", dir: 1 }, screenFilter: "tosend", calGroup: "", cvFilter: "all", stageFilter: "all", statusFilter: "all", resBy: {}, wsBy: {}, decBy: {}, reasonBy: {},
     decisions: null, secAsk: {}, dOpen: {}, carry: null,
-    subOpen: {}, focusSec: "", onb: null, onbPlan: "", onbOpen: {}, onbDraft: {}, onbAnswer: {}, onbScore: {}, onbErr: {}, onbVisit: null, onbRead: {} };
+    subOpen: {}, focusSec: "", onb: null, onbPlan: "", onbOpen: {}, onbDraft: {}, onbAnswer: {}, onbScore: {}, onbErr: {}, onbVisit: null, onbRead: {}, onbCall: {}, onbCallErr: {} };
   const store = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
 
   // missing: what to return on a 404 instead of an error (a route an older Worker doesn't have yet; the caller hides what it would show)
@@ -81,6 +81,10 @@
     // Onboarding shows only to the person a plan is for and to its managers: the Worker sends the plans this login may see
     const tab = document.querySelector('nav.views button[data-view="onboarding"]'), plans = state.boot.onboarding || [];
     if (tab) { tab.hidden = !plans.length;
+      // the tab carries the person's name when every plan this login sees is one person's (22 Nov, Kostya: "rename the onboarding tab to
+      // Yana"); their plans are its sub-tabs
+      const names = [...new Set(plans.map(onbPersonName))];
+      tab.textContent = names.length === 1 ? names[0] : "Onboarding";
       // first in the row for the person the plan is for (it is their week), last for its managers
       const nav = tab.parentNode, own = plans.some((p) => p.person_email === state.boot.who);
       if (own && nav.firstElementChild !== tab) nav.prepend(tab); else if (!own && nav.lastElementChild !== tab) nav.append(tab);
@@ -205,7 +209,9 @@
   if (document.fonts) document.fonts.ready.then(() => showTab());  // the web font's widths, not the fallback's
   function setView(v) {
     state.view = v; store.set("studio-view", v);
-    if (v !== "onboarding") state.onbVisit = null;  // leaving the Onboarding tab ends the visit: what was new then counts as seen
+    // leaving the Onboarding tab ends the visit: what was new then counts as seen, and the next visit lands on the plan whose day has come
+    // (a link to a plan sets it again before this view opens)
+    if (v !== "onboarding") { state.onbVisit = null; state.onbPlan = ""; }
     document.querySelectorAll("nav.views button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.view === v));
     showTab();
     return render();
@@ -2324,19 +2330,44 @@
   const onbPath = (plan) => "onboarding/" + encodeURIComponent(plan);
   const onbKey = (plan, task) => `studio-onb-answer-${plan}-${task}`;  // an answer being written also survives a reload
   const firstWords = (s, n) => { const t = String(s || "").replace(/\s+/g, " ").trim(); return t.length > n ? t.slice(0, n).trimEnd() + "…" : t; };
+  // A person's plans are the sub-tabs of their tab (22 Nov): in each plan's order, labelled with its tab (else its title). A visit lands on
+  // the latest plan whose day has come (opens), else the first: from Mon 23 Nov Yana's Week 2, before it her first week.
+  const onbPersonKey = (p) => String(p.person_name || p.person_email || p.id).toLowerCase();
+  const onbPersonName = (p) => p.person_name || p.id;
+  const onbPlansOf = (plans, key) => plans.filter((p) => onbPersonKey(p) === key).sort((a, b) => (a.order || 0) - (b.order || 0) || a.id.localeCompare(b.id));
+  const onbLanding = (plans, key) => { const list = onbPlansOf(plans, key), open = list.filter((p) => p.opens && p.opens <= today()); return (open.length ? open[open.length - 1] : list[0]).id; };
   async function renderOnboarding(view) {
     const plans = state.boot.onboarding || [];
     if (!plans.length) { view.innerHTML = head("Onboarding") + '<div class="card empty">There is no onboarding plan for this login.</div>'; return; }
-    if (!plans.some((p) => p.id === state.onbPlan)) state.onbPlan = (plans.find((p) => p.person_email === state.boot.who) || plans[0]).id;
-    // A visit starts when the tab is opened, not on a background refresh. The Worker answers when this login opened it the time before:
-    // what came after that is new for as long as the tab stays open.
-    if (!state.onbVisit || state.onbVisit.plan !== state.onbPlan) {
+    if (!plans.some((p) => p.id === state.onbPlan)) state.onbPlan = onbLanding(plans, onbPersonKey(plans.find((p) => p.person_email === state.boot.who) || plans[0]));
+    // A visit starts when the tab is opened, not on a background refresh. The Worker answers when this login opened each plan the time
+    // before: what came after that is new for as long as the tab stays open. Each sub-tab's plan is stamped once per visit (review, 22 Nov:
+    // stamping again on every switch between Week 2 and Onboarding wiped "New from" before it was read).
+    if (!state.onbVisit) { state.onbVisit = { plans: {} }; state.onbRead = {}; }
+    if (!(state.onbPlan in state.onbVisit.plans)) {
       const r = await api(onbPath(state.onbPlan) + "/seen", "POST", {}, null).catch(() => null);
-      state.onbVisit = { plan: state.onbPlan, since: r ? r.since || "" : null }; state.onbRead = {};
+      state.onbVisit.plans[state.onbPlan] = r ? r.since || "" : null;
     }
     if (!state.onb || state.onb.plan.id !== state.onbPlan) state.onb = await api(onbPath(state.onbPlan));
+    // a task with a calls window lists the role's applicants of those days with each person's screening call: the lists it reads. If they
+    // don't load, the plan still draws and the task says so (review, 22 Nov: a failed list emptied the whole tab).
+    if (state.onb.tasks.some((t) => t.calls)) await need("candidates", "screens").catch(() => {});
     drawOnboarding(view);
   }
+  // The applicants a calls task covers: the role's records whose application day falls in the window, oldest first. Days are São Paulo's,
+  // the reader's and the imports' convention, so Yana in Rivne and Kostya see the same list (review, 22 Nov). A day, or a day and a time
+  // with no zone ("2026-11-23 09:40"), is that day as written (Safari can't parse the second form); a time with a zone is turned into São
+  // Paulo's day; with no readable application day, the day the record was added counts, and the row says "added".
+  const spDay = (d) => d.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+  const appliedOf = (c) => { const v = String(c.applied || "").trim();
+    if (/^\d{4}-\d{2}-\d{2}(?:[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?$/.test(v)) return { day: v.slice(0, 10), added: false };
+    const d = v ? new Date(v) : null; if (d && !isNaN(d)) return { day: spDay(d), added: false };
+    const a = new Date(c.created_at || ""); return { day: isNaN(a) ? "" : spDay(a), added: true }; };
+  const inWindow = (w) => (state.candidates || []).filter((c) => c.role_id === w.role && !/DUPLICATE/.test(c.name || "")).map((c) => ({ c, day: appliedOf(c).day }))
+    .filter((x) => x.day && x.day >= w.from && x.day <= w.to).sort((a, b) => a.day.localeCompare(b.day) || (a.c.name || "").localeCompare(b.c.name || "")).map((x) => x.c);
+  // "23–24 Nov", "30 Nov – 1 Dec", "23 Nov"
+  const span = (from, to) => { const a = fmt(from), b = fmt(to); if (from === to) return a; const [da, ...ma] = a.split(" "), [db, ...mb] = b.split(" ");
+    return ma.join(" ") === mb.join(" ") ? `${da}–${db} ${mb.join(" ")}` : `${a} – ${b}`; };
   function drawOnboarding(view) {
     const { plan, tasks, comments, can } = state.onb, plans = state.boot.onboarding || [], me = state.boot.who;
     const manager = state.onb.role === "manager", person = state.onb.role === "person", pass = plan.pass || 90, name = plan.person_name || plan.id;
@@ -2345,11 +2376,12 @@
     (state.onb.keys || []).forEach((k) => { keys[k.task_id] = k.points || []; });
     (state.onb.drafts || []).forEach((d) => { drafts[d.task_id] = d; });
     comments.forEach((c) => { (by[c.task_id] = by[c.task_id] || []).push(c); });
-    const since = state.onbVisit && state.onbVisit.plan === plan.id ? state.onbVisit.since : null;
+    const since = state.onbVisit && plan.id in state.onbVisit.plans ? state.onbVisit.plans[plan.id] : null;
     const isNew = (x) => since != null && x.by !== me && (x.at || "") > since;
-    // what is being typed survives the redraw: the drafts are kept as they are written, and the field that had focus gets it back
-    const act = document.activeElement, actLi = act && act.closest && act.closest("li.onbtask");
-    const focus = actLi && act.name ? { task: actLi.dataset.task, name: act.name, a: act.selectionStart, b: act.selectionEnd } : null;
+    // what is being typed survives the redraw: the drafts are kept as they are written, and the field that had focus gets it back (in a
+    // calls table, the reason of that applicant's row: every row has a field named reason; review, 22 Nov)
+    const act = document.activeElement, actLi = act && act.closest && act.closest("li.onbtask"), actRow = act && act.closest && act.closest("form.onbcall");
+    const focus = actLi && act.name ? { task: actLi.dataset.task, name: act.name, row: actRow ? actRow.dataset.key : "", a: act.selectionStart, b: act.selectionEnd } : null;
     const done = tasks.filter((t) => t.status === "done").length;
     const sections = []; tasks.forEach((t) => { let g = sections.find((x) => x.name === (t.section || "")); if (!g) { g = { name: t.section || "", tasks: [] }; sections.push(g); } g.tasks.push(t); });
     const typed = (t) => { if (state.onbAnswer[t.id] != null) return state.onbAnswer[t.id]; const kept = store.get(onbKey(plan.id, t.id)); return kept != null && kept !== "" ? kept : null; };
@@ -2358,11 +2390,38 @@
       if (!a) return { k: "none", label: person ? "Answer" : "No answer" };
       if (a.score == null) return { k: "review", label: "In review" };
       return a.score >= pass ? { k: "passed", label: `Passed ${a.score}%` } : { k: "notyet", label: `Not yet ${a.score}%` }; };
+    // a link to another task (#onboarding/<plan>/<task>, e.g. Week 2's "Close what is open" to week 1's) opens it here, in its sub-tab
     const link = (t) => !t.link ? `<span class="stitle">${h(t.title)}</span>`
+      : /^#onboarding\//.test(t.link) ? `<a class="stitle" href="${h(t.link)}">${h(t.title)}</a>`
       : `<a class="stitle" href="${h(t.link)}" target="_blank" rel="noopener"${/^#doc\//.test(t.link) ? ` data-doc="${h(t.link.slice(5))}"` : ""}>${h(t.title)}</a>`;
     const thread = (t) => `<div class="onbthread">${(by[t.id] || []).map((c) => `<div class="onbmsg"><span class="cmeta">${h(whoName(c.by))} · ${h(fmtTime(c.at))}</span><p>${linkify(c.body)}</p></div>`).join("")}
       ${can ? `<form class="onbform"><input name="body" maxlength="4000" autocomplete="off" placeholder="Write a comment" aria-label="Comment on ${h(t.title)}" value="${h(state.onbDraft[t.id] || "")}"><button type="submit" class="btn small">Send</button></form>` : ""}</div>`;
     const failed = (t) => state.onbErr[t.id] ? `<span class="saved bad onberr">${h(state.onbErr[t.id])}</span>` : "";
+    // A calls task (22 Nov): the role's applicants of the window, Claude's call, then the person's call and each manager's, each with
+    // their reason. The viewer's own column is where they make theirs (the same screening call as on the record: one per person, the
+    // latest moves the stage). A row where two people's calls differ says so.
+    const deciders = [plan.person_email, ...(plan.managers || [])].filter(Boolean).filter((e, i, a) => a.indexOf(e) === i);
+    const callOf = (c, by) => ((screensOf(c) || []).find((r) => r.by === by) || {});
+    const callsTally = (t) => { const list = inWindow(t.calls), made = deciders.map((by) => list.filter((c) => callOf(c, by).call).length);
+      const both = list.filter((c) => deciders.filter((by) => callOf(c, by).call).length > 1), same = both.filter((c) => new Set(deciders.map((by) => callOf(c, by).call).filter(Boolean)).size === 1);
+      return { list, made, both: both.length, same: same.length }; };
+    const callsLine = (t, k) => !state.candidates ? "The applicants didn't load: reload the page" : !k.list.length ? `Nobody applied on ${span(t.calls.from, t.calls.to)} yet`
+      : [`${k.list.length} applied ${span(t.calls.from, t.calls.to)}`, ...deciders.map((by, i) => `${firstName(by)} ${k.made[i]} of ${k.list.length}`), ...(k.both ? [`same call ${k.same} of ${k.both}`] : [])].join(" · ");
+    const callsHtml = (t) => { const k = callsTally(t);
+      if (!k.list.length) return `<p class="muted small">${h(callsLine(t, k))}.</p>`;
+      // what is typed is kept per task and applicant (the Friday task lists the same people as Wednesday's; review, 22 Nov)
+      const cell = (c, by) => { const r = callOf(c, by), key = `${t.id}|${c.id}`;
+        if (by !== me || !can) return r.call ? `${callPill(r.call)}${r.reason ? `<span class="muted small clamp2" title="${h(r.reason)}">${h(r.reason)}</span>` : ""}` : '<span class="muted small">not made</span>';
+        const typed = state.onbCall[key] || {}, call = typed.call != null ? typed.call : r.call || "", reason = typed.reason != null ? typed.reason : r.reason || "";
+        return `<form class="onbcall" data-cid="${h(c.id)}" data-key="${h(key)}"${state.onbCall[key] ? ' data-dirty="1"' : ""}><div role="group" aria-label="Your call on ${h(c.name)}">${seg("occall", CALLS.slice(1).map((x) => [x, x]), call)}</div>
+          <input name="reason" maxlength="2000" autocomplete="off" placeholder="Reason" aria-label="Your reason for ${h(c.name)}" value="${h(reason)}">
+          <div class="formfoot">${state.onbCallErr[key] ? `<span class="saved bad">${h(state.onbCallErr[key])}</span>` : ""}<button type="submit" class="btn small" aria-label="${r.call ? "Change" : "Save"} your call on ${h(c.name)}">${r.call ? "Change" : "Save"}</button></div></form>`; };
+      const row = (c) => { const calls = deciders.map((by) => callOf(c, by).call).filter(Boolean), differ = new Set(calls).size > 1, ap = appliedOf(c), blind = blindNow(c);
+        return `<tr${differ ? ' class="differ"' : ""}><td><a class="name" href="#candidates/${h(encodeURIComponent(c.id))}" target="_blank" rel="noopener">${h(c.name)}</a>${differ ? ` ${pill("Different calls", "warn")}` : ""}
+          <span class="muted small clamp2">${h([c.headline || c.location || "", (ap.added ? "added " : "applied ") + fmt(ap.day)].filter(Boolean).join(" · "))}</span></td>
+          <td data-label="Claude">${blind ? pill("blind") : `${callPill(claudeCall(c))}${c.why ? `<span class="muted small clamp2" title="${h(c.why)}">${h(c.why)}</span>` : ""}`}</td>${deciders.map((by) => `<td class="onbcallcell" data-label="${h(firstName(by))}">${cell(c, by)}</td>`).join("")}</tr>`; };
+      // the count stays on the task's own line, above (it showed twice once the task was open)
+      return `<div class="onbcalls">${table(["Candidate", "Claude", ...deciders.map((by) => firstName(by))], k.list.map(row))}</div>`; };
     // the person's side of an answer: one text box and Submit; once passed it stays as it is
     const mine = (t) => { const a = answers[t.id], s = stand(t), text = typed(t);
       const verdict = a && a.score != null ? `<p class="onbverdict">${pill(s.label, s.k === "passed" ? "ok" : "warn")}${a.note ? `<span>${linkify(a.note)}</span>` : ""}</p>` : "";
@@ -2381,15 +2440,16 @@
           <label><span class="lbl">Note to ${h(name)}</span><textarea name="note" rows="2" maxlength="2000" placeholder="Needed under ${pass}%: what to look at again">${h(note)}</textarea></label>
           <div class="formfoot">${failed(t)}<span class="cmeta">${a.score != null ? `${h(s.label)} · ${h(whoName(a.score_by))}, ${h(fmtTime(a.score_at))}` : `${pass}% or more passes`}</span>${a.score != null ? '<button type="button" class="linkbtn" data-unscore>Take it back</button>' : ""}<button type="submit" class="btn small">${a.score != null ? "Change" : "Confirm"}</button></div></form></div>`; };
     // the comment button shows a count only when there are comments (14 Nov live QA: a "0" on each of the 32 rows)
-    const row = (t) => { const list = by[t.id] || [], n = list.length, open = !!state.onbOpen[t.id], when = [t.time, t.with_whom].filter(Boolean).join(" · ");
+    const row = (t) => { const list = by[t.id] || [], n = list.length, open = !!state.onbOpen[t.id], when = [t.time, t.with_whom, t.calls ? callsLine(t, callsTally(t)) : ""].filter(Boolean).join(" · ");
       const fresh = !state.onbRead[t.id] && list.some(isNew), s = t.takes_answer ? stand(t) : null;
       const opener = s ? `<button type="button" class="btn ghost small onba ${s.k}" data-open aria-expanded="${open}">${h(s.label)}</button>`
+        : t.calls ? `<button type="button" class="btn ghost small onba" data-open aria-expanded="${open}">Calls</button>`
         : t.note ? `<button type="button" class="btn ghost small onba" data-open aria-expanded="${open}">Brief</button>` : "";
       return `<li class="step onbtask ${t.status === "done" ? "done" : ""}" data-task="${h(t.id)}"><div class="onbrow">
           ${seg("onbst", ONB_STATUS, t.status)}
           <div class="onbmain">${link(t)}<span class="pill kind-${h(t.kind)}">${h(t.kind)}</span>${when ? `<span class="cmeta">${h(when)}</span>` : ""}</div>
           ${opener}<button type="button" class="btn ghost small onbc" data-thread aria-expanded="${open}" aria-label="${n} comment${n === 1 ? "" : "s"} on ${h(t.title)}${fresh ? ", new" : ""}">${ONB_ICON}${n ? `<span>${n}</span>` : ""}${fresh ? '<i class="onbdot"></i>' : ""}</button></div>
-        ${open ? `<div class="onbopen">${t.note ? `<p class="onbbrief">${linkify(t.note)}</p>` : ""}${t.takes_answer ? (person ? mine(t) : theirs(t)) : ""}${thread(t)}</div>` : ""}</li>`; };
+        ${open ? `<div class="onbopen">${t.note ? `<p class="onbbrief">${linkify(t.note)}</p>` : ""}${t.calls ? callsHtml(t) : ""}${t.takes_answer ? (person ? mine(t) : theirs(t)) : ""}${thread(t)}</div>` : ""}</li>`; };
     // for a manager: what the person wrote since he last opened the tab, newest first, one line each
     let strip = "";
     if (manager) {
@@ -2402,7 +2462,11 @@
     }
     const who = (plan.people || []).length ? `<details class="fold"><summary>Who is who<span class="count">${plan.people.length}</span></summary><dl class="kv">${plan.people.map((x) => `<dt>${h(x.name)}</dt><dd>${h(x.role)}${x.ask ? `<br><span class="muted">Ask about: ${h(x.ask.replace(/^\w/, (c) => c.toLowerCase()))}</span>` : ""}</dd>`).join("")}</dl></details>` : "";
     const days = plan.days || {};
-    view.innerHTML = `${plans.length > 1 ? `<div class="toolbar">${seg("onbplan", plans.map((p) => [p.id, p.person_name || p.id]), plan.id)}</div>` : ""}
+    // the people (when this login sees more than one person's plans), then this person's plans as sub-tabs
+    const pkey = onbPersonKey(plan), whos = [...new Set(plans.map(onbPersonKey))], subs = onbPlansOf(plans, pkey);
+    const bar = (whos.length > 1 ? seg("onbperson", whos.map((k) => [k, onbPersonName(plans.find((p) => onbPersonKey(p) === k))]), pkey) : "")
+      + (subs.length > 1 ? seg("onbplan", subs.map((p) => [p.id, p.tab || p.title || p.id]), plan.id) : "");
+    view.innerHTML = `${bar ? `<div class="toolbar onbbar">${bar}</div>` : ""}
       <section class="role onb"><div class="rolehead"><div><span class="eyebrow">${h(name)}${plan.person_email ? "" : " · no login yet"}</span><h2>${h(plan.title || "Onboarding")}</h2>${plan.aim ? `<p class="muted">${h(plan.aim)}</p>` : ""}</div>
         <div class="rolestat"><span class="big">${done}</span><span class="muted">of ${tasks.length} done</span></div></div>
       <div class="bar"><span style="width:${tasks.length ? Math.round(100 * done / tasks.length) : 0}%"></span></div>
@@ -2415,7 +2479,28 @@
     // a save that fails says so next to its button (the page's notice is at the top, out of sight from a task further down), and keeps
     // saying so through a redraw until the next try
     const tell = (id, err) => { state.onbErr[id] = String((err && err.message) || err || ""); };
-    bindSeg(view, "onbplan", (v) => { state.onbPlan = v; state.onb = null; state.onbOpen = {}; state.onbDraft = {}; state.onbAnswer = {}; state.onbScore = {}; renderOnboarding(view); });
+    // Another sub-tab: what is typed and not sent stays (comments, answers, scores and calls are kept by task id, unique across a person's
+    // plans), so going to week 1 and back loses nothing (review, 22 Nov); only the open tasks start closed.
+    const toPlan = (v) => { if (v === plan.id) return; state.onbPlan = v; state.onb = null; state.onbOpen = {}; renderOnboarding(view).catch((e) => notice(String(e.message || e), true)); };
+    bindSeg(view, "onbplan", toPlan);
+    bindSeg(view, "onbperson", (k) => toPlan(onbLanding(plans, k)));
+    // a call made in a calls task: the viewer's own call and reason on the record, as the record's Screening step saves them. The form
+    // stays "edited" until the fresh calls are read, so the minute's refresh can't redraw in between (review, 22 Nov).
+    const redraw = () => { if (state.onb && state.boot && state.view === "onboarding") again(); };
+    view.querySelectorAll("form.onbcall").forEach((f) => {
+      const cid = f.dataset.cid, key = f.dataset.key, keep = () => { state.onbCall[key] = { call: ($('[data-seg="occall"] button[aria-pressed="true"]', f) || {}).dataset?.v || "", reason: f.elements.reason.value }; };
+      bindSeg(f, "occall", (v) => { f.querySelectorAll('[data-seg="occall"] button').forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === v)); keep(); });
+      f.elements.reason.addEventListener("input", keep);
+      f.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const pick = ($('[data-seg="occall"] button[aria-pressed="true"]', f) || {}).dataset?.v || "", btn = $('button[type="submit"]', f);
+        if (!pick) { state.onbCallErr[key] = "Pick Shortlist, Hold or Decline."; redraw(); return; }
+        btn.disabled = true; delete state.onbCallErr[key];
+        try { await api("candidates/" + encodeURIComponent(cid), "PATCH", { your_call: pick, your_reason: f.elements.reason.value.trim() });
+          delete state.onbCall[key]; state.screens = null; await need("screens").catch(() => {}); delete f.dataset.dirty; redraw(); }
+        catch (err) { state.onbCallErr[key] = String((err && err.message) || err || "Not saved."); btn.disabled = false; redraw(); }
+      });
+    });
     view.querySelectorAll("a[data-doc]").forEach((a) => a.addEventListener("click", (e) => { if (e.metaKey || e.ctrlKey || e.shiftKey || e.button) return; e.preventDefault(); openDoc(a.dataset.doc); }));
     view.querySelectorAll("[data-jump]").forEach((b) => b.addEventListener("click", () => openOnbTask(view, b.dataset.jump)));
     view.querySelectorAll("li.onbtask").forEach((li) => {
@@ -2480,7 +2565,7 @@
         const undo = $("[data-unscore]", sf); if (undo) undo.addEventListener("click", () => save({ score: null }, undo));
       }
     });
-    if (focus) { const i = inTask(focus.task, `[name="${focus.name}"]`); if (i) { i.focus({ preventScroll: true }); try { i.setSelectionRange(focus.a, focus.b); } catch (e) {} } }
+    if (focus) { const i = inTask(focus.task, `${focus.row ? `form.onbcall[data-key="${CSS.escape(focus.row)}"] ` : ""}[name="${focus.name}"]`); if (i) { i.focus({ preventScroll: true }); try { i.setSelectionRange(focus.a, focus.b); } catch (e) {} } }
   }
   // Open one task and bring it into view: from the "New from" strip, or from a link (#onboarding/<plan>/<task>, the Slack messages use it).
   function openOnbTask(view, id) {
