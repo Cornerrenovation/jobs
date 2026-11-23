@@ -9,8 +9,16 @@
   const today = () => localDay(new Date());
   // a date without a time is a calendar day: read it at local noon, or UTC midnight shows as the day before west of Greenwich. A day in
   // another year carries it ("17 Jan 2025": 14 Nov live QA, an earlier round's "applied 17 Jan" read as this January)
-  const fmt = (iso) => { if (!iso) return ""; const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(iso) ? iso + "T12:00:00" : iso);
-    return isNaN(d) ? iso : d.toLocaleDateString("en-GB", { day: "numeric", month: "short", ...(d.getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}) }); };
+  // Two formatters made once and each date's text kept until the data is read again (forget): a new formatter per call took a third of a
+  // 1,100-row redraw (23 Nov audit: 144 ms of 400 for the list's 2,600 dates, under 1 ms this way, the same text)
+  const FMT_DAY = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" }), FMT_YEAR = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric" });
+  let fmtMemo = new Map();
+  const fmt = (iso) => { if (!iso) return ""; let v = fmtMemo.get(iso); if (v !== undefined) return v;
+    const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(iso) ? iso + "T12:00:00" : iso);
+    v = isNaN(d) ? iso : (d.getFullYear() !== new Date().getFullYear() ? FMT_YEAR : FMT_DAY).format(d); fmtMemo.set(iso, v); return v; };
+  // Text as the search compares it: no case and no accents, on both sides ("villafane" finds Villafañe, "Cárdenas" finds CARDENAS: 23 Nov
+  // audit). NFD leaves ł, ø and đ as they are; Cyrillic й becomes и on both sides, so Ukrainian names still match.
+  const fold = (s) => String(s || "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
   const fmtTime = (iso) => { const d = new Date(iso); return isNaN(d) ? iso : d.toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); };
   // Stage model v2 (5 Nov), the same in the Worker: each stored stage has a status label and a stage group. The funnel order is the one
   // the Worker keeps "reached" in (the furthest stage a candidate got to, even after they were closed).
@@ -52,10 +60,16 @@
   const firstName = (by) => whoName(by).split(" ")[0];
   const state = { view: "week", boot: null, roleFilter: "all", role: null, filter: "all", candidates: null, results: null, outreach: null, templates: null, search: "", open: {},
     showClosed: false, justCreated: null, cards: null, cardStage: {}, cardEdit: null, srcFilter: "all", callFilter: "all", agentFilter: "all", confFilter: "all", personFilters: {}, screens: null,
-    sort: { key: "", dir: 1 }, screenFilter: "tosend", calGroup: "", cvFilter: "all", stageFilter: "all", statusFilter: "all", resBy: {}, wsBy: {}, decBy: {}, reasonBy: {},
+    sort: { key: "", dir: 1 }, screenFilter: "tosend", calGroup: "", cvFilter: "all", stageFilter: "all", statusFilter: "all", dueFilter: "all", resBy: {}, wsBy: {}, decBy: {}, reasonBy: {},
+    // Candidates on a laptop (23 Nov): More filters open; the list's order as drawn, and as it was when a record was opened from it (‹ ›, J
+    // and K); the record last opened (its row is marked); a record opened from the list, which is a history entry of its own
+    moreOpen: false, listIds: [], recOrder: null, lastOpen: "", pushedRec: "",
     decisions: null, secAsk: {}, dOpen: {}, carry: null,
     subOpen: {}, focusSec: "", onb: null, onbPlan: "", onbOpen: {}, onbDraft: {}, onbAnswer: {}, onbScore: {}, onbErr: {}, onbVisit: null, onbRead: {}, onbCall: {}, onbCallErr: {}, onbKept: {} };
   const store = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
+  // The Candidates sort is kept in the browser, like the role (23 Nov audit: it was lost on reload); a key the list doesn't know is ignored there
+  { const s = (store.get("studio-candsort") || "").split("|"); if (s[0]) state.sort = { key: s[0], dir: s[1] === "-1" ? -1 : 1 }; }
+  const setSort = (s) => { state.sort = s; store.set("studio-candsort", s.key ? `${s.key}|${s.dir}` : ""); };
 
   // missing: what to return on a 404 instead of an error (a route an older Worker doesn't have yet; the caller hides what it would show)
   async function api(path, method, body, missing) {
@@ -75,9 +89,26 @@
   function notice(text, bad) { const n = $("#notice"); n.textContent = text || ""; n.hidden = !text; n.classList.toggle("bad", !!bad); }
 
   // ---------- data ----------
+  let rolePicked = false;  // the role buttons' starting pick is made once per page: forget() reads the bootstrap again
+  // The tabs a login has (Kostya, 23 Nov 2026): This week is his page (the Worker answers 404 to every other person and leaves it out of the
+  // documents' list), and Outreach and Templates show only to a login that sees outreach rows (the archived TA search's: Yana had two dead
+  // tabs in a bar of ten). Read once per page, with the first bootstrap; until then, or when a read fails, the tab shows, as it did.
+  // Kostya keeps both whatever the rows (23 Nov review: every outreach row is the archived TA search's, which no person sees, so the rule
+  // alone took Templates from the one person who approves them).
+  const tabs = { week: true, outreach: true };
+  let tabsRead = null;
+  const readTabs = () => tabsRead || (tabsRead = Promise.all([api("docs", "GET", null, null).catch(() => null), api("outreach?limit=1", "GET", null, null).catch(() => null)])
+    .then(([docs, out]) => { if (Array.isArray(docs)) tabs.week = docs.some((d) => d.slug === "this-week"); if (Array.isArray(out)) tabs.outreach = out.length > 0; }));
+  const tabOk = (v) => v === "week" ? tabs.week : v === "outreach" || v === "templates" ? tabs.outreach || !!(state.boot && state.boot.admin) : v === "onboarding" ? !!((state.boot && state.boot.onboarding) || []).length : VIEWS.includes(v);
+  // Where a login lands (a first visit, or a view it doesn't have: a saved or linked This week): its own onboarding plan while it has one,
+  // else This week where it reads it (Kostya, the robots), else Candidates
+  const home = () => ((state.boot && state.boot.onboarding) || []).some((p) => p.person_email === state.boot.who) ? "onboarding" : tabs.week ? "week" : "candidates";
+  const showTabs = () => document.querySelectorAll("nav.views button[data-view]").forEach((b) => { if (b.dataset.view !== "onboarding") b.hidden = !tabOk(b.dataset.view); });
   async function loadBoot() {
-    state.boot = await api("bootstrap");
+    const [boot] = await Promise.all([api("bootstrap"), readTabs()]);
+    state.boot = boot; showTabs();
     const who = $("#who"); who.textContent = whoName(state.boot.who); who.title = state.boot.who;
+    if (!rolePicked) { rolePicked = true; state.roleFilter = startRole(); }
     // Onboarding shows only to the person a plan is for and to its managers: the Worker sends the plans this login may see
     const tab = document.querySelector('nav.views button[data-view="onboarding"]'), plans = state.boot.onboarding || [];
     if (tab) { tab.hidden = !plans.length;
@@ -102,6 +133,22 @@
   // The hiring manager as a login: roles.lead holds a name ("Yuliia") or an email
   const leadEmail = (r) => { const l = String((r && (r.lead || r.owner)) || "").trim().toLowerCase();
     return (people().find((x) => x.email === l || x.name.toLowerCase() === l || x.name.toLowerCase().split(" ")[0] === l) || {}).email || ""; };
+  // The viewer's own search: the one open search they recruit for, else the one they lead (Yana sd, Yuliia pm, Kostya bc); none for the
+  // robots' login, nor where it would be one of two
+  const ownRole = () => { const me = String(state.boot.who || "").toLowerCase(), open = openRoles();
+    const rec = open.filter((r) => String(r.recruiter || "").toLowerCase() === me), led = open.filter((r) => leadEmail(r) === me);
+    return (rec.length === 1 ? rec[0] : led.length === 1 ? led[0] : {}).id || ""; };
+  // Where Pipeline, Candidates and Screening start (23 Nov audit: Yana landed on All open roles, 1,108 records, with her 33 among them, and
+  // lost her pick on every reload): the pick kept in the browser while that search is still open, else the viewer's own search, else all
+  const startRole = () => { const s = store.get("studio-rolefilter");
+    return s === "all" || openRoles().some((r) => r.id === s) || (s === "closed" && roles().some(isClosedRole)) ? s : ownRole() || "all"; };
+  // A login as stored and compared (roles.recruiter, reasons.by), as the Worker's loginOf
+  const loginOf = (s) => String(s || "").trim().toLowerCase();
+  // Kostya (ADMINS, bootstrap's admin) alone changes who runs a search, approves a template and reads This week; the robots change who runs
+  // a search too (Kostya, 23 Nov 2026). An older Worker sends no admin: everything stays open to everyone, as it was.
+  const isAdmin = () => !("admin" in state.boot) || !!state.boot.admin;
+  const isBoss = () => isAdmin() || !!state.boot.service;
+  const adminName = () => (state.boot.admins || []).map(firstName).join(" or ") || "Kostya";
   // A call reads with the name of the person who made it ("Kostya's call"); the row that makes one carries the viewer's own name, and the
   // role's recruiter, who is meant to make it, is a note there (14 Nov review).
   const callBy = (c) => (c.your_call && c.call_by) || "";
@@ -116,8 +163,10 @@
       const here = decsOf(c).filter((d) => d.step === step && d.call).sort((a, b) => (b.at || "").localeCompare(a.at || ""));
       if (here.length) return { step, call: here[0].call, by: here[0].by, all: here };
     }
-    // screening: the record's call (the latest), with every person's call there, newest first, so disagreement shows in the list and header
-    const rs = (screensOf(c) || []).filter((r) => r.call).sort((a, b) => (b.call_at || "").localeCompare(a.call_at || "")).map((r) => ({ call: r.call, by: r.by, at: r.call_at }));
+    // screening: the record's call (the search's recruiter's once she has made one, else the latest: Kostya, 23 Nov 2026), with every
+    // person's call there, so disagreement shows in the list and header: the record's first, then the others newest first
+    const rec = callBy(c), rs = (screensOf(c) || []).filter((r) => r.call).sort((a, b) => (rec ? (b.by === rec) - (a.by === rec) : 0) || (b.call_at || "").localeCompare(a.call_at || ""))
+      .map((r) => ({ call: r.call, by: r.by, at: r.call_at }));
     return c.your_call ? { step: "screening", call: c.your_call, by: callBy(c), all: rs.length ? rs : [{ call: c.your_call, by: callBy(c) }] } : null;
   }
   // The Call filter's values and the Call sort: the furthest step first, a Go before a No
@@ -143,7 +192,7 @@
     const missing = keys.filter((k) => !state[k]);
     (await Promise.all(missing.map((k) => typeof load[k] === "function" ? load[k]() : api(load[k])))).forEach((v, i) => { state[missing[i]] = v; });
   }
-  const forget = () => { state.boot = null; state.candidates = null; state.summary = null; state.resBy = {}; state.cards = null; state.outreach = null; state.templates = null; state.msgs = null; state.onb = null; state.onbKept = {}; state.decisions = null; state.screens = null; };
+  const forget = () => { fmtMemo = new Map(); state.boot = null; state.candidates = null; state.summary = null; state.resBy = {}; state.cards = null; state.outreach = null; state.templates = null; state.msgs = null; state.onb = null; state.onbKept = {}; state.decisions = null; state.screens = null; };
 
   // ---------- shared candidate logic ----------
   const stageIdx = (s) => ORDER.indexOf(s || "");
@@ -158,6 +207,10 @@
   const groupOfStage = (s) => (GROUPS.find(([, st]) => st.includes(s)) || [""])[0];
   const groupOf = (c) => groupOfStage(ORDER.includes(c.stage || "applied") ? c.stage || "applied" : reachedOf(c)) || "Screening";
   const isClosedStage = (c) => CLOSED.includes(c.stage);
+  // A Decline as the record's call on someone already messaged or replied: the decline is owed, and the record stays open until it is sent
+  // and the stage set (a call moves only an early stage). A label beside the status, in the list and the header; the status, its filters
+  // and the counts stay as they are (23 Nov audit: "Replied" next to a red Decline read as a contradiction, and Week 2 makes more of them).
+  const declineOwed = (c) => c.your_call === "Decline" && ["messaged", "replied"].includes(c.stage || "");
   // In play: not closed, not hired, not from an earlier round. Only such a record has a call still to make or a due day that can pass: late in
   // the list, overdue on the record (14 Nov live QA: "5 Nov" read like "16 Nov" on 14 Nov). daysLate takes the Due field's value when given.
   const inPlay = (c) => !isClosedStage(c) && c.stage !== "hired" && !isClosedRole(roleOf(c.role_id));
@@ -207,8 +260,16 @@
   $("nav.views").addEventListener("scroll", fadeTabs, { passive: true });
   if (window.ResizeObserver) new ResizeObserver(() => showTab()).observe($("nav.views"));  // and again when the bar narrows (a window made smaller)
   if (document.fonts) document.fonts.ready.then(() => showTab());  // the web font's widths, not the fallback's
-  function setView(v) {
+  // fromLink: the address already says this view (follow's own navigation, Back and Forward); a view picked in the app is a history entry,
+  // so Back goes to the view before (23 Nov audit: Back, or a trackpad swipe, left Studio). The app keeps the scroll itself (render, and the
+  // list under a record): the browser's own restore put the list back where a record was opened, after the close had brought the row J or
+  // K moved to into view (23 Nov review)
+  if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+  function setView(v, fromLink) {
     state.view = v; store.set("studio-view", v);
+    if (!fromLink && location.hash !== "#" + v) history.pushState(null, "", "#" + v);
+    // Candidates may use a laptop's width, up to 1440px (23 Nov audit: Next step had 191px of a 1366px screen); the other views keep 1180
+    $("#main").classList.toggle("wide", v === "candidates");
     // leaving the Onboarding tab ends the visit: what was new then counts as seen, and the next visit lands on the plan whose day has come
     // (a link to a plan sets it again before this view opens)
     if (v !== "onboarding") { state.onbVisit = null; state.onbPlan = ""; state.onbKept = {}; state.onb = null; }
@@ -261,20 +322,22 @@
 
   // Shared pieces
   const head = (title, sub, right) => `<div class="viewhead"><div><h2>${h(title)}</h2>${sub ? `<div class="sub">${sub}</div>` : ""}</div>${right || ""}</div>`;
-  const seg = (name, items, current) => `<div class="seg" data-seg="${h(name)}">${items.map(([v, l]) => `<button type="button" data-v="${h(v)}" aria-pressed="${v === current}">${h(l)}</button>`).join("")}</div>`;
+  // an item's third part is a count, set apart from its label (the Candidates role buttons)
+  const seg = (name, items, current) => `<div class="seg" data-seg="${h(name)}">${items.map(([v, l, n]) => `<button type="button" data-v="${h(v)}" aria-pressed="${v === current}">${h(l)}${n != null ? ` <b class="segn">${h(n)}</b>` : ""}</button>`).join("")}</div>`;
   function bindSeg(el, name, onPick) {
     el.querySelectorAll(`[data-seg="${name}"] button`).forEach((b) => b.addEventListener("click", () => { const f = b.closest("form"); if (f) f.dataset.dirty = "1"; onPick(b.dataset.v); }));
   }
   // The role buttons. noClosed leaves "Earlier rounds" out; allLabel names "all" where it means less than every role (Candidates: "All open
-  // roles", 14 Nov live QA)
-  const roleSeg = ({ noClosed = false, allLabel = "All roles" } = {}) => seg("role", [["all", allLabel]].concat(openRoles().map((r) => [r.id, r.short]),
-    !noClosed && roles().some(isClosedRole) ? [["closed", "Earlier rounds"]] : []), state.roleFilter);
-  const inRole = (c) => state.roleFilter === "all" || c.role_id === state.roleFilter || (state.roleFilter === "closed" && isClosedRole(roleOf(c.role_id)));
+  // roles", 14 Nov live QA); counts, by button, the rows each would show (Candidates only: Pipeline's "all" holds the earlier rounds too)
+  const roleSeg = ({ noClosed = false, allLabel = "All roles", counts = null, cur = state.roleFilter } = {}) => seg("role", [["all", allLabel]].concat(openRoles().map((r) => [r.id, r.short]),
+    !noClosed && roles().some(isClosedRole) ? [["closed", "Earlier rounds"]] : []).map(([v, l]) => [v, l, counts ? counts[v] : null]), cur);
+  const inRoleOf = (t) => (c) => t === "all" || c.role_id === t || (t === "closed" && isClosedRole(roleOf(c.role_id)));
+  const inRole = (c) => inRoleOf(state.roleFilter)(c);
   const pill = (text, kind) => text ? `<span class="pill ${kind || ""}" title="${h(text)}">${h(text)}</span>` : "";
   const callPill = (c) => pill(c, c === "Shortlist" || c === "Go" ? "ok" : c === "Decline" || c === "No" ? "bad" : c ? "warn" : "");
   // The list's Call cell: the latest call and where it was made ("No" over "Interview · Kostya"), others at that step counted. With no call
   // yet on a record in play, whose call it is, as the record's header says (14 Nov live QA: the cell was blank on every such row).
-  const latestCell = (c) => { const l = latestCall(c), rec = roleOf(c.role_id).recruiter;
+  const latestCell = (c, l = latestCall(c)) => { const rec = roleOf(c.role_id).recruiter;
     if (!l) return inPlay(c) ? `<span class="muted small">${rec ? `${h(firstName(rec))}'s call · not made` : "No call yet"}</span>` : "";
     return `${callPill(l.call)}<br><span class="muted small">${h(STEPN[l.step])}${l.by ? " · " + h(firstName(l.by)) : ""}${l.all.length > 1 ? ` +${l.all.length - 1}` : ""}</span>`; };
   const confWord = (c) => c ? `<span class="conf conf-${h(c.toLowerCase())}">${h(c)}</span>` : "";
@@ -292,12 +355,20 @@
     const wd = (x) => x.toLocaleDateString("en-GB", { weekday: "short" }), dm = (x) => x.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
     return `${wd(a)} ${a.getMonth() === b.getMonth() ? a.getDate() : dm(a)}${a.getFullYear() !== b.getFullYear() ? " " + a.getFullYear() : ""} to ${wd(b)} ${dm(b)} ${b.getFullYear()}`; };
   async function renderDocView(view, slug) {
-    const d = await api("docs/" + slug);
-    const back = slug === "posts" ? `<p class="crumbs"><button type="button" class="linkbtn" data-back="checklists">← Checklists</button><span class="muted"> · </span><button type="button" class="linkbtn" data-back="week">This week</button></p>` : "";
-    // This week has a title and its dates, as the other views have (14 Nov live QA: it opened on "Right now", with no week on the page)
-    const wk = /(\d{4}-\d{2}-\d{2})\.md$/.exec(d.path || "");
+    const d = await api("docs/" + slug, "GET", null, null);
+    // not this login's page (This week is Kostya's: 23 Nov 2026), or not synced yet: never an error. This week then goes as its tab does,
+    // to where the login lands, in place of the address that asked for it.
+    if (!d && slug === "this-week") { tabs.week = false; showTabs(); const v = home(); history.replaceState(null, "", "#" + v); return setView(v, true); }
+    // Posts is reached from Checklists; its way back to This week only where that tab is
+    const back = slug === "posts" ? `<p class="crumbs"><button type="button" class="linkbtn" data-back="checklists">← Checklists</button>${tabs.week ? `<span class="muted"> · </span><button type="button" class="linkbtn" data-back="week">This week</button>` : ""}</p>` : "";
+    // This week has a title and its dates, as the other views have (14 Nov live QA: it opened on "Right now", with no week on the page).
+    // Once its Sunday has passed in São Paulo it is last week's page, and says the new one isn't there yet (Kostya, 23 Nov 2026: on Monday
+    // the tab read "This week" over Mon 16 to Sun 22 Nov).
+    const wk = /(\d{4}-\d{2}-\d{2})\.md$/.exec((d && d.path) || ""), sun = wk ? new Date(wk[1] + "T12:00:00") : null;
+    if (sun) sun.setDate(sun.getDate() + 6);
+    const past = !!sun && localDay(sun) < spDay(new Date());
     view.innerHTML = `${back}${slug === "posts" ? head("Posts", "Every text here is ready to paste. Settings for LinkedIn and Work.ua are folded under each post.")
-      : slug === "this-week" ? head("This week", wk ? h(weekSpan(wk[1])) : "") : ""}<section class="kit ${slug}">${d.html || "<p class='muted'>Not synced yet.</p>"}</section>`;
+      : slug === "this-week" ? head(past ? "Last week" : "This week", wk ? h(weekSpan(wk[1])) : "") + (past ? `<p class="weekwarn">This week's page isn't written yet.</p>` : "") : ""}<section class="kit ${slug}">${(d && d.html) || "<p class='muted'>Not synced yet.</p>"}</section>`;
     const strip = view.querySelector("[data-live-strip]");
     if (strip) {
       // The tiles are the app's own, a dash in each until the live counts load: never the figures and labels the document was built with on
@@ -393,123 +464,228 @@
       <div class="group"><span class="eyebrow">Source of hire</span>${sourceTable}
         <p class="muted small">Counts everyone by the furthest stage they reached, closed candidates included. Source is the first channel in Sources; anyone with "Referred by" filled counts as Referral.</p></div>
       ${bountyTable ? `<div class="group"><span class="eyebrow">Referrals and bounties</span>${bountyTable}<p class="muted small">The bounty is due 90 days after the hire. Kostya sets the amount on each referred candidate.</p></div>` : ""}`;
-    bindSeg(view, "role", (v) => { state.roleFilter = v; renderPipeline(view); });
+    bindSeg(view, "role", (v) => { state.roleFilter = v; store.set("studio-rolefilter", v); renderPipeline(view); });
     view.querySelectorAll("tr.clickable").forEach((tr) => tr.addEventListener("click", () => openCandidate(tr.dataset.id)));
     view.querySelectorAll("[data-toggle]").forEach((b) => b.addEventListener("click", () => { state.open[b.dataset.toggle] = !state.open[b.dataset.toggle]; renderPipeline(view); }));
     view.querySelectorAll(".srow").forEach((b) => b.addEventListener("click", () => openCandidate(b.dataset.id)));
   }
 
   // ---------- candidates ----------
+  // Laptop first (Kostya, 23 Nov; this replaces the 14 Nov "on a wide screen the filters sit in the toolbar" and the 27 Oct two-line
+  // headline): the role buttons with their counts beside the title; one line of filters (the search, Stage, Status, My call, More filters)
+  // with the count at its end; the other filters under More filters, each one that is set shown as a chip with an ×; quick views on the
+  // viewer's own search; rows of two lines. A phone keeps its Filters panel, with the role buttons inside it.
+  let qTimer = 0, qComposing = false;  // the search's redraw, waiting for a pause in the typing; a letter still being composed (a dead key)
+  let viaKeys = false;  // the last thing done was a key, not a pointer: a control drawn again under the keyboard gets the focus back
+  document.addEventListener("keydown", () => { viaKeys = true; }, true);
+  document.addEventListener("pointerdown", () => { viaKeys = false; }, true);
+  // Every filter at any: what Clear all and a quick view start from
+  const NOFILTER = { stageFilter: "all", statusFilter: "all", srcFilter: "all", agentFilter: "all", confFilter: "all", callFilter: "all", cvFilter: "all", dueFilter: "all" };
+  const fmtN = (n) => Number(n).toLocaleString("en-GB");
+  // The main line's Stage, Status and My call, each as wide as its picked label: measured on a one-option copy, so the browser's own font,
+  // padding and arrow count (studio.css clamps it; 23 Nov review: "Stage: First intervie" in a fixed 180px). Not where the select is hidden
+  // (the phone's closed Filters panel), whose width the panel sets anyway.
+  function fitSelects(view) {
+    const probe = document.createElement("select");
+    probe.style.cssText = "position:absolute;visibility:hidden;width:auto;min-width:0;max-width:none;left:-9999px";
+    view.querySelectorAll("#fstage, #fstatus, select.fmine").forEach((s) => { if (!s.getClientRects().length) return;
+      probe.className = s.className; probe.innerHTML = `<option>${h((s.options[s.selectedIndex] || {}).text || "")}</option>`; s.after(probe);
+      s.style.width = Math.ceil(probe.getBoundingClientRect().width) + "px"; probe.remove(); });
+  }
+  // the web font's widths, also when it arrives after the list's first draw (ready can be settled before its load has started)
+  if (document.fonts) { const refit = () => { if (state.view === "candidates") fitSelects($("#view")); }; document.fonts.ready.then(refit); document.fonts.addEventListener("loadingdone", refit); }
   async function renderCandidates(view) {
     await need("candidates", "decisions", "screens");
-    const q = state.search.trim().toLowerCase();
-    // Source and Call filters (Yuliia's request, 18 Oct); options count within the chosen role. Call is the latest call (14 Nov review):
-    // the furthest step decided, so an interview's No is found as one, not as the Shortlist that came before it.
-    // "All open roles" (14 Nov live QA): an earlier round's records stay under Earlier rounds, out of the live searches' rows and counts.
-    const base = state.candidates.filter((c) => inRole(c) && (state.roleFilter !== "all" || !isClosedRole(roleOf(c.role_id))));
-    const callOf = callKey, agentOf = (c) => blindNow(c) ? "blind" : c.agent_call || "none", confOf = (c) => blindNow(c) ? "blind" : c.confidence || "none", cvOf = (c) => c.cv_check || "none";
-    const count = (f, rows) => { const m = {}; (rows || base).forEach((c) => { m[f(c)] = (m[f(c)] || 0) + 1; }); return m; };
-    const srcCounts = count(sourceOf), callCounts = count(callOf), agentCounts = count(agentOf), confCounts = count(confOf), cvCounts = count(cvOf);
-    if (state.srcFilter !== "all" && !srcCounts[state.srcFilter]) state.srcFilter = "all";
-    // Stage and Status (Kostya, 5 Nov): the stage group ("First interview", a closed candidate's furthest one) and the status label
-    // ("Invited to 1st interview", "Rejected"); they combine with every other filter and the search. With a stage chosen, Status offers that
-    // stage's statuses and the closed ones, counted within the stage, and a status the stage can't hold goes back to any, so the two never
-    // contradict each other (14 Nov review: "Test assignment" with "Invited to 1st interview" gave 0 of 1407 and no way back).
-    const inStage = (c) => state.stageFilter === "all" || groupOf(c) === state.stageFilter;
-    const groupCounts = count(groupOf), statusCounts = count(statusOf, base.filter(inStage));
-    const stGroups = GROUPS.filter(([g]) => state.stageFilter === "all" || g === state.stageFilter).map(([g, st]) => [g, st.flatMap((x) => x === "work sample" ? [STATUS[x], WS_RECEIVED] : [STATUS[x]])]);
-    const closedSt = CLOSED.map((x) => STATUS[x]);
-    const odd = Object.keys(statusCounts).filter((l) => !STATUS_LIST.includes(l));  // a stage the app doesn't know, so nobody is unfindable
-    if (state.statusFilter !== "all" && !stGroups.flatMap(([, l]) => l).concat(closedSt, odd).includes(state.statusFilter)) state.statusFilter = "all";
+    clearTimeout(qTimer); qTimer = 0;  // this draw takes the search as it stands
+    const me = state.boot.who, person = /@/.test(me || ""), tab = state.roleFilter, q = fold(state.search.trim()), t0 = today();
+    const in7 = (() => { const d = new Date(t0 + "T12:00:00"); d.setDate(d.getDate() + 7); return localDay(d); })();
     // Each person's screening call (Kostya, 19 Nov: "filter candidates by each person's call (Yana, me, Claude, whoever)"): one filter per
-    // person who made a call, the viewer always among them, each Shortlist, Hold, Decline or "No call yet", and they combine ("Yana:
-    // Shortlist" with "Kostya: No call yet"). Claude's is the Claude filter.
-    const personCall = (c, who) => ((screensOf(c) || []).find((r) => r.by === who) || {}).call || "none";
-    const callers = has("calls") ? [...new Set([state.boot.who, ...base.flatMap((c) => (screensOf(c) || []).filter((r) => r.call && r.by).map((r) => r.by))])]
+    // person who made a call on any record this login sees, so the set doesn't change from one role button to the next (23 Nov audit: the
+    // line reflowed under the pointer), the viewer's own on the main line as "My call". The robots' login makes no calls: no filter of its own.
+    const callers = has("calls") ? [...new Set([...(person ? [me] : []), ...state.candidates.flatMap((c) => (screensOf(c) || []).filter((r) => r.call && r.by).map((r) => r.by))])]
       .sort((a, b) => { const i = (x) => { const n = people().findIndex((p) => p.email === x); return n < 0 ? 99 : n; }; return i(a) - i(b) || a.localeCompare(b); }) : [];
     Object.keys(state.personFilters).forEach((w) => { if (!callers.includes(w) || state.personFilters[w] === "all") delete state.personFilters[w]; });
-    const personPicked = Object.entries(state.personFilters);
-    const list = base.filter((c) => inStage(c) && (state.statusFilter === "all" || statusOf(c) === state.statusFilter) &&
-      (state.srcFilter === "all" || sourceOf(c) === state.srcFilter) && (state.callFilter === "all" || callOf(c) === state.callFilter) &&
-      (state.agentFilter === "all" || agentOf(c) === state.agentFilter) && (state.confFilter === "all" || confOf(c) === state.confFilter) &&
-      personPicked.every(([who, v]) => personCall(c, who) === v) &&
-      (state.cvFilter === "all" || cvOf(c) === state.cvFilter) &&
-      (!q || [c.name, c.headline, c.location, c.sources, c.email, c.stage, statusOf(c), groupOf(c), c.your_call, c.agent_call].join(" ").toLowerCase().includes(q)));
+    // Every record's values, worked out once per draw; the filters, their counts, the buttons' counts and the sort read them (23 Nov audit:
+    // they were worked out again for every count and filter). Due: late counts records in play only, as the list's "late" does.
+    const dueOf = (c) => { const d = dayOf(c.due); return !d ? "none" : daysLate(c) > 0 ? "late" : d >= t0 && d <= in7 ? "soon" : "later"; };
+    const V = new Map(state.candidates.map((c) => { const blind = blindNow(c);
+      return [c, { tab: isClosedRole(roleOf(c.role_id)) ? "closed" : c.role_id, stage: groupOf(c), status: statusOf(c), src: sourceOf(c), call: callKey(c),
+        agent: blind ? "blind" : c.agent_call || "none", conf: blind ? "blind" : c.confidence || "none", cv: c.cv_check || "none", due: dueOf(c),
+        p: Object.fromEntries((screensOf(c) || []).filter((r) => r.by && r.call).map((r) => [r.by, r.call])),
+        // what the search reads: the ID and the Next step too (23 Nov audit: "SD-0004" and a Next step's words found nothing), not Claude's
+        // call while it is hidden
+        text: q ? fold([c.id, c.name, c.headline, c.location, c.sources, c.email, c.stage, statusOf(c), groupOf(c), c.your_call, blind ? "" : c.agent_call, c.next_step].join(" ")) : "" }]; }));
+    const get = (v, k) => k.startsWith("p:") ? v.p[k.slice(2)] || "none" : v[k];
+    // "All open roles" (14 Nov live QA): an earlier round's records stay under Earlier rounds, out of the live searches' rows and counts
+    const rowsOf = (t) => state.candidates.filter((c) => { const x = V.get(c).tab; return t === "all" ? x !== "closed" : x === t; });
+    // Stage and Status (Kostya, 5 Nov): with a stage chosen, Status offers that stage's statuses and the closed ones (14 Nov review: they never
+    // contradict each other). The filters as they apply to a role button's rows: a pick those rows can't hold goes back to any there (a source
+    // none of them came from, a status outside the chosen stage, the CV check, which is Brand & Content's: scorecard v0.4, 27 Oct)
+    const stageSts = GROUPS.filter(([g]) => state.stageFilter === "all" || g === state.stageFilter).map(([g, st]) => [g, st.flatMap((x) => x === "work sample" ? [STATUS[x], WS_RECEIVED] : [STATUS[x]])]);
+    const closedSt = CLOSED.map((x) => STATUS[x]), okStatus = new Set(stageSts.flatMap(([, l]) => l).concat(closedSt));
+    const cvOn = (t) => t === "all" || familyOf(roleOf(t)) === "bc";
+    const picks = (t, rows) => { const any = (k, x) => rows.some((c) => V.get(c)[k] === x), st = state.statusFilter;
+      return Object.entries({ stage: state.stageFilter, status: st === "all" || okStatus.has(st) || (!STATUS_LIST.includes(st) && any("status", st)) ? st : "all",
+        src: state.srcFilter === "all" || any("src", state.srcFilter) ? state.srcFilter : "all", call: state.callFilter, agent: state.agentFilter, conf: state.confFilter,
+        cv: cvOn(t) ? state.cvFilter : "all", due: state.dueFilter, ...Object.fromEntries(callers.map((w) => ["p:" + w, state.personFilters[w] || "all"])) }).filter(([, x]) => x !== "all"); };
+    const base = rowsOf(tab), active = picks(tab, base), on = Object.fromEntries(active);
+    state.statusFilter = on.status || "all"; state.srcFilter = on.src || "all"; state.cvFilter = on.cv || "all";
+    // The list, and each dropdown's counts over the rows that pass every other filter and the search (23 Nov audit: with "Yana: No call yet"
+    // the Status counts still read 3 Replied and 2 Rejected, none of them in the list; this replaces "within the role filter", Yuliia, 18 Oct):
+    // a row that fails only one dropdown's own filter counts toward that dropdown's options
+    const KEYS = ["stage", "status", "src", "call", "agent", "conf", "cv", "due", ...callers.map((w) => "p:" + w)], tally = {}, list = [];
+    const add = (k, x) => { const m = tally[k] || (tally[k] = {}); m[x] = (m[x] || 0) + 1; };
+    for (const c of base) { const v = V.get(c); if (q && !v.text.includes(q)) continue;
+      const miss = active.filter(([k, x]) => get(v, k) !== x);
+      if (!miss.length) { list.push(c); KEYS.forEach((k) => add(k, get(v, k))); } else if (miss.length === 1) add(miss[0][0], get(v, miss[0][0])); }
+    const n = (k, x) => (tally[k] || {})[x] || 0;
+    // each role button's count: the rows it would show, with these filters and this search
+    const tabCounts = {};
+    ["all", ...openRoles().map((r) => r.id), ...(roles().some(isClosedRole) ? ["closed"] : [])].forEach((t) => { if (t === tab) { tabCounts[t] = fmtN(list.length); return; }
+      const rows = rowsOf(t), fl = picks(t, rows);
+      tabCounts[t] = fmtN(rows.filter((c) => { const v = V.get(c); return (!q || v.text.includes(q)) && fl.every(([k, x]) => get(v, k) === x); }).length); });
     // Sorting: click a column header; click again to reverse, a third time for the latest change first again (14 Nov live QA: there was no
-    // way back). Calls sort Shortlist, Hold, Decline, then none; confidence High to Low.
-    const SORTS = { name: (c) => (c.name || "").toLowerCase(), applied: (c) => c.applied || c.created_at || "", agent: (c) => blindNow(c) ? 4 : CALL_RANK[c.agent_call] ?? 3,
-      conf: (c) => blindNow(c) ? 4 : CONF_RANK[c.confidence] ?? 3, your: callRank, stage: stageRank, due: (c) => c.due || "~" };
-    const sk = state.sort.key, sd = state.sort.dir;
-    if (SORTS[sk]) list.sort((a, b) => { const x = SORTS[sk](a), y = SORTS[sk](b); return (x < y ? -1 : x > y ? 1 : 0) * sd || (a.name || "").localeCompare(b.name || ""); });
+    // way back). Calls sort Shortlist, Hold, Decline; confidence High to Low. A record without the value sorts last either way (23 Nov audit:
+    // Due ↓ put 25 records with no due date first); the sort is kept in the browser (setSort).
+    const SORTS = { name: (c) => fold(c.name) || null, applied: (c) => c.applied || c.created_at || null, agent: (c) => blindNow(c) ? null : CALL_RANK[c.agent_call] ?? null,
+      conf: (c) => blindNow(c) ? null : CONF_RANK[c.confidence] ?? null, your: (c) => { const i = CALL_KEYS.findIndex(([k]) => k === V.get(c).call); return i < 0 ? null : i; },
+      stage: stageRank, due: (c) => c.due || null };
+    const sk = SORTS[state.sort.key] ? state.sort.key : "", sd = state.sort.dir;
+    if (sk) { const key = new Map(list.map((c) => [c, SORTS[sk](c)]));
+      list.sort((a, b) => { const x = key.get(a), y = key.get(b), none = (x == null) - (y == null);
+        return none || (x == null ? 0 : (x < y ? -1 : x > y ? 1 : 0) * sd) || (a.name || "").localeCompare(b.name || ""); }); }
+    state.listIds = list.map((c) => c.id);  // the order a record opened from the list steps through (‹ ›, J and K)
     const opt = (v, label, cur) => `<option value="${h(v)}" ${v === cur ? "selected" : ""}>${h(label)}</option>`;
     // Labelled like the other filters, so a chosen value says what it filters ("Stage: Hired (2)" next to "Status: Hired (2)")
-    const stageSel = `<select id="fstage" aria-label="Stage">${opt("all", "Stage: any", state.stageFilter)}${GROUPS.map(([g]) => opt(g, `Stage: ${g} (${groupCounts[g] || 0})`, state.stageFilter)).join("")}</select>`;
-    // Status: the labels in funnel order under their stage group, closed ones last
-    const stOpt = (l) => opt(l, `Status: ${l} (${statusCounts[l] || 0})`, state.statusFilter);
-    const statusSel = `<select id="fstatus" aria-label="Status">${opt("all", "Status: any", state.statusFilter)}${stGroups.map(([g, l]) =>
+    const stageSel = `<select id="fstage" data-f="stageFilter" aria-label="Stage">${opt("all", "Stage: any", state.stageFilter)}${GROUPS.map(([g]) => opt(g, `Stage: ${g} (${n("stage", g)})`, state.stageFilter)).join("")}</select>`;
+    // Status: the labels in funnel order under their stage group, closed ones last, and a stage the app doesn't know under Other
+    const odd = [...new Set(base.map((c) => V.get(c).status))].filter((l) => !STATUS_LIST.includes(l));
+    const stOpt = (l) => opt(l, `Status: ${l} (${n("status", l)})`, state.statusFilter);
+    const statusSel = `<select id="fstatus" data-f="statusFilter" aria-label="Status">${opt("all", "Status: any", state.statusFilter)}${stageSts.map(([g, l]) =>
       `<optgroup label="${h(g)}">${l.map(stOpt).join("")}</optgroup>`).join("")}<optgroup label="Closed">${closedSt.map(stOpt).join("")}</optgroup>${
       odd.length ? `<optgroup label="Other">${odd.map(stOpt).join("")}</optgroup>` : ""}</select>`;
-    const srcSel = `<select id="fsrc" aria-label="Source">${opt("all", "All sources", state.srcFilter)}${Object.entries(srcCounts).sort((a, b) => b[1] - a[1]).map(([v, n]) => opt(v, `${v} (${n})`, state.srcFilter)).join("")}</select>`;
-    const callSel = `<select id="fcall" aria-label="Call">${opt("all", "Call: any", state.callFilter)}${CALL_KEYS.concat([["none", "No call yet"]]).map(([v, l]) => opt(v, `Call: ${l} (${callCounts[v] || 0})`, state.callFilter)).join("")}</select>`;
+    // the sources this button's records came from, the most common first (Yuliia's request, 18 Oct)
+    const srcAll = {}; base.forEach((c) => { const s = V.get(c).src; srcAll[s] = (srcAll[s] || 0) + 1; });
+    const srcSel = `<select id="fsrc" data-f="srcFilter" aria-label="Source">${opt("all", "All sources", state.srcFilter)}${Object.keys(srcAll).sort((a, b) => srcAll[b] - srcAll[a] || a.localeCompare(b)).map((v) => opt(v, `${v} (${n("src", v)})`, state.srcFilter)).join("")}</select>`;
+    // Call is the latest call (14 Nov review): the furthest step decided, so an interview's No is found as one, not as the Shortlist before it
+    const CALL_OPTS = CALL_KEYS.concat([["none", "No call yet"]]);
+    const callSel = `<select id="fcall" data-f="callFilter" aria-label="Call">${opt("all", "Call: any", state.callFilter)}${CALL_OPTS.map(([v, l]) => opt(v, `Call: ${l} (${n("call", v)})`, state.callFilter)).join("")}</select>`;
     // Claude's call has one name, the column's (14 Nov live QA: "Claude", "Agent call" and "Claude's call" for the same thing)
-    const agentSel = `<select id="fagent" aria-label="Claude's call">${opt("all", "Claude: any", state.agentFilter)}${[["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"], ["none", "Not read yet"]].concat(agentCounts.blind ? [["blind", "Hidden, blind batch"]] : []).map(([v, l]) => opt(v, `Claude: ${l} (${agentCounts[v] || 0})`, state.agentFilter)).join("")}</select>`;
-    const personSel = callers.map((who) => { const n = count((c) => personCall(c, who)), name = firstName(who), cur = state.personFilters[who] || "all";
-      return `<select data-fperson="${h(who)}" aria-label="${h(name)}'s call">${opt("all", `${name}: any`, cur)}${[["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"], ["none", "No call yet"]].map(([v, l]) => opt(v, `${name}: ${l} (${n[v] || 0})`, cur)).join("")}</select>`; }).join("");
-    const confSel = `<select id="fconf" aria-label="Confidence">${opt("all", "Confidence: any", state.confFilter)}${[["High", "High"], ["Medium", "Medium"], ["Low", "Low"]].map(([v, l]) => opt(v, `Confidence: ${l} (${confCounts[v] || 0})`, state.confFilter)).join("")}</select>`;
-    const cvSel = `<select id="fcv" aria-label="CV check">${opt("all", "CV check: any", state.cvFilter)}${[["Pass", "Pass"], ["Not pass", "Not pass"], ["none", "Not checked"]].map(([v, l]) => opt(v, `CV check: ${l} (${cvCounts[v] || 0})`, state.cvFilter)).join("")}</select>`;
-    // Compact (Kostya, 27 Oct): role sits above the source, confidence under Claude's call, long text clamps to two lines,
-    // so Next step and Due fit without scrolling sideways. The stage column leads with the status, and a closed status's rows hold what
-    // happened last, not a step to take (14 Nov live QA).
-    const cols = [["Name", "name"], ["Role · source", ""], ["Applied", "applied"], ["Claude", "agent"], ["Call", "your"], ["Status · stage", "stage"],
-      [closedSt.includes(state.statusFilter) ? "Last note" : "Next step", ""], ["Due", "due"]];
+    const AGENT_OPTS = [["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"], ["none", "Not read yet"]].concat(base.some((c) => V.get(c).agent === "blind") ? [["blind", "Hidden, blind batch"]] : []);
+    const agentSel = `<select id="fagent" data-f="agentFilter" aria-label="Claude's call">${opt("all", "Claude: any", state.agentFilter)}${AGENT_OPTS.map(([v, l]) => opt(v, `Claude: ${l} (${n("agent", v)})`, state.agentFilter)).join("")}</select>`;
+    const PERSON_OPTS = [["Shortlist", "Shortlist"], ["Hold", "Hold"], ["Decline", "Decline"], ["none", "No call yet"]];
+    const personSel = (w) => { const name = w === me ? "My call" : firstName(w), cur = state.personFilters[w] || "all";
+      return `<select data-fperson="${h(w)}"${w === me ? ' class="fmine"' : ""} aria-label="${h(w === me ? "My call" : `${name}'s call`)}">${opt("all", `${name}: any`, cur)}${PERSON_OPTS.map(([v, l]) => opt(v, `${name}: ${l} (${n("p:" + w, v)})`, cur)).join("")}</select>`; };
+    const CONF_OPTS = [["High", "High"], ["Medium", "Medium"], ["Low", "Low"]];
+    const confSel = `<select id="fconf" data-f="confFilter" aria-label="Confidence">${opt("all", "Confidence: any", state.confFilter)}${CONF_OPTS.map(([v, l]) => opt(v, `Confidence: ${l} (${n("conf", v)})`, state.confFilter)).join("")}</select>`;
+    // the CV check only where Brand & Content records are (23 Nov audit: on Sales designer it offered Pass 0, Not pass 0, Not checked 34)
+    const CV_OPTS = [["Pass", "Pass"], ["Not pass", "Not pass"], ["none", "Not checked"]];
+    const cvSel = cvOn(tab) ? `<select id="fcv" data-f="cvFilter" aria-label="CV check">${opt("all", "CV check: any", state.cvFilter)}${CV_OPTS.map(([v, l]) => opt(v, `CV check: ${l} (${n("cv", v)})`, state.cvFilter)).join("")}</select>` : "";
+    // Due (23 Nov audit: "late" couldn't be filtered or searched)
+    const DUE_OPTS = [["late", "late"], ["soon", "next 7 days"], ["none", "no due date"]];
+    const dueSel = `<select id="fdue" data-f="dueFilter" aria-label="Due">${opt("all", "Due: any", state.dueFilter)}${DUE_OPTS.map(([v, l]) => opt(v, `Due: ${l} (${n("due", v)})`, state.dueFilter)).join("")}</select>`;
+    // A filter set under More filters shows as a chip with an × (its own label, without the count)
+    const word = (opts, x) => (opts.find(([v]) => v === x) || [x, x])[1];
+    const LABEL = { src: (x) => `Source: ${x}`, call: (x) => `Call: ${word(CALL_OPTS, x)}`, agent: (x) => `Claude: ${word(AGENT_OPTS, x)}`, conf: (x) => `Confidence: ${x}`,
+      cv: (x) => `CV check: ${word(CV_OPTS, x)}`, due: (x) => `Due: ${word(DUE_OPTS, x)}` };
+    const hidden = active.filter(([k]) => !["stage", "status", "p:" + me].includes(k));
+    const chips = hidden.map(([k, x]) => { const l = k.startsWith("p:") ? `${firstName(k.slice(2))}: ${word(PERSON_OPTS, x)}` : LABEL[k](x);
+      return `<button type="button" class="chip fchip" data-unset="${h(k)}" aria-label="${h(`Remove the filter ${l}`)}">${h(l)}<span aria-hidden="true">×</span></button>`; }).join("");
+    // Quick views on the viewer's own search (23 Nov audit, P3): what needs them now, each a preset of the filters above with its count (the
+    // button's records, nothing else filtered); picked again, it clears
+    const QV = person && tab === ownRole() ? [has("calls") ? ["mine", "Needs my call", { stageFilter: "Screening", personFilters: { [me]: "none" } }] : null,
+      ["late", "Overdue", { dueFilter: "late" }], ["interviews", "Interviews", { stageFilter: "First interview" }], ["waiting", "Waiting on candidate", { statusFilter: "Messaged" }]].filter(Boolean) : [];
+    const fits = (v, p) => (!p.stageFilter || v.stage === p.stageFilter) && (!p.statusFilter || v.status === p.statusFilter) && (!p.dueFilter || v.due === p.dueFilter)
+      && Object.entries(p.personFilters || {}).every(([w, x]) => (v.p[w] || "none") === x);
+    const isNow = (p) => !q && Object.keys(NOFILTER).every((k) => state[k] === (p[k] || "all")) && JSON.stringify(state.personFilters) === JSON.stringify(p.personFilters || {});
+    const quick = QV.map(([k, l, p]) => `<button type="button" class="qview" data-qv="${k}" aria-pressed="${isNow(p)}">${h(l)} <b>${base.filter((c) => fits(V.get(c), p)).length}</b></button>`).join("");
+    const anyOn = active.length + (q ? 1 : 0), clear = `<button type="button" class="linkbtn" data-fclear>Clear all</button>`;
+    // Compact (Kostya, 27 Oct; rows of two lines since 23 Nov): the role over the source only where searches are mixed (All open roles, Earlier
+    // rounds), else the column is the source; confidence under Claude's call; the headline on one line and the next step on two, each whole
+    // in its title. A closed record's note says what happened (14 Nov live QA): the column reads "Last note" where only such rows show (a
+    // closed status picked, Earlier rounds), elsewhere a closed row's note starts "Last note:".
+    const mixed = tab === "all" || tab === "closed", lastNote = closedSt.includes(state.statusFilter) || tab === "closed";
+    const cols = [["Name", "name"], [mixed ? "Role · source" : "Source", ""], ["Applied", "applied"], ["Claude", "agent"], ["Call", "your"], ["Status · stage", "stage"],
+      [lastNote ? "Last note" : "Next step", ""], ["Due", "due"]];
     const th = ([label, key]) => key ? `<th><button type="button" class="sorth" data-sort="${key}" aria-sort="${sk === key ? (sd > 0 ? "ascending" : "descending") : "none"}">${h(label)}<span class="arrow">${sk === key ? (sd > 0 ? "↑" : "↓") : "↕"}</span></button></th>` : `<th>${h(label)}</th>`;
     // On a phone the column headers give way to cards, so the sort is a select inside the filters
     const SORT_OPTS = [["", 1, "Sort: latest change"], ["applied", -1, "Sort: applied, newest"], ["name", 1, "Sort: name"], ["stage", 1, "Sort: stage"], ["due", 1, "Sort: due"],
       ["agent", 1, "Sort: Claude's call"], ["conf", 1, "Sort: confidence"], ["your", 1, "Sort: call"]];
-    const sortSel = `<select id="fsort" class="fsort" aria-label="Sort">${SORT_OPTS.map(([k, d, l]) => `<option value="${k}|${d}"${(SORTS[sk] ? sk : "") === k ? " selected" : ""}>${h(l)}</option>`).join("")}</select>`;
-    // The order is said under the title (14 Nov live QA: every header showed ↕ over a list in latest-change order)
+    const sortSel = `<select id="fsort" class="fsort" aria-label="Sort">${SORT_OPTS.map(([k, d, l]) => `<option value="${k}|${d}"${sk === k ? " selected" : ""}>${h(l)}</option>`).join("")}</select>`;
+    // The order is said beside the count (14 Nov live QA: every header showed ↕ over a list in latest-change order)
     const SORT_SAY = { name: "name", applied: "applied", agent: "Claude's call", conf: "confidence", your: "call", stage: "stage", due: "due" };
-    const orderSay = SORTS[sk] ? `sorted by ${SORT_SAY[sk]} ${sd > 0 ? "↑" : "↓"}` : "latest change first";
-    // What is filtering the list: the search and every filter not at "any" (the role's buttons stay in sight). Clear filters puts them back.
-    // The phone's Filters button counts a sort too, which sits behind it.
-    const picked = [state.stageFilter, state.statusFilter, state.srcFilter, state.agentFilter, state.confFilter, state.callFilter, state.cvFilter].filter((v) => v !== "all").length + personPicked.length;
-    const on = picked + (q ? 1 : 0), clear = `<button type="button" class="linkbtn" data-fclear>Clear filters</button>`, behind = picked + (SORTS[sk] ? 1 : 0);
+    const orderSay = sk ? `sorted by ${SORT_SAY[sk]} ${sd > 0 ? "↑" : "↓"}` : "latest change first";
     // Each row as a table row; on a phone as a card (studio.css): the name and the status with its group, the calls, the next step and due.
-    // On a phone the Applied column gives way to the card's second line, which carries the date (14 Nov review: "· applied 18 Oct").
-    // A record imported without an application date shows the day it was added, which the Applied sort goes by (14 Nov live QA); a due day
-    // passed on a record in play reads "late".
-    const row = (c) => { const late = daysLate(c) > 0, added = !c.applied && c.created_at ? fmt(c.created_at) : "";
-      return `<tr class="clickable" data-id="${h(c.id)}"><td class="cname"><span class="name">${h(c.name)}</span><span class="muted clamp2">${h(c.headline || c.location || "")}</span></td><td class="csrc"><span class="muted small">${h(roleName(c.role_id))}</span><span class="sep"> · </span><br>${h(sourceShort(c.sources))}${c.applied ? `<span class="cappm"> · applied ${h(fmt(c.applied))}</span>` : added ? `<span class="cappm"> · added ${h(added)}</span>` : ""}${c.referred_by ? `<br><span class="muted">referred by ${h(c.referred_by)}</span>` : ""}</td><td class="nowrap capplied">${c.applied ? h(fmt(c.applied)) : added ? `<span class="muted" title="No application date: the day the record was added to Studio">added ${h(added)}</span>` : ""}</td><td class="cclaude">${blindNow(c) ? pill("blind") : callPill(c.agent_call)}${blindNow(c) || !c.confidence ? "" : `<br>${confWord(c.confidence)}`}</td><td class="ccall">${latestCell(c)}</td><td class="cstage"><span class="stl${isClosedStage(c) ? " closed" : ""}">${h(statusOf(c))}</span><span class="muted small cgrp">${h(groupOf(c))}</span>${c.ws_file && statusOf(c) !== WS_RECEIVED ? `<span class="wsflag" title="${h(c.ws_file)}">Work sample</span>` : ""}</td><td class="cnext${isClosedStage(c) ? " closed" : ""}"><span class="clamp2" title="${h(c.next_step)}">${h(c.next_step)}</span></td><td class="nowrap cdue${late ? " late" : ""}">${c.due ? `<span class="duew">due </span>${h(fmt(c.due))}${late ? " · late" : ""}` : ""}</td></tr>`; };
-    // Counted against the role buttons' own records; under All open roles the earlier rounds' are named apart (14 Nov live QA: "76 of 80"
-    // with nothing filtered read like a filter stuck on)
-    const earlier = state.roleFilter === "all" ? state.candidates.filter((c) => isClosedRole(roleOf(c.role_id))).length : 0;
-    view.innerHTML = head("Candidates", `${list.length} of ${base.length}${earlier ? ` · ${earlier} in earlier rounds` : ""} · ${orderSay}${on ? ` · ${on} filter${on > 1 ? "s" : ""} on · ${clear}` : ""}`, `<button type="button" class="btn" id="add">Add candidate</button>`) +
-      `<div class="toolbar ctools${state.filtersOpen ? " open" : ""}"><input type="search" id="q" placeholder="Search name, source, stage" value="${h(state.search)}">
-        <button type="button" class="btn ghost ftoggle" id="ftoggle" aria-expanded="${state.filtersOpen ? "true" : "false"}" aria-controls="fsel">Filters${behind ? ` · ${behind}` : ""}</button>
-        <div class="fsel" id="fsel">${stageSel}${statusSel}${srcSel}${agentSel}${personSel}${confSel}${callSel}${cvSel}${sortSel}${roleSeg({ allLabel: "All open roles" })}</div></div>
-      ${list.length ? `<div class="tablewrap cands"><table><thead><tr>${cols.map(th).join("")}</tr></thead><tbody>${list.map(row).join("")}</tbody></table></div>`
-        : on ? `<div class="card empty">No candidates match these filters. ${clear}</div>`
-        : `<div class="card empty">No candidates match. They arrive from the jobs site, LinkedIn and Work.ua through the daily check-in, or add one by hand.</div>`}`;
-    const qel = $("#q", view);
-    qel.addEventListener("input", (e) => { state.search = e.target.value; renderCandidates(view); qel.focus(); });
-    if (q) { qel.focus(); qel.setSelectionRange(qel.value.length, qel.value.length); }
-    view.querySelectorAll("[data-fclear]").forEach((b) => b.addEventListener("click", () => {
-      Object.assign(state, { search: "", stageFilter: "all", statusFilter: "all", srcFilter: "all", agentFilter: "all", personFilters: {}, confFilter: "all", callFilter: "all", cvFilter: "all" });
-      renderCandidates(view); }));
-    $("#ftoggle", view).addEventListener("click", () => { state.filtersOpen = !state.filtersOpen; renderCandidates(view); });
-    $("#fsort", view).addEventListener("change", (e) => { const [k, d] = e.target.value.split("|"); state.sort = { key: k, dir: Number(d) || 1 }; renderCandidates(view); });
-    bindSeg(view, "role", (v) => { state.roleFilter = v; renderCandidates(view); });
-    $("#fstage", view).addEventListener("change", (e) => { state.stageFilter = e.target.value; renderCandidates(view); });
-    $("#fstatus", view).addEventListener("change", (e) => { state.statusFilter = e.target.value; renderCandidates(view); });
-    $("#fsrc", view).addEventListener("change", (e) => { state.srcFilter = e.target.value; renderCandidates(view); });
-    $("#fcall", view).addEventListener("change", (e) => { state.callFilter = e.target.value; renderCandidates(view); });
-    $("#fcv", view).addEventListener("change", (e) => { state.cvFilter = e.target.value; renderCandidates(view); });
-    $("#fagent", view).addEventListener("change", (e) => { state.agentFilter = e.target.value; renderCandidates(view); });
-    view.querySelectorAll("[data-fperson]").forEach((s) => s.addEventListener("change", (e) => { state.personFilters[s.dataset.fperson] = e.target.value; renderCandidates(view); }));
-    $("#fconf", view).addEventListener("change", (e) => { state.confFilter = e.target.value; renderCandidates(view); });
-    view.querySelectorAll("[data-sort]").forEach((b) => b.addEventListener("click", () => {
-      const k = b.dataset.sort; state.sort = state.sort.key !== k ? { key: k, dir: 1 } : state.sort.dir === 1 ? { key: k, dir: -1 } : { key: "", dir: 1 }; renderCandidates(view); }));
-    view.querySelectorAll("tr.clickable").forEach((tr) => tr.addEventListener("click", () => openCandidate(tr.dataset.id)));
+    // On a phone the Applied column gives way to the card's second line, which carries the date (14 Nov review: "· applied 18 Oct"). A record
+    // imported without an application date shows the day it was added, which the Applied sort goes by (14 Nov live QA). A due day passed on a
+    // record in play reads "late"; a closed record keeps its day, quiet (23 Nov audit: it read like a live one beside the late ones). Claude's
+    // call goes quiet once a person has made the screening call, as in the record's header (14 Nov live QA; 23 Nov audit: a red Decline beside
+    // Yana's green Shortlist), and the Call cell's title names every call at its step (the "+1"). The name is a link to the record.
+    // A date keeps its day and month together, and its year (another year's date: "23 Nov 2025", every date in January) may go to the second
+    // line, so a column of them never pushes the table past the page (at 1200px it is clipped, under the titles that stay)
+    const yearApart = (s, tail = "") => { const m = / (\d{4})$/.exec(s); return m ? `<span class="nowrap">${h(s.slice(0, m.index))}</span> <span class="nowrap">${h(m[1] + tail)}</span>` : `<span class="nowrap">${h(s + tail)}</span>`; };
+    const row = (c) => { const v = V.get(c), gone = isClosedStage(c) || v.tab === "closed", ap = c.applied ? fmt(c.applied) : "", added = !c.applied && c.created_at ? fmt(c.created_at) : "";
+      const l = latestCall(c), blind = v.agent === "blind", late = v.due === "late", line = c.headline || c.location || "";
+      return `<tr class="clickable${c.id === state.lastOpen ? " lastopen" : ""}" data-id="${h(c.id)}"><td class="cname"><a class="name" href="#candidates/${h(encodeURIComponent(c.id))}">${h(c.name)}</a><span class="muted clamp2" title="${h(line)}">${h(line)}</span></td>`
+        + `<td class="csrc">${mixed ? `<span class="muted small">${h(roleName(c.role_id))}</span><span class="sep"> · </span><br>` : ""}${h(sourceShort(c.sources))}${ap ? `<span class="cappm"> · applied ${h(ap)}</span>` : added ? `<span class="cappm"> · added ${h(added)}</span>` : ""}${c.referred_by ? `<br><span class="muted">referred by ${h(c.referred_by)}</span>` : ""}</td>`
+        + `<td class="capplied">${ap ? yearApart(ap) : added ? `<span class="muted" title="No application date: the day the record was added to Studio">${yearApart("added " + added)}</span>` : ""}</td>`
+        + `<td class="cclaude">${blind ? pill("blind") : c.your_call ? pill(c.agent_call) : callPill(c.agent_call)}${blind || !c.confidence ? "" : `<br>${confWord(c.confidence)}`}</td>`
+        + `<td class="ccall"${l ? ` title="${h(l.all.map((d) => (d.by ? firstName(d.by) + ": " : "") + d.call).join(" · "))}"` : ""}>${latestCell(c, l)}</td>`
+        + `<td class="cstage${declineOwed(c) ? " owed" : ""}"><span class="stl${gone ? " closed" : ""}">${h(statusOf(c))}</span><span class="muted small cgrp">${h(groupOf(c))}</span>${c.ws_file && statusOf(c) !== WS_RECEIVED ? `<span class="wsflag" title="${h(c.ws_file)}">Work sample</span>` : ""}${
+          declineOwed(c) ? `<span class="wsflag dnsflag" title="The call is Decline, and the decline isn't sent yet: send it, then set the stage to Rejected">decline not sent</span>` : ""}</td>`
+        + `<td class="cnext${gone ? " closed" : ""}"><span class="clamp2" title="${h(c.next_step)}">${isClosedStage(c) && !lastNote && c.next_step ? '<span class="lnote">Last note: </span>' : ""}${h(c.next_step)}</span></td>`
+        + `<td class="cdue${late ? " late" : ""}${inPlay(c) ? "" : " quiet"}">${c.due ? `<span class="duew">due </span>${yearApart(fmt(c.due), late ? " · late" : "")}` : ""}</td></tr>`; };
+    // What the keyboard was on comes back after the draw: the search with its caret (23 Nov audit: Backspace on the last letter sent the focus
+    // to the page and the next letter was lost; a letter typed at the start sent the caret to the end), and, after a key, the control it used
+    const q0 = $("#q", view), was = document.activeElement, inView = was && was !== document.body && view.contains(was);
+    const caret = was === q0 ? [q0.selectionStart, q0.selectionEnd, q0.selectionDirection] : null;
+    const back = !inView ? "" : was === q0 ? "#q" : !viaKeys ? "" : was.id ? "#" + CSS.escape(was.id) : was.dataset.fperson ? `[data-fperson="${CSS.escape(was.dataset.fperson)}"]`
+      : was.dataset.sort ? `[data-sort="${was.dataset.sort}"]` : was.dataset.qv ? `[data-qv="${was.dataset.qv}"]` : was.dataset.unset ? "#fmorebtn"
+      : was.matches("a.name") && was.closest("tr[data-id]") ? `tr[data-id="${CSS.escape(was.closest("tr[data-id]").dataset.id)}"] a.name`
+      : was.closest(".seghead, .segphone") && was.dataset.v ? `.${was.closest(".seghead, .segphone").className.split(" ")[0]} [data-v="${CSS.escape(was.dataset.v)}"]` : "";
+    const segs = roleSeg({ allLabel: "All open roles", counts: tabCounts }), behind = active.length + (sk ? 1 : 0);
+    qComposing = false;
+    view.innerHTML = `<div class="viewhead chead"><div class="chl"><h2>Candidates</h2><div class="seghead">${segs}</div></div><button type="button" class="btn" id="add">Add candidate</button></div>`
+      + `<div class="toolbar ctools${state.filtersOpen ? " open" : ""}${state.moreOpen ? " more" : ""}"><input type="search" id="q" placeholder="Search name, ID, next step…" aria-label="Search candidates" autocomplete="off" value="${h(state.search)}">`
+      + `<button type="button" class="btn ghost ftoggle" id="ftoggle" aria-expanded="${!!state.filtersOpen}" aria-controls="fsel">Filters${behind ? ` · ${behind}` : ""}</button>`
+      + `<div class="fsel" id="fsel"><div class="segphone">${segs}</div>${stageSel}${statusSel}${callers.includes(me) ? personSel(me) : ""}`
+      + `<button type="button" class="btn ghost fmorebtn" id="fmorebtn" aria-expanded="${!!state.moreOpen}" aria-controls="fmore">More filters${hidden.length ? ` · ${hidden.length}` : ""}</button>`
+      + `<div class="fmore" id="fmore">${srcSel}${agentSel}${callers.filter((w) => w !== me).map(personSel).join("")}${confSel}${callSel}${cvSel}${dueSel}</div>${sortSel}</div>`
+      + `<p class="ccount"><b>${fmtN(list.length)}</b> of ${fmtN(base.length)} · ${orderSay}${anyOn && !chips ? ` · ${clear}` : ""}</p></div>`
+      + (quick || chips ? `<div class="fchips">${quick ? `<div class="qviews" role="group" aria-label="Quick views">${quick}</div>` : ""}${chips}${chips ? clear : ""}</div>` : "")
+      + (list.length ? `<div class="tablewrap cands"><table><thead><tr>${cols.map(th).join("")}</tr></thead><tbody>${list.map(row).join("")}</tbody></table></div>`
+        : anyOn ? `<div class="card empty">No candidates match these filters. ${clear}</div>`
+        : `<div class="card empty">No candidates match. They arrive from the jobs site, LinkedIn and Work.ua through the daily check-in, or add one by hand.</div>`);
+    fitSelects(view);
+    const qel = $("#q", view), fb = back && $(back, view);
+    if (fb && fb.getClientRects().length) { fb.focus({ preventScroll: true }); if (fb === qel && caret) try { qel.setSelectionRange(...caret); } catch (e) {} }
+    // The search redraws once the typing pauses (23 Nov audit: a 1,100-row redraw on every key). A letter still being composed (a dead key's
+    // "~" before "ã", an IME) isn't searched until it is done: a redraw then would commit the "~" ("Jo~ão").
+    const soonDraw = () => { clearTimeout(qTimer); qTimer = setTimeout(() => { qTimer = 0; if (!qComposing && state.view === "candidates" && qel.isConnected) renderCandidates(view); }, 150); };
+    qel.addEventListener("input", (e) => { if (e.isComposing || qComposing) return; state.search = qel.value; soonDraw(); });
+    qel.addEventListener("compositionstart", () => { qComposing = true; clearTimeout(qTimer); });
+    qel.addEventListener("compositionend", () => { qComposing = false; state.search = qel.value; soonDraw(); });
+    view.querySelectorAll("[data-fclear]").forEach((b) => b.addEventListener("click", () => { Object.assign(state, NOFILTER, { search: "", personFilters: {} }); renderCandidates(view); }));
+    // the phone's Filters panel and More filters open in place, without drawing the list again
+    const tools = $(".ctools", view);
+    $("#ftoggle", view).addEventListener("click", (e) => { state.filtersOpen = !state.filtersOpen; tools.classList.toggle("open", state.filtersOpen); e.currentTarget.setAttribute("aria-expanded", state.filtersOpen); });
+    $("#fmorebtn", view).addEventListener("click", (e) => { state.moreOpen = !state.moreOpen; tools.classList.toggle("more", state.moreOpen); e.currentTarget.setAttribute("aria-expanded", state.moreOpen); });
+    $("#fsort", view).addEventListener("change", (e) => { const [k, d] = e.target.value.split("|"); setSort({ key: k, dir: Number(d) || 1 }); renderCandidates(view); });
+    bindSeg(view, "role", (v) => { state.roleFilter = v; store.set("studio-rolefilter", v); renderCandidates(view); });
+    view.querySelectorAll("select[data-f]").forEach((s) => s.addEventListener("change", () => { state[s.dataset.f] = s.value; renderCandidates(view); }));
+    view.querySelectorAll("[data-fperson]").forEach((s) => s.addEventListener("change", () => { state.personFilters[s.dataset.fperson] = s.value; renderCandidates(view); }));
+    view.querySelectorAll("[data-unset]").forEach((b) => b.addEventListener("click", () => { const k = b.dataset.unset;
+      if (k.startsWith("p:")) delete state.personFilters[k.slice(2)]; else state[k + "Filter"] = "all"; renderCandidates(view); }));
+    view.querySelectorAll("[data-qv]").forEach((b) => b.addEventListener("click", () => { const p = (QV.find(([k]) => k === b.dataset.qv) || [])[2] || {};
+      Object.assign(state, NOFILTER, { search: "", personFilters: {} }, b.getAttribute("aria-pressed") === "true" ? {} : { ...p, personFilters: { ...(p.personFilters || {}) } }); renderCandidates(view); }));
+    view.querySelectorAll("[data-sort]").forEach((b) => b.addEventListener("click", () => { const k = b.dataset.sort, s = state.sort;
+      setSort(s.key !== k ? { key: k, dir: 1 } : s.dir === 1 ? { key: k, dir: -1 } : { key: "", dir: 1 }); renderCandidates(view); }));
+    // One listener for the rows (23 Nov audit: one per row, 1,100 of them). A plain click on a row or its name opens the record over the list;
+    // a modifier or the middle button on the name is the browser's (a new tab), as a link's
+    const tb = $(".tablewrap.cands tbody", view);
+    if (tb) tb.addEventListener("click", (e) => { const tr = e.target.closest("tr[data-id]"), a = e.target.closest("a");
+      if (!tr || (a && !a.classList.contains("name")) || e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      e.preventDefault(); openFromList(tr.dataset.id); });
     $("#add", view).addEventListener("click", () => openCandidate(null));
   }
   // ---------- the candidate record's parts: links, the CV, the screening answers, Claude's read ----------
@@ -630,9 +806,11 @@
     const of = (kind) => defs.filter((d) => d.kind === kind), n = (list, result) => list.filter((d) => (resultOf(d) || {}).result === result).length;
     const ko = of("knockout"), plus = of("plus"), flags = n(of("minus"), "met");
     const unclear = ko.filter((d) => { const r = resultOf(d); return r && r.result !== "met" && r.result !== "not met"; }).length;  // the section's "unclear" pills
+    // and the section's "not checked" ones (23 Nov audit: "knockouts 0 failed of 4" over four not checked read as four passed)
+    const unchecked = (list) => { const k = list.filter((d) => !resultOf(d)).length; return k ? `, ${k} not checked` : ""; };
     return [c.agent_call || "No call yet", c.confidence ? c.confidence.toLowerCase() : "",
-      ko.length ? `knockouts ${n(ko, "not met")} failed of ${ko.length}${unclear ? `, ${unclear} unclear` : ""}` : "",
-      plus.length ? `markers ${n(plus, "met")} of ${plus.length}` : "", flags ? `${flags} red flag${flags > 1 ? "s" : ""}` : ""].filter(Boolean).join(" · ");
+      ko.length ? `knockouts ${n(ko, "not met")} failed of ${ko.length}${unclear ? `, ${unclear} unclear` : ""}${unchecked(ko)}` : "",
+      plus.length ? `markers ${n(plus, "met")} of ${plus.length}${unchecked(plus)}` : "", flags ? `${flags} red flag${flags > 1 ? "s" : ""}` : ""].filter(Boolean).join(" · ");
   }
   function readBlock(c) {
     if (blindNow(c)) return `<div class="readhead"><h3 class="muted">Hidden until the call is saved</h3><span class="cmeta">${h(c.calib_batch)}</span></div>
@@ -645,12 +823,15 @@
     // Knockouts that fail first, then unclear, not checked, passes (14 Nov live QA: a Decline's reasons sat under the passes, off a phone's
     // first screen); the sort is stable, so the scorecard's order holds within each
     const koRank = (d) => { const r = resultOf(d); return !r ? 2 : r.result === "not met" ? 0 : r.result === "met" ? 3 : 1; };
+    // the Knockouts and Markers labels count what isn't checked, as the summary does (final check, 23 Nov: "Knockouts · 0 failed of 4" over
+    // four "not checked" rows, the words the audit took out of the summary)
+    const unchecked = (list) => { const k = list.filter((d) => !resultOf(d)).length; return k ? `, ${k} not checked` : ""; };
     if (!c.agent_call && !res.length) return `<p class="muted">The next robot run reads the application against the ${h(roleName(c.role_id))} scorecard: completeness, knockouts, markers, then a proposal.</p>`;
     return `<div class="readhead"><h3>${c.agent_call ? `${h(c.agent_call)}${c.confidence ? ` <span class="muted">· ${h(c.confidence.toLowerCase())} confidence</span>` : ""}` : '<span class="muted">No call yet</span>'}</h3>
         <span class="cmeta">${h(c.rules_version || (last && last.rules_version) || "")}${last ? ` · ${h(fmt(last.at))}` : ""}</span></div>
       ${c.why ? `<p class="why">${h(c.why)}</p>` : ""}
-      ${ko.length ? `<div class="critgroup"><span class="lbl">Knockouts · ${count(ko, (r) => r.result === "not met")} failed of ${ko.length}</span><ul class="critlist">${ko.slice().sort((a, b) => koRank(a) - koRank(b)).map(row).join("")}</ul></div>` : ""}
-      ${plus.length ? `<div class="critgroup"><span class="lbl">Markers for · ${count(plus, (r) => r.result === "met")} of ${plus.length}</span><ul class="critlist">${plus.map(row).join("")}</ul></div>` : ""}
+      ${ko.length ? `<div class="critgroup"><span class="lbl">Knockouts · ${count(ko, (r) => r.result === "not met")} failed of ${ko.length}${unchecked(ko)}</span><ul class="critlist">${ko.slice().sort((a, b) => koRank(a) - koRank(b)).map(row).join("")}</ul></div>` : ""}
+      ${plus.length ? `<div class="critgroup"><span class="lbl">Markers for · ${count(plus, (r) => r.result === "met")} of ${plus.length}${unchecked(plus)}</span><ul class="critlist">${plus.map(row).join("")}</ul></div>` : ""}
       ${minus.length ? `<div class="critgroup"><span class="lbl">Red flags · ${count(minus, (r) => r.result === "met")} of ${minus.length}</span><ul class="critlist">${minus.map(row).join("")}</ul></div>` : ""}
       ${other.length ? `<div class="critgroup"><span class="lbl">Criteria</span><ul class="critlist">${other.map(row).join("")}</ul></div>` : ""}
       ${c.doubt ? `<div class="kvline"><span class="lbl">Doubt to probe</span><span>${h(c.doubt)}</span></div>` : ""}
@@ -698,7 +879,7 @@
     const grp = groupOf(c), norm = (s) => s.toLowerCase().replace(/\b1st\b/g, "first").replace(/\b2nd\b/g, "second"), sameWord = norm(statusOf(c)).includes(norm(grp));
     // Claude's call names its step like the people's, and goes quiet once a person has made the screening call (14 Nov live QA: a red
     // "Claude · Decline" stayed beside Kostya's Shortlist and every later Go)
-    return `<div class="rchips"><span class="pill st ${kind}" title="Status">${h(statusOf(c))}</span>${sameWord ? "" : `<span class="pill grp" title="Stage">${h(grp)}</span>`}${callChip(c)}${
+    return `<div class="rchips"><span class="pill st ${kind}" title="Status">${h(statusOf(c))}</span>${declineOwed(c) ? `<span class="pill warn" title="The call is Decline, and the decline isn't sent yet: send it, then set the stage to Rejected">decline not sent</span>` : ""}${sameWord ? "" : `<span class="pill grp" title="Stage">${h(grp)}</span>`}${callChip(c)}${
       !hideClaude && !blindNow(c) && c.agent_call ? pill("Screening · Claude: " + c.agent_call, c.your_call ? "" : callKind(c.agent_call)) : ""}</div>
       <p class="rmeta">${facts.map(h).join(" · ")}</p>${links.length ? `<div class="rlinks">${links.join("")}</div>` : ""}`;
   }
@@ -729,8 +910,12 @@
   }
   function msgsSummary(c) {
     const list = msgsOf(c), last = list[list.length - 1], first = (c.name || "").split(" ")[0];
+    // only where Claude writes the concern (Brand & Content) is one "not written yet"; elsewhere message 1 is the person's (Kostya, 23 Nov:
+    // sales designers; the review: PM too, as its cards say)
+    const none = claudeWrites(c) ? "no concern written yet" : c.your_call === "Shortlist" ? "message 1 to send" : "";
     return [list.length ? `${list.length} message${list.length > 1 ? "s" : ""} · last ${last.direction === "in" ? "from " + first : "sent"} ${fmt(last.at)}` : "",
-      c.reply_draft ? "reply drafted" : "", !list.length && (inScreening(c) || c.screen_concern) ? (wasSent(c) ? "screen message sent" : c.screen_message ? "screen message to send" : "no concern written yet") : ""].filter(Boolean).join(" · ");
+      c.reply_draft ? "reply drafted" : "", !list.length && (inScreening(c) || c.screen_concern) ? (wasSent(c) ? "screen message sent" : c.screen_message ? "screen message to send" : none) : ""].filter(Boolean).join(" · ")
+      || "no messages yet";  // the section shows on every record now, for Log a message
   }
   const appSummary = (c) => [sourceShort(c.sources) || "Source not recorded", c.applied ? "applied " + fmt(c.applied) : "", c.cv_file ? "CV stored" : ""].filter(Boolean).join(" · ");
   // Blind scoring (18 Oct): an interview's outcome stays out of sight until the viewer has a card of their own for this candidate, unless
@@ -765,11 +950,18 @@
   // with the name of whoever made it, and Edit (or Change, for someone else's screening call). The row that edits a call always carries the
   // viewer's own name, the person the Worker records; who is meant to decide is a note above it.
   function decisionHtml(c, id) {
-    const sel = (name, opts, val, labels) => `<select name="${name}">${opts.map((o, i) => `<option value="${h(o)}" ${o === (val || "") ? "selected" : ""}>${h(labels ? labels[i] : (o || "–"))}</option>`).join("")}</select>`;
     const title = id ? "Decisions and next step" : "New candidate";
+    // A new record (23 Nov audit): its search starts as openCandidate picked it, else "Choose a search", which Add won't pass (a sales
+    // designer added from All open roles went to Brand & Content, Kostya's search, and a record's search can't be changed after). The
+    // application's day (today in São Paulo, the imports' days: she works from Rivne, five hours ahead) and the screening answers, as her
+    // guide's part 5 asks for (the form had neither, so a Monday applicant added on Tuesday counted as Tuesday's).
+    const spToday = spDay(new Date());
     return `<section class="decision" aria-label="${title}"><span class="eyebrow">${title}</span>
       <form class="form" id="cform">
-        ${id ? "" : `<label class="full"><span class="lbl">Name</span><input name="name" required></label><label><span class="lbl">Role</span>${sel("role_id", openRoles().map((r) => r.id), c.role_id, openRoles().map((r) => r.short))}</label><label><span class="lbl">Source</span><input name="sources" placeholder="LinkedIn UA, referral…"></label><label class="full"><span class="lbl">LinkedIn</span><input name="linkedin" type="url"></label><label><span class="lbl">Email</span><input name="email" type="email"></label><label><span class="lbl">Location</span><input name="location"></label>`}
+        ${id ? "" : `<label class="full"><span class="lbl">Name</span><input name="name" required></label><label><span class="lbl">Role</span><select name="role_id" required>${c.role_id ? "" : '<option value="" selected>Choose a search</option>'}${openRoles().map((r) => `<option value="${h(r.id)}"${r.id === c.role_id ? " selected" : ""}>${h(r.short)}</option>`).join("")}</select></label>
+          <label><span class="lbl">Source</span><input name="sources" placeholder="LinkedIn UA, referral…"></label><label><span class="lbl">LinkedIn</span><input name="linkedin" type="url"></label><label><span class="lbl">Email</span><input name="email" type="email"></label>
+          <label><span class="lbl">Location</span><input name="location"></label><label><span class="lbl">Applied</span><input name="applied" type="date" value="${h(spToday)}" max="${h(spToday)}"></label>
+          <label class="full"><span class="lbl">Screening answers</span><textarea name="screening" rows="3" placeholder="The answers to the screening questions, pasted as they are"></textarea></label>`}
         <ul class="full dsteps">
           <li class="dstep" id="dstep-screening">${screenStep(c, id)}</li>
           ${id ? `<li class="dstep" id="dstep-interview">${decisionStep(c, "interview")}</li><li class="dstep" id="dstep-second">${decisionStep(c, "second")}</li>` : ""}
@@ -783,8 +975,22 @@
           <label><span class="lbl">Referral bounty</span><input name="bounty" value="${h(c.bounty)}" placeholder="Blank until Kostya sets it"></label>
           ${id ? `<label><span class="lbl">Hired on</span>${dateField("hired_at", c.hired_at)}</label>
           <div class="fieldnote"><span class="lbl">Bounty due</span><span>${c.bounty_due ? h(fmt(c.bounty_due)) + " · hire + 90 days" : (c.referred_by ? "90 days after the hire date" : "Only for referrals")}</span></div>` : ""}</div></details>
+        ${id ? "" : '<div class="addclash full" id="addclash" role="status" hidden></div>'}
         <div class="formfoot full"><span class="saved" id="csaved"></span><button type="submit" class="btn">${id ? "Save" : "Add"}</button></div>
       </form></section>`;
+  }
+  // A person's Add that matches a record already in that search (Kostya, 23 Nov 2026: the Worker answers 409 and writes nothing): what it
+  // matched, Open <ID>, and where only the name matched (no LinkedIn or email to tell them apart), Add as a new person, which sends as_new.
+  // The Add form and Re-contact's "Add to this search" both show it where the click was. Open is the dark button, the one her guide's part 5
+  // takes first (final check, 23 Nov: Add as a new person was the dark one, under "Only the name is the same").
+  function showClash(box, d, asNew) {
+    box.innerHTML = `<p>${h(String(d.error || "Already in Studio as " + d.id).replace(/\.$/, ""))}.${d.by === "name" ? " Only the name is the same: if this is someone else, add them as a new person." : ""}</p>
+      <div class="pact"><button type="button" class="btn small" data-clashopen>Open ${h(d.id)}</button>${d.by === "name" ? '<button type="button" class="btn ghost small" data-clashnew>Add as a new person</button>' : ""}</div>`;
+    box.hidden = false;
+    const open = $("[data-clashopen]", box), nb = $("[data-clashnew]", box);
+    open.addEventListener("click", () => openCandidate(d.id));
+    if (nb) nb.addEventListener("click", () => { nb.disabled = true; asNew(); });
+    open.focus({ preventScroll: true }); box.scrollIntoView({ block: "nearest" });
   }
   async function openCandidate(id) {
     if (wsLive) await wsLive.flush();  // a call note still in its field is saved before any record is read (again)
@@ -793,7 +999,8 @@
     const f0 = id && isOpen(id) && $("#cform"), carry = (state.carry && state.carry.cid === id ? state.carry : null) || (f0 && f0._edits ? f0._edits() : null);
     state.carry = null;
     if (id) await need("candidates", "cards");
-    let c = id ? state.candidates.find((x) => x.id === id) : { stage: "applied", role_id: state.roleFilter !== "all" && state.roleFilter !== "closed" ? state.roleFilter : (openRoles()[0] || {}).id };
+    // a new record's search: the one the list shows, else the viewer's own, else none yet (the form asks; 23 Nov audit)
+    let c = id ? state.candidates.find((x) => x.id === id) : { stage: "applied", role_id: openRoles().some((r) => r.id === state.roleFilter) ? state.roleFilter : ownRole() };
     // a record added since the list was read (the robots' new applicant, linked from #talent): the list is read again once
     if (!c) { forget(); await render(true); await need("candidates", "cards"); c = state.candidates.find((x) => x.id === id); }
     if (!c) { notice(`There's no candidate ${id} in the studio.`, true); return; }
@@ -823,7 +1030,7 @@
         <div class="recside">${decisionHtml(c, id)}</div>
         <div class="recrest">${(sheets.length ? read : "") + sectionList(c, sheets).filter((x) => x[3]).map(([k, t, sm, b]) => section(k, t, sm, b, asked(c, k))).join("") + laterHtml(c)}</div></div>`, id, headHtml(c));
       if (focus) openSec(focus, true);
-      bindLater(c); bindScoreBlock(c); bindWsBlock(c); bindScreen($("#recbody"), async () => { forget(); await render(true); await openCandidate(id); }); bindReply($("#recbody"), async () => { forget(); await render(true); await openCandidate(id); }); bindCvCheck($("#recbody"), () => render(true));
+      bindLater(c); bindScoreBlock(c); bindWsBlock(c); bindMsgs($("#recbody"), c); bindCvCheck($("#recbody"), () => render(true));
     }
     bindRecordForm(c, id, carry);
   }
@@ -863,6 +1070,7 @@
       if (next) next.insertAdjacentHTML("beforebegin", html); else rest.insertAdjacentHTML("beforeend", html);
       if (k === "cards") bindScoreBlock(c);
       if (k === "ws") bindWsBlock(c);
+      if (k === "msgs") bindMsgs($("#sec-msgs"), c);  // a blind record's, once its call is saved
     }
     const old = rest.querySelector(":scope > #reclater"), later = laterHtml(c);
     if (old) old.remove();
@@ -882,25 +1090,33 @@
     const rowInit = (row) => { try { return JSON.parse(row.dataset.init || "{}"); } catch (e) { return {}; } };
     const rowDirty = (row) => { const a = rowVal(row), b = rowInit(row); return a.call !== (b.call || "") || a.reason !== (b.reason || ""); };
     const screenDirty = () => { const d = changed(); return "your_call" in d || "your_reason" in d; };
+    // A screening call of one's own that differs from Claude's needs its reason (Kostya, 23 Nov 2026: screening-logic.md asks for one, the
+    // Week 2 calls tasks say "Write a reason of one line", and the placeholder said "needed if not …" while a Hold against Claude's Shortlist
+    // saved without one). Not while Claude's call is hidden from the viewer (a blind batch, until their call is made), nor on a new record.
+    const needsReason = () => { const claude = id && c.agent_call && !blindNow(c) ? c.agent_call : "", call = f.elements.your_call ? f.elements.your_call.value : "";
+      return !!claude && !!call && call !== claude && screenDirty() && !oneLine(f.elements.your_reason.value).trim(); };
     const say = (t, bad) => { saved.textContent = t; saved.classList.toggle("bad", !!bad); saved.classList.toggle("warn", t === "Not saved yet"); };
     let saving = 0;
     // "Not saved yet" on each step changed and at the foot, and no "Saved" while anything is; and the Due field's "overdue" for its day now
     const marks = () => {
       const dl = f.querySelector("[data-duelate]"); if (dl && f.elements.due) dl.textContent = lateSay(daysLate(c, f.elements.due.value));
       decRows().forEach((row) => { const m = $("[data-dmark]", row); if (!rowDirty(row)) { m.textContent = ""; m.classList.remove("bad", "warn"); } else if (!m.classList.contains("bad")) { m.textContent = "Not saved yet"; m.classList.add("warn"); } });
+      // the screening step's "Add the reason" stays until the reason is there (or the call no longer differs)
       const sm = f.querySelector("[data-dscreen] [data-dmark]");
-      if (sm) { sm.textContent = screenDirty() ? "Not saved yet" : ""; sm.classList.toggle("warn", screenDirty()); }
+      if (sm) { const bad = sm.classList.contains("bad") && needsReason(), dirty = screenDirty();
+        if (!bad) { sm.textContent = dirty ? "Not saved yet" : ""; sm.classList.remove("bad"); }
+        sm.classList.toggle("warn", dirty && !bad); }
       const any = Object.keys(changed()).length || decRows().some(rowDirty);
       if (any && !saving && !saved.classList.contains("bad")) say("Not saved yet");
       else if (!any && saved.textContent === "Not saved yet") say("");
     };
     // a step's edit row shown (Edit, Change, Add, Decide now) or put back (Cancel), and its values back to what is stored
-    const show = (step, on) => { const row = f.querySelector(`[data-dedit-row="${step}"]`), ro = f.querySelector(`[data-dro="${step}"]`), add = f.querySelector(`[data-dadd="${step}"]`), note = f.querySelector(`#dstep-${step} [data-dnote]`);
-      if (row) row.hidden = !on; if (ro) ro.hidden = !!on; if (add) add.hidden = !!on; if (note) note.hidden = !on;
+    const show = (step, on) => { const row = f.querySelector(`[data-dedit-row="${step}"]`), ro = f.querySelector(`[data-dro="${step}"]`), add = f.querySelector(`[data-dadd="${step}"]`);
+      if (row) row.hidden = !on; if (ro) ro.hidden = !!on; if (add) add.hidden = !!on; f.querySelectorAll(`#dstep-${step} [data-dnote]`).forEach((n) => { n.hidden = !on; });
       if (on && row) row.querySelectorAll("textarea").forEach(fitArea); };
     const press = (root, name, v) => root.querySelectorAll(`[data-seg="${name}"] button`).forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === v && !!v));
     const reset = (step) => {
-      if (step === "screening") { f.elements.your_call.value = init.your_call || ""; press(f, "yourcall", init.your_call || ""); f.elements.your_reason.value = init.your_reason || ""; return; }
+      if (step === "screening") { if (!f.elements.your_call) return; f.elements.your_call.value = init.your_call || ""; press(f, "yourcall", init.your_call || ""); f.elements.your_reason.value = init.your_reason || ""; return; }
       const row = f.querySelector(`.drow[data-dstep="${step}"]`); if (!row) return;
       const b = rowInit(row); press(row, "dec-" + step, b.call || ""); $("textarea", row).value = b.reason || ""; $("[data-dmark]", row).classList.remove("bad");
     };
@@ -909,7 +1125,8 @@
       const li = $("#dstep-" + step); if (!li) return;
       const had = li.contains(document.activeElement);
       li.innerHTML = step === "screening" ? screenStep(c, id) : decisionStep(c, step);
-      if (step === "screening") { init.your_call = f.elements.your_call.value; init.your_reason = f.elements.your_reason.value; }
+      // (a step with no row of the viewer's own: someone else's search, where they have no call to change; D2, 23 Nov)
+      if (step === "screening" && f.elements.your_call) { init.your_call = f.elements.your_call.value; init.your_reason = f.elements.your_reason.value; }
       bindDecisions(c);
       if (had) { const b = li.querySelector("button:not([hidden])"); if (b) b.focus(); }
     };
@@ -932,6 +1149,13 @@
       _edits: () => ({ cid: id, fields: changed(), decs: Object.fromEntries(decRows().filter(rowDirty).map((r) => [r.dataset.dstep, rowVal(r)])) }) });
     bindDecisions(c);
     f.addEventListener("input", marks);
+    // A new record's heading and whose call it is follow the search picked (23 Nov audit: they stayed the first search's, "Brand & Content"
+    // and "Kostya makes this call" over a sales designer); a call and a reason already picked stay
+    if (!id && f.elements.role_id) f.elements.role_id.addEventListener("change", () => {
+      const v = f.elements.role_id.value, li = $("#dstep-screening"); c.role_id = v;
+      $("#receyebrow").textContent = v ? roleName(v) : "";
+      if (li) { li.innerHTML = screenStep({ ...c, your_call: f.elements.your_call.value, your_reason: f.elements.your_reason.value }, null); bindDecisions(c); }
+      $("#addclash").hidden = true; marks(); });
     // edits put back in their fields and steps, still to be saved: carried over a redraw, or a save that failed
     const apply = (edits) => {
       for (const [k, v] of Object.entries(edits.fields || {})) { const el = f.elements[k]; if (!el || el instanceof RadioNodeList) continue; el.value = v; if (el.tagName === "TEXTAREA") fitArea(el); }
@@ -950,14 +1174,37 @@
       ["due", "hired_at"].forEach((k) => { if (k in data && !data[k] && c[k] && !dayOf(c[k])) delete data[k]; });  // see dateField
       ["next_step", "your_reason"].forEach((k) => { if (typeof data[k] === "string") data[k] = oneLine(data[k]); });  // one line, as the fields always held
       if (typeof data.your_reason === "string") data.your_reason = data.your_reason.trim();  // as the Worker stores it
-      if (!id) {  // a new record: everything filled in
-        const all = snap(); ["next_step", "your_reason"].forEach((k) => { if (typeof all[k] === "string") all[k] = oneLine(all[k]); });
-        await api("candidates", "POST", all); Object.assign(init, snap()); forget(); await render(true); closeRecord(true); return;
+      if (!id) {  // a new record: only what is filled in, and no stage unless one was picked (23 Nov audit: every field went, the default
+        // stage too, and on a record that was there already they were written over it: SD-0034 went back to New)
+        const body = {};
+        for (const [k, v] of Object.entries(snap())) { const t = (k === "next_step" || k === "your_reason" ? oneLine(v) : String(v)).trim();
+          if (t && !(k === "stage" && t === (init.stage || "applied"))) body[k] = t; }
+        const box = $("#addclash"), btn = $('button[type="submit"]', f);
+        const add = async (extra) => {
+          btn.disabled = true; box.hidden = true; say("Adding…");
+          try { await api("candidates", "POST", { ...body, ...extra }); }
+          catch (err) {
+            btn.disabled = false;
+            // already in Studio (Kostya, 23 Nov): nothing was written; the record it matched opens from here, and a match on the name alone
+            // can be someone else of the same name
+            if (err.status === 409 && err.data && err.data.id) { notice(""); say(""); showClash(box, err.data, () => add({ as_new: true })); }
+            else say(`Not added (${(err && err.message) || err})`, true);
+            return;
+          }
+          Object.assign(init, snap()); forget(); await render(true); closeRecord(true);
+        };
+        await add({}); return;
       }
       const decs = decRows().filter(rowDirty).map((row) => ({ row, step: row.dataset.dstep, ...rowVal(row) }));
       // a No needs its reason: nothing goes until it has one
       const noReason = decs.find((d) => d.call === "No" && !d.reason);
       if (noReason) { const m = $("[data-dmark]", noReason.row); m.textContent = "Add the reason for the No"; m.classList.remove("warn"); m.classList.add("bad"); $("textarea", noReason.row).focus(); say("Not saved: a No needs its reason", true); return; }
+      // so does a screening call of one's own that differs from Claude's (needsReason)
+      if (needsReason()) { const m = f.querySelector("[data-dscreen] [data-dmark]"); if (m) { m.textContent = "Add the reason: your call differs from Claude's."; m.classList.remove("warn"); m.classList.add("bad"); }
+        f.elements.your_reason.focus(); say("Not saved: a call that differs from Claude's needs its reason", true); return; }
+      // A screening Decline once the interviews have begun is asked about first: a No after an interview is 2 · Interview's (23 Nov audit:
+      // five Brand & Content records at the test or past the first interview still carried a screening Decline as the record's call)
+      if (data.your_call === "Decline" && reachedIdx(c) >= stageIdx("interview booked") && !confirm("A No after the interview goes in 2 · Interview. Save Decline as your screening call anyway?")) return;
       if (!Object.keys(data).length && !decs.length) { say(saved.textContent === "Saved" ? "Saved" : "Nothing changed"); return; }
       // An existing record saves in the background: the change shows at once (the record stays where it is and can be closed straight
       // away), the requests run on, and the card and the list behind follow what was stored when they answer. The stage shows the way the
@@ -1050,27 +1297,38 @@
       <span class="dreason">${h(reason)}${at ? `${reason ? " " : ""}<span class="cmeta">${h(fmt(at))}</span>` : ""}</span></div>`;
   // The screening step per person (19 Nov 2026, "calls" from the Worker): each person makes their own call with their own reason, one line
   // each, as 2 · Interview works, and nobody's is written over (Yana's text had replaced Kostya's reason on a call that stayed his). The
-  // record's call is the latest one made: it moves the stage, and the lists, the robots and the exports read it. The row that edits is the
-  // viewer's own. On an older Worker the record has one call and one reason, as before.
+  // record's call is the search's recruiter's once she has made one, else the latest one made (Kostya, 23 Nov 2026: her Week 2 says "Where
+  // you do not agree, keep your call", and he calls after her in the same table): it moves the stage, and the lists, the robots and the
+  // exports read it; everyone else's stays beside it. The row that edits is the viewer's own. On an older Worker the record has one call and
+  // one reason, as before.
   const reasonsOf = (c) => has("calls") && c && c.id ? state.reasonBy[c.id] || null : null;
   // The person's rows and the record after a save of the viewer's own call and reason (data: what the form sends), the way the Worker works
-  // it out: the latest call is the record's, its maker's reason (else the newest) is the record's reason.
+  // it out (pickCall, CALL_PICK): the search's recruiter's call when she has one, else the latest (ties to the larger login), is the
+  // record's; its maker's reason (else the newest) is the record's reason.
   function screenAfter(c, data) {
-    const me = state.boot.who, rs = reasonsOf(c) || [], now = new Date().toISOString();
+    const me = state.boot.who, rs = reasonsOf(c) || [], now = new Date().toISOString(), rec = loginOf(roleOf(c.role_id).recruiter), hers = (r) => !!rec && loginOf(r.by) === rec;
     const mine = rs.find((r) => r.by === me) || { candidate_id: c.id, by: me, call: "", call_at: "", reason: "", at: "" };
     const top = rs.reduce((m, r) => ((r.call_at || "") > m ? r.call_at : m), ""), callAt = now > top ? now : new Date(Date.parse(top) + 1).toISOString();
     const call = "your_call" in data ? data.your_call : mine.call || "", reason = "your_reason" in data ? data.your_reason : mine.reason || "";
     const own = { candidate_id: c.id, by: me, call, call_at: call !== (mine.call || "") ? (call ? callAt : "") : mine.call_at || "", reason, at: reason !== (mine.reason || "") ? (reason ? now : "") : mine.at || "" };
     const rows = rs.filter((r) => r.by !== me).concat(call || reason ? [own] : []);
-    const latest = rows.filter((r) => r.call).reduce((m, r) => (!m || (r.call_at || "") > (m.call_at || "") || ((r.call_at || "") === (m.call_at || "") && r.by > m.by) ? r : m), null);
+    const latest = rows.filter((r) => r.call).reduce((m, r) => !m ? r : hers(r) !== hers(m) ? (hers(r) ? r : m)
+      : (r.call_at || "") > (m.call_at || "") || ((r.call_at || "") === (m.call_at || "") && r.by > m.by) ? r : m, null);
     const callBy = latest ? latest.by : "", told = rows.filter((r) => r.reason);
     const pick = (latest && told.find((r) => r.by === callBy)) || told.sort((a, b) => (b.at || "").localeCompare(a.at || "") || (b.by > a.by ? 1 : -1))[0];
     return { rows, call: latest ? latest.call : "", callBy, reason: pick ? pick.reason : "", reasonBy: pick ? pick.by : "" };
   }
+  // Who makes a screening call on a record (Kostya, 23 Nov 2026: "Add Yana's call" showed on every Brand & Content and PM record, and her
+  // Decline on his Shortlisted candidate moved it to Rejected): the search's recruiter or hiring manager, or Kostya. Anyone else changes or
+  // takes back a call of their own, and reads the others'. A rule of the app's only: the Worker still takes anyone's call.
+  const callsHere = (c) => { const me = loginOf(state.boot.who), r = roleOf(c.role_id); return isAdmin() || (!!me && (loginOf(r.recruiter) === me || leadEmail(r) === me)); };
   // 1 · Screening. Per person (calls): one line per person who made a call or gave a reason, the viewer's last with Edit; the viewer's row
-  // is open while nobody has made a call, else behind "Add <name>'s call". On an older Worker: the record's one call, as before.
+  // is open while nobody has made a call, else behind "Add <name>'s call", for whoever makes calls here (callsHere) or has one of their own.
+  // On an older Worker: the record's one call, as before. From the first interview's booking on, opening the row says where a No goes now.
   function screenStep(c, id) {
     const me = state.boot.who, by = callBy(c), made = !!(id && c.your_call), rec = roleOf(c.role_id).recruiter;
+    // (23 Nov audit: Kostya's screening Declines stood on five Brand & Content records at the test or past the first interview)
+    const pastNote = (open) => id && reachedIdx(c) >= stageIdx("interview booked") ? `<span class="dnote" data-dnote${open ? "" : " hidden"}>A No after the interview goes in 2 · Interview.</span>` : "";
     // Claude's call on the step's own line, and the rule it carries in the reason's placeholder (one line, not two, in the 320px panel)
     const claude = id && c.agent_call && !blindNow(c) ? c.agent_call : "";
     const label = `<span class="lbl">1 · Screening${claude ? `<span class="dclaude" title="Claude suggests ${h(claude)}. A call that differs needs its reason."> · Claude: ${h(claude)}</span>` : ""}</span>`;
@@ -1083,21 +1341,23 @@
       // a blind batch stays blind for the viewer until they have made their own call: the colleagues' lines wait too (review, 19 Nov)
       const blind = blindNow(c);
       const shown = rows.filter((r) => (r.call || r.reason) && (!blind || r.by === me)).sort((a, b) => (a.call_at || a.at || "").localeCompare(b.call_at || b.at || ""));
-      const mine = shown.find((r) => r.by === me);
-      // the record's call (the latest) carries a quiet mark when more than one person has made one
+      const mine = shown.find((r) => r.by === me), may = !!mine || callsHere(c), none = !shown.some((r) => r.call);
+      // the record's call (the recruiter's, else the latest) carries a quiet mark when more than one person has made one
       const many = shown.filter((r) => r.call).length > 1;
       const line = (r) => `<div class="drow ro"${r.by === me ? ` data-dro="screening"` : ""}><span class="dwho">${h(r.by ? `${firstName(r.by)}'s call` : r.call ? "Earlier call" : "Earlier reason")}</span>${r.call ? pill(r.call, callKind(r.call)) : `<span class="muted small">no call</span>`}${r.by === me ? `<button type="button" class="linkbtn small dedit-btn" data-dedit="screening" aria-label="Edit your call">Edit</button>` : ""}
-        <span class="dreason">${h(r.reason)}${r.call_at || r.at ? `${r.reason ? " " : ""}<span class="cmeta">${h(fmt(r.call_at || r.at))}${many && r.call && r.by === by ? " · latest" : ""}</span>` : ""}</span></div>`;
+        <span class="dreason">${h(r.reason)}${r.call_at || r.at ? `${r.reason ? " " : ""}<span class="cmeta">${h(fmt(r.call_at || r.at))}${many && r.call && r.by === by ? " · the record's call" : ""}</span>` : ""}</span></div>`;
       // the viewer's row is open while nobody has made a call and they have no row of their own; else behind Edit or "Add <name>'s call"
-      const open = !mine && !shown.some((r) => r.call), note = open && rec && rec !== me ? `<span class="dnote">${h(firstName(rec))} makes this call.</span>` : "";
-      const add = !mine && !open ? `<button type="button" class="linkbtn small dadd" data-dadd="screening">Add ${h(myCall())}</button>` : "";
-      return `${label}${note}${shown.filter((r) => r.by !== me).map(line).join("")}${mine ? line(mine) : ""}${add}${editRow(mine && mine.call, mine && mine.reason, open)}`;
+      const open = may && !mine && none;
+      const note = !mine && none && rec && rec !== me ? `<span class="dnote">${h(firstName(rec))} makes this call.</span>` : !may && none ? `<span class="dnote">No call yet.</span>` : "";
+      const add = may && !mine && !open ? `<button type="button" class="linkbtn small dadd" data-dadd="screening">Add ${h(myCall())}</button>` : "";
+      return `${label}${note}${shown.filter((r) => r.by !== me).map(line).join("")}${mine ? line(mine) : ""}${add}${may ? pastNote(open) + editRow(mine && mine.call, mine && mine.reason, open) : ""}`;
     }
-    // an older Worker, or a new record: the record's one call and reason, as before
-    const note = made ? (by && by !== me ? `<span class="dnote" data-dnote hidden>Saving replaces ${h(firstName(by))}'s call.</span>` : "")
-      : rec && rec !== me ? `<span class="dnote">${h(firstName(rec))} makes this call.</span>` : "";
-    return `${label}${made ? roLine("screening", by ? `${firstName(by)}'s call` : "Call", c.your_call, c.your_reason, "", by && by !== me ? "Change" : "Edit") : ""}${note}
-      ${editRow(c.your_call, c.your_reason, !made)}`;
+    // an older Worker, or a new record: the record's one call and reason, as before (Change on someone else's only for whoever makes calls here)
+    const may = !id || (made && by === me) || callsHere(c);
+    const note = made ? (by && by !== me && may ? `<span class="dnote" data-dnote hidden>Saving replaces ${h(firstName(by))}'s call.</span>` : "")
+      : rec && rec !== me ? `<span class="dnote">${h(firstName(rec))} makes this call.</span>` : !may ? `<span class="dnote">No call yet.</span>` : "";
+    return `${label}${made ? roLine("screening", by ? `${firstName(by)}'s call` : "Call", c.your_call, c.your_reason, "", !may ? "" : by && by !== me ? "Change" : "Edit") : ""}${note}
+      ${may ? pastNote(!made) + editRow(c.your_call, c.your_reason, !made) : ""}`;
   }
   // 2 · Interview from the first interview's booking on, 3 · Second interview from the test assignment on; before that one quiet line, with
   // "Decide now" on an open record for when the stage lags behind what happened (14 Nov review: the two steps took 500px of the panel on
@@ -1163,12 +1423,20 @@
       const t = li.querySelector("[data-seg] button"); if (t) t.focus(); });
   }
   // ---------- the message screen: one concern per shortlisted candidate and the LinkedIn message that checks it ----------
-  // Claude writes the concern and the message; Kostya edits if he wants, copies it into LinkedIn and marks it sent, which moves the
-  // candidate to "messaged". The same panel shows on the Screening view and in the candidate record.
+  // Claude writes the concern and the message (Brand & Content); Kostya edits if he wants, copies it into LinkedIn and marks it sent, which
+  // moves the candidate to "messaged". For sales designers Claude writes none (12 Nov): message 1 is Yana's own, sent from her LinkedIn and
+  // marked sent here (23 Nov). The same panel shows on the Screening view and in the candidate record.
   const SENT = ORDER.slice(ORDER.indexOf("messaged"));  // messaged and every funnel stage after it
   // Sent once the candidate got as far as messaged, closed since or not, or once the conversation has a message to them (second 14 Nov
   // review: the current stage alone showed a withdrawn or declined candidate's sent message as unsent, with Mark as sent)
   const wasSent = (c) => SENT.includes(c.stage || "") || reachedIdx(c) >= stageIdx("messaged") || msgsOf(c).some((m) => m.direction === "out");
+  // Sent only because a message to them is stored while the stage is still New, In screening or Shortlisted: stored before the Worker moved
+  // the stage with it (23 Nov 2026; her reader's message 1). Its button reads Mark as messaged and sets the stage the message already says.
+  const msgOnly = (c) => ["applied", "triaged", "confirmed"].includes(c.stage || "applied") && reachedIdx(c) < stageIdx("messaged") && msgsOf(c).some((m) => m.direction === "out");
+  // The day a stored message to them went, in the viewer's days as today() is ("" with none)
+  const lastOutDay = (c) => { const at = msgsOf(c).filter((m) => m.direction === "out").map((m) => m.at || "").sort().pop(); const d = at ? new Date(at) : null; return d && !isNaN(d) ? localDay(d) : ""; };
+  // "Wed 25 Nov": a day as a Next step names it
+  const dayName = (iso) => new Date(iso + "T12:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
   // A person's call decides when there is one; otherwise Claude's Shortlist counts.
   const inScreening = (c) => (c.your_call ? c.your_call === "Shortlist" : c.agent_call === "Shortlist") && c.cv_check !== "Not pass" && !blindNow(c) && !CLOSED.includes(c.stage) && !isClosedRole(roleOf(c.role_id));
   // The hiring lead's own look at the CV or portfolio as a work sample (scorecard v0.4, 27 Oct): Pass or Not pass, saved on the click.
@@ -1188,14 +1456,20 @@
   const hasReply = (c) => !!repliedAt(c) || c.stage === "replied";
   const atWord = (s) => { const d = new Date(s); return isNaN(d) ? s : d.toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); };
   const linkify = (t) => h(t).replace(/https?:\/\/[^\s<]+[^\s<.,;:!?)\]]/g, (u) => `<a href="${u}" target="_blank" rel="noopener">${u}</a>`);
-  const CHANNEL = { linkedin: "LinkedIn", email: "Email", "work.ua": "Work.ua" };
+  const CHANNEL = { linkedin: "LinkedIn", email: "Email", "work.ua": "Work.ua", other: "Other" };
+  // Who sent a message to them (Kostya, 23 Nov 2026; the audit: every one read "You", Kostya's 4 Nov emails to sales designers on Yana's
+  // screen too): the first name in its author, else the person whose login stored it, else "Sent". by alone would mislabel: the robots
+  // store Kostya's threads, her reader stores both sides of hers. "You" only for the viewer's own.
+  const senderOf = (m) => { const a = String(m.author || "").trim(), me = state.boot.who;
+    const n = /@/.test(a) ? firstName(a) : a ? a.split(/\s+/)[0] : /@/.test(m.by || "") ? whoName(m.by) : "";
+    return !n ? "Sent" : (a ? n.toLowerCase() === firstName(me).toLowerCase() : m.by === me) ? "You" : n; };
   // keep: on the card, only the last few messages show, the earlier ones behind one fold above them (14 Nov review: a five-message thread
   // ran about 2,000px before the reply draft)
   function convoHtml(c, keep) {
     const list = msgsOf(c);
     if (!list.length) return "";
     const first = (c.name || "").split(" ")[0], n = list.filter((m) => m.direction === "in").length;
-    const one = (m) => `<div class="msg ${m.direction === "in" ? "in" : "out"}"><div class="mmeta">${m.direction === "in" ? h(first) : "You"} · ${h(CHANNEL[m.channel] || m.channel)} · ${h(atWord(m.at))}</div><div class="mbody">${linkify(m.body)}</div></div>`;
+    const one = (m) => `<div class="msg ${m.direction === "in" ? "in" : "out"}"><div class="mmeta">${m.direction === "in" ? h(first) : h(senderOf(m))} · ${h(CHANNEL[m.channel] || m.channel)} · ${h(atWord(m.at))}</div><div class="mbody">${linkify(m.body)}</div></div>`;
     const cut = keep && list.length > keep + 1 ? list.length - keep : 0;
     return `<div class="convo"><span class="lbl">Conversation · ${list.length} message${list.length > 1 ? "s" : ""}${n ? ` · ${n} from ${h(first)}` : " · no reply yet"}</span>
       ${cut ? `<details class="fold plain convomore"><summary>${cut} earlier message${cut > 1 ? "s" : ""}</summary><div class="convolist">${list.slice(0, cut).map(one).join("")}</div></details>` : ""}${list.slice(cut).map(one).join("")}</div>`;
@@ -1221,7 +1495,8 @@
       sent.addEventListener("click", async () => {
         sent.disabled = true;
         const c = (state.candidates || []).find((x) => x.id === id) || { id }, at = new Date().toISOString();
-        await api("messages/upsert", "POST", [{ candidate_id: id, channel: replyChannel(c), direction: "out", author: "Kostya", at, body: ta.value, ext_id: "studio|" + at }]);
+        // the viewer sent it (23 Nov audit: it was stored as Kostya's whoever clicked)
+        await api("messages/upsert", "POST", [{ candidate_id: id, channel: replyChannel(c), direction: "out", author: whoName(state.boot.who), at, body: ta.value, ext_id: "studio|" + at }]);
         await api("candidates/" + id, "PATCH", { reply_draft: "", reply_note: "", last_contact: today() });
         state.msgs = null; await after();
       });
@@ -1235,19 +1510,49 @@
   // The message box fits its text (about 62 characters a line in this column; the reply draft's box does the same), Copy is the one dark
   // button, and on Screening a card with no LinkedIn application says so (14 Nov live QA: a fixed 7-row box cut the message mid-line, and
   // the help line pointed at an Application button the card didn't have).
+  // A record with no concern and no message: every sales designer (Claude writes them none since 12 Nov: the messages are Yana's) and a
+  // Shortlist the robots haven't reached yet. Where Claude writes none (every search but Brand & Content: sales designers since 12 Nov, PM
+  // out of the robots' triage), a person's Shortlist gets an empty box for their own message 1 and Mark as sent (Kostya, 23 Nov: her Week 2
+  // calls tasks and the LinkedIn guide's step 7 say to click it, and the card had no button), and a Shortlist of Claude's alone says whose
+  // call it waits for. Brand & Content keeps its line alone: Claude writes its concern and message 1 (23 Nov review: the line said Claude
+  // would write it over a box that said it was Kostya's).
+  const claudeWrites = (c) => familyOf(roleOf(c.role_id)) === "bc";
+  const ownFirst = (c) => c.your_call === "Shortlist" && !claudeWrites(c);
+  const ownLine = (c, own) => { const fam = familyOf(roleOf(c.role_id)), rec = loginOf(roleOf(c.role_id).recruiter);
+    if (fam === "bc") return "No concern written yet. Claude writes one for every shortlisted candidate.";
+    // named as the record names whose call it is (23 Nov review: "once the call is Shortlist" sat beside Claude's own Shortlist, and Kostya
+    // read "message 1 is yours" on Yana's cards): "yours" to the search's recruiter (or to anyone where it has none), her name to the others
+    const mine = !rec || rec === loginOf(state.boot.who), who = mine ? "" : firstName(rec), where = fam === "sd" ? " in LinkedIn" : "";
+    const line = own ? (mine ? `message 1 is yours. Send it${where}, then Mark as sent.` : `message 1 is ${who}'s. ${who} sends it${where}, then Mark as sent.`)
+      : mine ? "message 1 is yours, once your call is Shortlist." : `message 1 is ${who}'s, once ${who}'s call is Shortlist.`;
+    return fam === "sd" ? `Claude writes no message for sales designers: ${line}` : line[0].toUpperCase() + line.slice(1); };
   function screenPanel(c, rec) {
-    if (!c.screen_concern && !c.screen_message) return `<p class="muted small">No concern written yet. Claude writes one for every shortlisted candidate.</p>${rec ? "" : convoHtml(c) + replyHtml(c)}`;
+    const blank = !c.screen_concern && !c.screen_message, own = ownFirst(c), early = msgOnly(c), sent = wasSent(c) && !early;
+    const closed = isClosedStage(c) || isClosedRole(roleOf(c.role_id)), extra = rec ? "" : convoHtml(c) + replyHtml(c);
+    // Mark as messaged goes by the day the stored message went (the nudge, the Next step and Last contact), Mark as sent by the day it is clicked
+    const day = early ? lastOutDay(c) : "", attrs = `data-sid="${h(c.id)}" data-stage="${h(c.stage || "applied")}"${day ? ` data-day="${h(day)}" data-contact="${h(day > (c.last_contact || "") ? day : c.last_contact)}"` : ""}`;
+    const act = sent ? `<span class="pill ok">sent${c.last_contact ? " " + h(fmt(c.last_contact)) : ""}</span>`
+      : closed ? `<span class="muted small">Not sent · the record is closed</span>`
+      : early ? `<button type="button" class="btn ghost small" data-sent>Mark as messaged</button>`
+      : !blank || own ? `<button type="button" class="btn ghost small" data-sent>Mark as sent</button>` : "";
+    const reply = c.latest_reply && !repliedAt(c) ? `<div class="answer"><span class="lbl">Latest reply</span><p>${h(c.latest_reply)}</p></div>` : "";
+    // nothing to write: whose message it is, or where it stands, on one line. Past message 1 with a conversation stored, the conversation
+    // says what happened (a reply logged may have come first: "sent" would be a guess); with none, "Message 1 · sent" and its day.
+    if (blank && (!own || sent || early || closed)) {
+      const told = sent && msgsOf(c).length, line = told ? "" : sent ? "Message 1" : closed ? "" : early ? `A message to them is stored, and the record is still ${statusOf(c)}.` : ownLine(c, false), shown = told ? "" : act;
+      return line || shown || reply ? `<div class="scrpanel noconcern scrline" ${attrs}>${line || shown ? `<p class="muted small">${h(line)}${line && shown ? " " : ""}${shown}</p>` : ""}${reply}</div>${extra}` : extra;
+    }
     const application = urlsIn(c.cv).filter((u) => /linkedin\.com\/hiring\/applicants/.test(u)).map((u) => `<a class="btn ghost small" href="${h(u)}" target="_blank" rel="noopener">Application ↗</a>`).join("");
-    return `<div class="scrpanel${c.screen_concern ? "" : " noconcern"}" data-sid="${h(c.id)}" data-stage="${h(c.stage || "applied")}">
+    // blank: their own message 1, in a box that starts empty; Copy shows once it holds a text, and Mark as sent keeps the text on the record
+    return `<div class="scrpanel${c.screen_concern ? "" : " noconcern"}" ${attrs}>
       ${c.screen_concern ? `<div class="scrcol"><span class="lbl">Concern to verify</span><p class="concern">${h(c.screen_concern)}</p></div>` : ""}
-      <div class="scrcol"><span class="lbl">Message to send on LinkedIn</span><textarea class="scrmsg" rows="${Math.min(18, Math.max(5, (c.screen_message || "").split("\n").reduce((n, l) => n + 1 + Math.floor(l.length / 62), 0)))}" aria-label="Message to ${h(c.name)}">${h(c.screen_message)}</textarea>
-        <div class="pact"><button type="button" class="btn small" data-copy>Copy</button><button type="button" class="btn ghost small" data-savemsg hidden>Save the edit</button>
-          ${wasSent(c) ? `<span class="pill ok">sent${c.last_contact ? " " + h(fmt(c.last_contact)) : ""}</span>`
-            : isClosedStage(c) || isClosedRole(roleOf(c.role_id)) ? `<span class="muted small">Not sent · the record is closed</span>` : `<button type="button" class="btn ghost small" data-sent>Mark as sent</button>`}
+      <div class="scrcol">${blank ? `<p class="muted small">${h(ownLine(c, true))}</p>` : ""}<span class="lbl">${blank ? "Your message 1" : "Message to send on LinkedIn"}</span><textarea class="scrmsg" rows="${Math.min(18, Math.max(5, (c.screen_message || "").split("\n").reduce((n, l) => n + 1 + Math.floor(l.length / 62), 0)))}"${blank ? ' placeholder="Optional: write it here, copy it into LinkedIn, and it stays on the record."' : ""} aria-label="${blank ? "Your message 1" : "Message"} to ${h(c.name)}">${h(c.screen_message)}</textarea>
+        <div class="pact"><button type="button" class="btn small" data-copy${blank ? " hidden" : ""}>Copy</button><button type="button" class="btn ghost small" data-savemsg hidden>Save the edit</button>
+          ${act}
           ${rec ? "" : cvOpen(c, "btn ghost small")}
           ${!rec && c.linkedin ? `<a class="btn ghost small" href="${h(c.linkedin)}" target="_blank" rel="noopener">LinkedIn ↗</a>` : ""}
           ${application || (rec ? "" : '<span class="muted small">No LinkedIn application on file</span>')}</div>
-        ${c.latest_reply && !repliedAt(c) ? `<div class="answer"><span class="lbl">Latest reply</span><p>${h(c.latest_reply)}</p></div>` : ""}</div>${rec ? "" : convoHtml(c) + replyHtml(c)}</div>`;
+        ${reply}</div>${extra}</div>`;
   }
   // Once the screening message is sent (or the candidate is past it): the concern it checks, the message as one line that opens to its text
   // (the conversation holds it too), and a reply recorded outside the conversation. Empty when there is none of it.
@@ -1258,12 +1563,58 @@
       c.screen_message ? `<details class="fold plain scrsent"><summary>Screening message · sent${at ? " " + h(fmt(at)) : ""}</summary><p class="scrtext">${linkify(c.screen_message)}</p></details>` : "",
       c.latest_reply && !repliedAt(c) ? `<div class="answer"><span class="lbl">Latest reply</span><p>${h(c.latest_reply)}</p></div>` : ""].filter(Boolean).join("");
   }
+  // Log a message (Kostya, 23 Nov 2026; the audit: her pool emails go from her own mailbox, which no robot reads, so neither they nor the
+  // answers reached Studio): from them or to them, where, the day (São Paulo's, the imports' days), the words. It is stored as the robots'
+  // and her reader's are (messages/upsert, her login as by, her name as a sent message's author), and the Worker moves an early stage with
+  // it: Replied for a message from them, Messaged for one to them. Not on an earlier round's record: a re-contact is a record of its own.
+  const logHtml = (c) => isClosedRole(roleOf(c.role_id)) ? "" : `<div class="logmsg"><button type="button" class="linkbtn small" data-logopen aria-expanded="false">Log a message</button>
+    <form class="logform" hidden><span class="lbl">Log a message</span><div class="logrow">
+      <div role="group" aria-label="Who wrote it">${seg("logdir", [["in", "From them"], ["out", "To them"]], "")}</div>
+      <div role="group" aria-label="Channel">${seg("logch", [["linkedin", "LinkedIn"], ["email", "Email"], ["other", "Other"]], c.email ? "email" : "linkedin")}</div>
+      <label class="inline logday"><span class="lbl">Date</span><input type="date" name="day" value="${h(spDay(new Date()))}" max="${h(spDay(new Date()))}" required></label></div>
+      <textarea name="body" rows="4" maxlength="20000" required placeholder="The message, word for word" aria-label="The message"></textarea>
+      <div class="formfoot"><span class="saved" data-logmark></span><button type="button" class="linkbtn small" data-logcancel>Cancel</button><button type="submit" class="btn small">Log it</button></div></form></div>`;
+  function bindLog(root, c, after) {
+    root.querySelectorAll(".logmsg").forEach((box) => {
+      const open = $("[data-logopen]", box), f = $("form", box), mark = $("[data-logmark]", f), btn = $('button[type="submit"]', f);
+      const pick = (name) => (f.querySelector(`[data-seg="${name}"] button[aria-pressed="true"]`) || { dataset: {} }).dataset.v || "";
+      const say = (t, bad) => { mark.textContent = t; mark.classList.toggle("bad", !!bad); };
+      const show = (on) => { f.hidden = !on; open.hidden = on; open.setAttribute("aria-expanded", on); if (on) { const b = f.querySelector('[data-seg="logdir"] button'); if (b) b.focus(); } };
+      const dflt = { logdir: "", logch: pick("logch") };
+      const press = (name, v) => f.querySelectorAll(`[data-seg="${name}"] button`).forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === v && !!v));
+      open.addEventListener("click", () => show(true));
+      ["logdir", "logch"].forEach((n) => bindSeg(f, n, (v) => { press(n, v); say(""); }));
+      $("[data-logcancel]", f).addEventListener("click", () => { f.reset(); Object.entries(dflt).forEach(([n, v]) => press(n, v)); say(""); delete f.dataset.dirty; show(false); open.focus(); });
+      f.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const dir = pick("logdir"), ch = pick("logch"), body = f.elements.body.value.trim(), day = f.elements.day.value, now = new Date();
+        if (!dir) { say("Pick From them or To them.", true); return; }
+        if (!body) { say("Write the message first.", true); f.elements.body.focus(); return; }
+        // today's message at the time it is logged; an earlier day's at noon in São Paulo, so it reads as that day everywhere. Its own ext_id,
+        // so two logged at once stay two (the Worker's default, direction and time, would merge them)
+        const at = !day || day === spDay(now) ? now.toISOString() : new Date(day + "T12:00:00-03:00").toISOString();
+        btn.disabled = true; say("Logging…");
+        try {
+          const r = await api("messages/upsert", "POST", [{ candidate_id: c.id, channel: ch || "other", direction: dir, author: dir === "out" ? whoName(state.boot.who) : c.name || "", at, body, ext_id: "studio|" + now.toISOString() }]);
+          if (!r || !r.saved) { btn.disabled = false; say("Not logged: Studio didn't take it. Reload the record and try again.", true); return; }
+        } catch (err) { btn.disabled = false; say(`Not logged (${(err && err.message) || err})`, true); notice(""); return; }
+        delete f.dataset.dirty; f.elements.body.value = "";
+        await after();
+      });
+    });
+  }
+  // A message marked sent, a reply sent or a message logged on the record: the record read again (the Worker may have moved its stage), back
+  // at its Messages
+  const msgsAgain = (id) => async () => { state.focusSec = "msgs"; forget(); await render(true); await openCandidate(id); };
+  const bindMsgs = (root, c) => { const again = msgsAgain(c.id); bindScreen(root, again); bindReply(root, again); bindLog(root, c, again); };
   // The record's Messages section, the thing to act on first (14 Nov review: the reply draft came last, 2,000px down): Claude's reply draft,
   // then for someone in screening or with a concern written the message screen (the message to send; once sent, one line), then the
   // conversation with its last two messages open. Hidden in a blind batch, as the message screen always was.
+  // Then Log a message, for one neither the robots nor her reader read (23 Nov 2026). With no concern and no message (a sales designer's
+  // message 1 is hers, written in LinkedIn) the panel's one line says where message 1 stands, sent or not.
   const messagesHtml = (c) => blindNow(c) ? "" : [replyHtml(c),
-    inScreening(c) || c.screen_concern ? (wasSent(c) ? sentScreenHtml(c) : screenPanel(c, true)) : "",
-    convoHtml(c, 2)].filter(Boolean).join("");
+    inScreening(c) || c.screen_concern ? (wasSent(c) && !msgOnly(c) && (c.screen_concern || c.screen_message) ? sentScreenHtml(c) : screenPanel(c, true)) : "",
+    convoHtml(c, 2), logHtml(c)].filter(Boolean).join("");
 
   // ---------- the call sheets on the card (5 Nov) ----------
   // candidates.interview_sheet holds one Markdown sheet per call, newest first, each starting "# <step> · <date, time (-03)>"; text
@@ -1521,45 +1872,67 @@
   function bindScreen(root, after) {
     root.querySelectorAll(".scrpanel").forEach((p) => {
       const id = p.dataset.sid, ta = $(".scrmsg", p), save = $("[data-savemsg]", p), copy = $("[data-copy]", p), sent = $("[data-sent]", p);
-      const orig = ta.value;
-      ta.addEventListener("input", () => { save.hidden = ta.value === orig; ta.dataset.dirty = ta.value === orig ? "" : "1"; });
-      copy.addEventListener("click", () => {
-        const ok = () => { copy.textContent = "Copied"; setTimeout(() => { copy.textContent = "Copy"; }, 1600); };
-        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(ta.value).then(ok, () => { ta.select(); copy.textContent = "Selected: press ⌘C"; });
-        else { ta.select(); copy.textContent = "Selected: press ⌘C"; }
-      });
-      save.addEventListener("click", async () => { save.disabled = true; await api("candidates/" + id, "PATCH", { screen_message: ta.value }); await after(); });
+      const orig = ta ? ta.value : "";
+      if (ta) {  // a card with nothing to write (scrline) has no box
+        // Copy waits for a text: their own message 1 starts empty (23 Nov)
+        ta.addEventListener("input", () => { save.hidden = ta.value === orig; ta.dataset.dirty = ta.value === orig ? "" : "1"; copy.hidden = !ta.value.trim(); });
+        copy.addEventListener("click", () => {
+          const ok = () => { copy.textContent = "Copied"; setTimeout(() => { copy.textContent = "Copy"; }, 1600); };
+          if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(ta.value).then(ok, () => { ta.select(); copy.textContent = "Selected: press ⌘C"; });
+          else { ta.select(); copy.textContent = "Selected: press ⌘C"; }
+        });
+        save.addEventListener("click", async () => { save.disabled = true; await api("candidates/" + id, "PATCH", { screen_message: ta.value }); await after(); });
+      }
       if (sent) sent.addEventListener("click", async () => {
         sent.disabled = true;
         // the stage moves to messaged only from an earlier one: a later or a closed stage is never sent from here (second 14 Nov review:
-        // one click reopened a declined candidate and replaced their next step)
-        const at = stageIdx(p.dataset.stage || ""), early = at >= 0 && at < stageIdx("messaged");
-        const patch = early ? { stage: "messaged", last_contact: today(), next_step: "Wait for the reply; nudge after 5 working days" } : { last_contact: today() };
-        if (ta.value !== orig) patch.screen_message = ta.value;
-        await api("candidates/" + id, "PATCH", patch); await after();
+        // one click reopened a declined candidate and replaced their next step). It goes with the stage the card showed, so a reply or a
+        // robot's move since is never put back (the Worker answers 409, and the card is drawn again as it is).
+        // The nudge on the second working day and the close on day 7, as templates.md and the corner-sourcing skill say (23 Nov audit: "nudge
+        // after 5 working days", and the old Due stayed, so a candidate messaged today read late). Mark as messaged counts from the day the
+        // stored message went.
+        const at = stageIdx(p.dataset.stage || ""), early = at >= 0 && at < stageIdx("messaged"), day = p.dataset.day || today(), nudge = addWorkDays(day, 2);
+        const patch = early ? { stage: "messaged", stage_was: p.dataset.stage, last_contact: p.dataset.contact || day, next_step: `Wait for the reply; nudge on ${dayName(nudge)}, close on day 7`, due: nudge }
+          : { last_contact: today() };
+        if (ta && ta.value !== orig) patch.screen_message = ta.value;
+        try { await api("candidates/" + id, "PATCH", patch); } catch (e) { if (e.status !== 409) { sent.disabled = false; return; } }
+        await after();
       });
     });
   }
   async function renderScreening(view) {
     await need("candidates", "screens"); await loadMsgs();
-    if (state.roleFilter === "closed") state.roleFilter = "all";  // Screening leaves earlier rounds out, so it doesn't offer them (14 Nov live QA)
-    const all = state.candidates.filter(inScreening).filter(inRole);
+    // Screening leaves earlier rounds out, so it doesn't offer them (14 Nov live QA): a pick of Earlier rounds shows All open roles here and
+    // stays the pick (23 Nov review: Screening set it to all for the session while the browser kept Earlier rounds for a reload)
+    const tab = state.roleFilter === "closed" ? "all" : state.roleFilter;
+    const all = state.candidates.filter(inScreening).filter(inRoleOf(tab));
     const pick = { tosend: (c) => !wasSent(c), sent: wasSent, replied: hasReply, all: () => true }[state.screenFilter] || (() => true);
-    const list = all.filter(pick).sort((a, b) => (state.screenFilter === "replied" ? repliedAt(b).localeCompare(repliedAt(a)) : 0) || (wasSent(a) - wasSent(b)) || a.role_id.localeCompare(b.role_id) || (CONF_RANK[a.confidence] ?? 3) - (CONF_RANK[b.confidence] ?? 3) || a.name.localeCompare(b.name));
-    const toSend = all.filter((c) => !wasSent(c)).length, noConcern = all.filter((c) => !c.screen_concern).length, replied = all.filter(hasReply).length, drafts = all.filter((c) => c.reply_draft).length;
+    // what can go now first: a message written, or a person's Shortlist (their own message 1); a Shortlist of Claude's alone with nothing
+    // written waits for the call (23 Nov: on Sales designer those came first and her own Shortlists last)
+    const ready = (c) => !!(c.screen_concern || c.screen_message || ownFirst(c));
+    const list = all.filter(pick).sort((a, b) => (state.screenFilter === "replied" ? repliedAt(b).localeCompare(repliedAt(a)) : 0) || (wasSent(a) - wasSent(b)) || (ready(b) - ready(a)) || a.role_id.localeCompare(b.role_id) || (CONF_RANK[a.confidence] ?? 3) - (CONF_RANK[b.confidence] ?? 3) || a.name.localeCompare(b.name));
+    // only where Claude writes the concern is one "without a concern yet" (Kostya, 23 Nov: not sales designers; the review: nor PM, whose
+    // cards say message 1 is Yuliia's)
+    const toSend = all.filter((c) => !wasSent(c)).length, noConcern = all.filter((c) => !c.screen_concern && claudeWrites(c)).length, replied = all.filter(hasReply).length, drafts = all.filter((c) => c.reply_draft).length;
     // Each filter gives its count; Claude's call is labelled as a person's is; Claude's read folds, as on the record, under the CV check
-    // (14 Nov live QA: the whole read ran past the window, the concern and the message a third of the card, the CV check below it)
-    view.innerHTML = head("Screening",`One message per shortlisted candidate, asking the one thing we need to verify. ${toSend} to send · ${all.length - toSend} sent · ${replied} replied${drafts ? ` · ${drafts} repl${drafts > 1 ? "ies" : "y"} drafted` : ""}${noConcern ? ` · ${noConcern} without a concern yet` : ""}`,
+    // (14 Nov live QA: the whole read ran past the window, the concern and the message a third of the card, the CV check below it).
+    // The concern to verify, and a message to edit, are Brand & Content's: on a search where Claude writes none the lines say message 1 is
+    // the person's own, as its cards do (final check, 23 Nov: "Edit the message if you want" over Sales designer cards that have none)
+    const writes = tab === "all" || familyOf(roleOf(tab)) === "bc", app = "(where a card has an Application button, it opens their LinkedIn application, where messaging is free)";
+    const own = openRoles().filter((r) => familyOf(r) !== "bc").map((r) => r.short || r.name);
+    const how = writes ? `Edit ${tab === "all" ? "Claude's" : "the"} message if you want, copy it into LinkedIn ${app}, then mark it sent: the candidate moves to "messaged".${tab === "all" && own.length ? ` On ${own.join(" and ")} Claude writes none: message 1 is the recruiter's own.` : ""}`
+      : `Claude writes no message here. Write message 1 in LinkedIn ${app}, or in the card's box first to keep it on the record, then mark it sent: the candidate moves to "messaged".`;
+    view.innerHTML = head("Screening",`One message per shortlisted candidate${writes ? ", asking the one thing we need to verify" : ""}. ${toSend} to send · ${all.length - toSend} sent · ${replied} replied${drafts ? ` · ${drafts} repl${drafts > 1 ? "ies" : "y"} drafted` : ""}${noConcern ? ` · ${noConcern} without a concern yet` : ""}`,
       seg("scrf", [["tosend", `To send · ${toSend}`], ["sent", `Sent · ${all.length - toSend}`], ["replied", `Replied · ${replied}`], ["all", `All · ${all.length}`]], state.screenFilter)) +
-      `<div class="toolbar">${roleSeg({ noClosed: true })}</div>
-      <p class="muted small">Everyone with a Shortlist call, and everyone Claude shortlisted who has no call yet. Edit the message if you want, copy it into LinkedIn (where a card has an Application button, it opens their LinkedIn application, where messaging is free), then mark it sent: the candidate moves to "messaged".</p>
+      `<div class="toolbar">${roleSeg({ noClosed: true, cur: tab })}</div>
+      <p class="muted small">Everyone with a Shortlist call, and everyone Claude shortlisted who has no call yet. ${how}</p>
       ${list.length ? list.map((c) => `<article class="card scrcard"><div class="scrwho"><button type="button" class="linkbtn name" data-open="${h(c.id)}">${h(c.name)}</button>
           <span class="muted small">${h(c.id)} · ${h(roleName(c.role_id))}${c.location ? " · " + h(c.location) : ""}</span>
           <div class="chips">${c.agent_call ? `<span class="cpair"><span class="muted small">Claude:</span>${callPill(c.agent_call)}${confWord(c.confidence)}</span>` : confWord(c.confidence)}${c.your_call ? `<span class="cpair"><span class="muted small">${h(callBy(c) ? firstName(callBy(c)) : "call")}:</span>${callPill(c.your_call)}</span>` : ""}</div>
           ${cvCheck(c)}${c.why ? `<details class="fold plain"><summary>Claude's read</summary><p class="small">${h(c.why)}</p></details>` : ""}</div>${screenPanel(c)}</article>`).join("")
         : `<div class="card empty">${state.screenFilter === "tosend" ? "Nothing left to send." : "Nobody here yet."}</div>`}`;
     bindSeg(view, "scrf", (v) => { state.screenFilter = v; renderScreening(view); });
-    bindSeg(view, "role", (v) => { state.roleFilter = v; renderScreening(view); });
+    bindSeg(view, "role", (v) => { state.roleFilter = v; store.set("studio-rolefilter", v); renderScreening(view); });
     view.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => openCandidate(b.dataset.open)));
     bindScreen(view, async () => { state.candidates = null; await renderScreening(view); });
     bindReply(view, async () => { state.candidates = null; await renderScreening(view); });
@@ -1765,6 +2138,9 @@
     const file = w.meta ? `<div class="wsfile"><div class="chips">${hasFile ? `<a class="chip link cvopen" href="${API}worksample/${encodeURIComponent(c.id)}/file" target="_blank" rel="noopener" title="${h(m.filename || c.ws_file)}">Open work sample ↗</a>` : ""}${link ? linkChip(link, linkLabel(link)) : ""}</div>
         ${c.ws_file ? `<span class="cmeta">${h(c.ws_file)}</span>` : ""}${facts.length ? `<span class="cmeta">${h(facts.join(" · "))}</span>` : ""}</div>`
       : `<p class="muted small">When the candidate sends the completed test assignment, upload the file here or add the link to their Google Doc. The robots do the same when it arrives on LinkedIn or by email.</p>`;
+    // The stored file and the link each come off on their own (23 Nov audit: a link could be added or replaced, never removed in the app)
+    const removes = [hasFile ? `<button type="button" class="linkbtn" data-wsdel>Remove the stored file</button>${m.link ? " (the link stays)" : ""}` : "",
+      m.link ? `<button type="button" class="linkbtn" data-wslinkdel>Remove the link</button>${hasFile ? " (the file stays)" : ""}` : ""].filter(Boolean).map((x) => " " + x + ".").join("");
     const upload = `<details class="fold plain wsup"${w.meta ? "" : " open"}><summary>${w.meta ? "Replace the file or the link" : "Upload the file or add a link"}</summary>
       <form class="wsform" data-wsup>
         <label><span class="lbl">Received</span><input type="date" name="received" value="${h(today())}"></label>
@@ -1773,7 +2149,7 @@
         <div class="wsrow"><input type="file" name="file" accept=".pdf,.doc,.docx,.odt,.rtf,.txt,.md,.pptx,.xlsx,.png,.jpg,.jpeg" aria-label="Work sample file"><button type="button" class="btn small" data-wsact="file">Upload</button></div>
         <div class="wsrow"><input type="url" name="link" placeholder="https://docs.google.com/…" aria-label="Link to the work sample"><button type="button" class="btn ghost small" data-wsact="link">Add link</button></div>
         <span class="saved" data-wsupsaved></span>
-        <p class="muted small">PDF, Word or a Google Doc link, up to 20 MB. Storing one moves an earlier stage to "work sample"; it never moves a stage back.${hasFile ? ' <button type="button" class="linkbtn" data-wsdel>Remove the stored file</button> (the link stays).' : ""}</p>
+        <p class="muted small">PDF, Word or a Google Doc link, up to 20 MB. Storing one moves an earlier stage to "work sample"; it never moves a stage back.${removes}</p>
       </form></details>`;
     return `<div class="secin" id="wsblock">${head}${file}
       ${wsScoreHtml(c)}
@@ -1913,6 +2289,13 @@
       busy(true);
       try { await api(path + "/file", "DELETE"); await reopen(); } catch (e) { busy(false); say(`Not removed (${(e && e.message) || e}).`, true); }
     });
+    // the link alone: an empty link in the meta (the Worker drops a row left with neither a file nor a link)
+    const ldel = $("[data-wslinkdel]", up);
+    if (ldel) ldel.addEventListener("click", async () => {
+      if (!confirm(`Remove the link to ${c.name}'s work sample? The file, if there is one, stays.`)) return;
+      busy(true);
+      try { await api(path + "/meta", "PUT", { link: "" }); delete up.dataset.dirty; await reopen(); } catch (e) { busy(false); say(`Not removed (${(e && e.message) || e}).`, true); notice(""); }
+    });
   }
 
   // ---------- calibration, part 1: Claude's triage call against the person's call on the same record ----------
@@ -2024,12 +2407,54 @@
     const d = $("#recdlg"), body = $("#recbody");
     d.dataset.cid = cid || ""; d.classList.toggle("hassub", !!sub);
     $("#rectitle").textContent = title; $("#receyebrow").textContent = eyebrow || ""; $("#recsub").innerHTML = sub || ""; body.innerHTML = html;
+    // ‹ › drawn before the dialog shows, and Close takes the focus (autofocus in index.html): the last record's ‹ › had it, so Enter opened
+    // another record (23 Nov review)
+    drawRecNav(cid);
     if (!d.open) (d.showModal ? d.showModal() : d.setAttribute("open", ""));
     // Back to the top once the dialog is shown: a closed dialog ignores scrollTop, so the next record used to open where the last one was left.
     // On a phone the dialog itself scrolls (its header's first row stays), elsewhere the body does.
     const top = () => { body.scrollTop = 0; d.scrollTop = 0; d.classList.remove("scrolled"); };
     top(); requestAnimationFrame(top);
   }
+  // A record opened from the Candidates list (a click on its row or name): a history entry of its own (#candidates/<ID>), so Back closes it
+  // and its address can be copied (23 Nov audit: Back, or a trackpad swipe, left Studio); the list's order is kept for ‹ › and J/K
+  function openFromList(id) {
+    state.recOrder = state.listIds.slice(); state.lastOpen = id; state.pushedRec = id;
+    history.pushState({ rec: id }, "", "#candidates/" + encodeURIComponent(id));
+    return openCandidate(id);
+  }
+  // "‹ 3 of 19 ›" in the record's header, and J and K outside a field (23 Nov audit: 18 screening calls meant closing each record and
+  // clicking the next row): the list's order as it was when the record was opened from it, so a record that has just left the filter (a
+  // call saved) still leads to the next one; the move asks first about anything not saved, as closing does
+  function drawRecNav(cid) {
+    const ord = state.recOrder, i = ord && cid ? ord.indexOf(cid) : -1, nav = $("#recnav");
+    nav.hidden = i < 0 || ord.length < 2;
+    if (nav.hidden) return;
+    $("#recpos").textContent = `${fmtN(i + 1)} of ${fmtN(ord.length)}`; $("#recprev").disabled = i === 0; $("#recnext").disabled = i === ord.length - 1;
+  }
+  let stepping = false;
+  async function stepRecord(d) {
+    const ord = state.recOrder, cur = $("#recdlg").dataset.cid, i = ord ? ord.indexOf(cur) : -1, next = i < 0 ? "" : ord[i + d] || "";
+    if (!next || stepping || !closeOk()) return;
+    stepping = true;
+    try {  // the address follows the record shown, in the same history entry: Back still closes the record
+      history.replaceState(state.pushedRec ? { rec: next } : null, "", "#candidates/" + encodeURIComponent(next));
+      if (state.pushedRec) state.pushedRec = next;
+      state.lastOpen = next;
+      await openCandidate(next);
+    } finally { stepping = false; }
+  }
+  $("#recprev").addEventListener("click", () => stepRecord(-1));
+  $("#recnext").addEventListener("click", () => stepRecord(1));
+  const typing = () => { const a = document.activeElement; return !!a && (["INPUT", "TEXTAREA", "SELECT"].includes(a.tagName) || a.isContentEditable); };
+  document.addEventListener("keydown", (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented || typing()) return;
+    if ((e.key === "j" || e.key === "k") && $("#recdlg").open && !$("#docview").open && state.recOrder) { e.preventDefault(); stepRecord(e.key === "j" ? 1 : -1); return; }
+    // "/" goes to the search on Candidates, when nothing is open over the list (23 Nov audit, P3)
+    if (e.key === "/" && state.view === "candidates" && !$("#recdlg").open && !$("#docview").open && $("#drawer").hidden) {
+      const q = $("#view #q"); if (q && q.getClientRects().length) { e.preventDefault(); q.focus(); q.select(); }
+    }
+  });
   // The record's collapsible parts, for every record: a section's open state is remembered when the person opens or closes it (the
   // toggle event doesn't bubble, hence the capture), and "Show more" opens a clamped paragraph.
   $("#recbody").addEventListener("toggle", (e) => {
@@ -2067,12 +2492,29 @@
     const f = $("#cform"), parts = f && f._what ? f._what() : [];
     if ($("#recbody #scform[data-dirty]")) parts.push("your scorecard");
     if ($('#recbody .scrmsg[data-dirty="1"], #recbody .rmsg[data-dirty="1"]')) parts.push("an edited message");
+    if ([...document.querySelectorAll("#recbody .logform:not([hidden]) textarea")].some((t) => t.value.trim())) parts.push("a message not logged yet");
     if ($("#recbody form[data-wsup][data-dirty]")) parts.push("the work sample file or link");
     return parts;
   };
   const closeOk = () => { const p = unsavedParts(); return !p.length || confirm(`${p.join(", ")}: not saved. Close the record anyway?`); };
-  function closeRecord(force) { const d = $("#recdlg"); if (d.open && !force && !closeOk()) return; if (d.open) d.close(); leaveLink(); }
-  $("#recdlg").addEventListener("cancel", (e) => { if (!closeOk()) { e.preventDefault(); return; } leaveLink(); });  // Escape
+  // Close and Escape on a record opened from the list go back through its history entry, so they end where Back does (follow keeps the
+  // list as it is); a record opened from a link leaves the address at the list
+  const leaveRecord = () => { const pushed = state.pushedRec; state.pushedRec = "";
+    if (pushed && history.state && history.state.rec === pushed) history.back(); else leaveLink(); };
+  function closeRecord(force) { const d = $("#recdlg"); if (d.open && !force && !closeOk()) return; if (d.open) d.close(); leaveRecord(); }
+  $("#recdlg").addEventListener("cancel", (e) => { if (!closeOk()) { e.preventDefault(); return; } leaveRecord(); });  // Escape
+  // Closed over the Candidates list: the row just worked on is marked, and its name has the focus again, without moving the list (23 Nov
+  // audit: the focus fell to the page and nothing marked the row in a list of 1,100); a row J or K left out of sight is brought into view
+  $("#recdlg").addEventListener("close", () => {
+    state.recOrder = null; state.pushedRec = "";
+    const id = state.lastOpen, tr = state.view === "candidates" && id ? $(`#view tr[data-id="${CSS.escape(id)}"]`) : null;
+    if (!tr) return;
+    document.querySelectorAll("#view tr.lastopen").forEach((x) => { if (x !== tr) x.classList.remove("lastopen"); });
+    tr.classList.add("lastopen");
+    const a = $("a.name", tr); if (a) a.focus({ preventScroll: true });
+    const r = tr.getBoundingClientRect(), th = $("#view .tablewrap.cands thead"), top = th && getComputedStyle(th.querySelector("th")).position === "sticky" ? th.getBoundingClientRect().bottom : 52;
+    if (r.top < top || r.bottom > window.innerHeight) tr.scrollIntoView({ block: "center" });
+  });
   window.addEventListener("beforeunload", (e) => { if (unsavedParts().length) { e.preventDefault(); e.returnValue = ""; } });
   $("#recclose").addEventListener("click", () => closeRecord());
   $("#recdlg").addEventListener("click", (e) => { if (e.target === $("#recdlg")) closeRecord(); });
@@ -2204,31 +2646,46 @@
   }
 
   // ---------- templates ----------
+  // Only Kostya approves a template (23 Nov 2026: anyone else's Yes was dropped without a word, and is a 403 now): for anyone else Approved
+  // is read, not sent. A refusal is said in the template's own form, where the Save was.
   async function renderTemplates(view) {
     await need("templates");
-    const approved = state.templates.filter((t) => t.approved === "Yes").length;
+    const approved = state.templates.filter((t) => t.approved === "Yes").length, mine = isAdmin();
     view.innerHTML = head("Templates", `${approved} of ${state.templates.length} approved · only approved templates go out; variables are filled from each prospect's row`) +
       state.templates.map((t) => `<form class="card tpl" data-id="${h(t.id)}">
         <div class="tplhead"><div><span class="eyebrow">Step ${h(t.step)} · ${h(t.channel)}${t.limit_ && t.limit_ !== "–" ? " · " + h(t.limit_) : ""}</span><h3>${h(t.id)}</h3></div>${pill(t.approved === "Yes" ? "approved" : t.approved === "Edit" ? "needs edits" : t.approved === "No" ? "rejected" : "not reviewed", t.approved === "Yes" ? "ok" : t.approved ? "warn" : "")}</div>
         <label><span class="lbl">Text</span><textarea name="text" rows="4">${h(t.text)}</textarea></label>
         <p class="muted small">When: ${h(t.when_)} · Variables: ${h(t.variables)}</p>
-        <div class="tplfoot"><label class="inline"><span class="lbl">Approved</span>${seg("approved-" + t.id, [["Yes", "Yes"], ["Edit", "Needs edits"], ["No", "No"]], t.approved)}<input type="hidden" name="approved" value="${h(t.approved)}"></label>
+        <div class="tplfoot">${mine ? `<label class="inline"><span class="lbl">Approved</span>${seg("approved-" + t.id, [["Yes", "Yes"], ["Edit", "Needs edits"], ["No", "No"]], t.approved)}<input type="hidden" name="approved" value="${h(t.approved)}"></label>`
+          : `<div class="inline tplro"><span class="lbl">Approved</span><span class="muted small">${h(adminName())} approves</span></div>`}
           <label class="grow"><span class="lbl">Notes</span><input name="notes" value="${h(t.notes)}"></label>
           <div class="formfoot"><span class="saved"></span><button type="submit" class="btn">Save</button></div></div></form>`).join("");
     view.querySelectorAll("form.tpl").forEach((f) => {
       bindSeg(f, "approved-" + f.dataset.id, (v) => { $('input[name="approved"]', f).value = v; f.querySelectorAll(`[data-seg] button`).forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === v)); });
-      f.addEventListener("submit", async (e) => { e.preventDefault(); await api("templates/" + f.dataset.id, "PATCH", Object.fromEntries(new FormData(f).entries())); state.templates = null; renderTemplates(view); });
+      f.addEventListener("submit", async (e) => { e.preventDefault();
+        const msg = $(".saved", f), btn = $('button[type="submit"]', f);
+        btn.disabled = true; msg.textContent = ""; msg.classList.remove("bad");
+        try { await api("templates/" + f.dataset.id, "PATCH", Object.fromEntries(new FormData(f).entries())); }
+        catch (err) { notice(""); btn.disabled = false; msg.textContent = `Not saved: ${(err && err.message) || err}`; msg.classList.add("bad"); return; }
+        state.templates = null; renderTemplates(view); });
     });
   }
 
   // ---------- talent rediscovery: a search first lists earlier candidates who passed a stage ----------
-  function families(r) {  // the job families of the other searches, each named after its open search when there is one
+  // the job families of the other searches, each named after its open search when there is one: [value, label], the search's own first
+  function familyList(r) {
     const fams = {};
     roles().forEach((x) => { if (x.id === r.id) return; const f = familyOf(x); if (!fams[f] || !isClosedRole(x)) fams[f] = x.name; });
-    const cur = r.id && familyOf(r) !== r.id ? familyOf(r) : "";
-    return [["", r.id ? "Its own (no earlier rounds)" : "None: a new kind of role"]].concat(Object.entries(fams))
-      .map(([v, l]) => `<option value="${h(v)}" ${v === cur ? "selected" : ""}>${h(l)}</option>`).join("");
+    return [["", r.id ? "Its own (no earlier rounds)" : "None: a new kind of role"]].concat(Object.entries(fams));
   }
+  const familyCur = (r) => r.id && familyOf(r) !== r.id ? familyOf(r) : "";
+  const families = (r) => familyList(r).map(([v, l]) => `<option value="${h(v)}" ${v === familyCur(r) ? "selected" : ""}>${h(l)}</option>`).join("");
+  const familyName = (r) => (familyList(r).find(([v]) => v === familyCur(r)) || ["", familyCur(r)])[1];
+  // read-only (anyone but Kostya and the robots): what the search's earlier rounds are, as a fact (23 Nov review: the option's "Its own (no
+  // earlier rounds)" read as one on Sales designer, which has SD Mar 2026). Named on an open search only: on a closed round the family's
+  // other closed rounds may be later ones
+  const familyRead = (r) => { const past = isClosedRole(r) ? [] : roles().filter((x) => x.id !== r.id && isClosedRole(x) && familyOf(x) === familyOf(r)).map((x) => x.short || x.name);
+    return (familyCur(r) ? familyName(r) : "Its own") + (past.length ? ` · earlier: ${past.join(", ")}` : ""); };
   function poolFor(role) {
     // Earlier rounds of the same job only (Kostya, 18 Oct: a sales designer has no place under TA Manager).
     // Someone declined for the job stays out: the lead already decided. Withdrawn counts the same way (stages v2, as in studio.py rediscover).
@@ -2269,7 +2726,9 @@
     const chipFor = (l) => l.target === "#posts" ? `<button type="button" class="chip link" data-posts>${h(l.label)}</button>`
       : l.target.startsWith("doc:") ? `<button type="button" class="chip link" data-doc="${h(l.target.slice(4))}">${h(l.label)}</button>`
       : `<a class="chip link" href="${h(l.target.startsWith("art:") ? "https://claude.ai/artifact/" + l.target.slice(4) : l.target)}" target="_blank" rel="noopener">${h(l.label)}</a>`;
-    view.innerHTML = head("Checklists", `The ${total} steps every search follows, one list per role`, `<button type="button" class="btn" id="newsearch">New search</button>`) +
+    // A new search is Kostya's or the robots' (23 Nov 2026), as is who runs one (roleForm)
+    const boss = isBoss();
+    view.innerHTML = head("Checklists", `The ${total} steps every search follows, one list per role`, boss ? `<button type="button" class="btn" id="newsearch">New search</button>` : "") +
       `<div class="cards">${shown.map((r) => `<button type="button" class="rcard" data-role="${h(r.id)}" aria-pressed="${r.id === state.role}">${pill(r.state === "live" ? "Live" : r.state === "pool" ? "Quiet pool" : r.state || "planned", r.state === "live" ? "ok" : r.state === "pool" ? "warn" : "")}<span class="cname">${h(r.short)}</span><span class="muted small">Owner · ${h(r.owner || "–")}</span><span class="bar"><span style="width:${Math.round(100 * count(r.id) / total)}%"></span></span><span class="mono muted"><b>${count(r.id)}</b> / ${total}</span></button>`).join("")}</div>
       ${closedCount ? `<p class="small"><button type="button" class="linkbtn" id="toggleclosed">${state.showClosed ? "Hide" : "Show"} earlier rounds (${closedCount})</button></p>` : ""}
       ${role ? `<div class="rolebar"><div class="rtabs">${shown.map((r) => `<button type="button" class="rtab" data-role="${h(r.id)}" aria-pressed="${r.id === state.role}">${h(r.short)}<b>${count(r.id)}</b></button>`).join("")}</div>${seg("filter", [["all", "All"], ["open", "Open"], ["done", "Done"]], state.filter)}</div>
@@ -2281,15 +2740,22 @@
             <p class="snote" data-note="${h(key)}">${h(rs.note || "")}<button type="button" class="edit" data-editnote="${h(key)}">${rs.note ? "edit" : "add a note"}</button></p>
             ${links.length ? `<div class="chips">${links.map(chipFor).join("")}</div>` : ""}
             <details class="what"><summary>What this step means</summary><p>${h(s.what)}</p></details>
-            <span class="smeta">${done && t ? "Done " + fmt(t.at) + " · by " + h(whoName(t.by)) : ""}</span></div></li>`; }).join("")}</ul></div>`).join("")}</section>` : '<div class="card empty">No searches yet. Start one with "New search".</div>'}`;
+            <span class="smeta">${done && t ? "Done " + fmt(t.at) + " · by " + h(whoName(t.by)) : ""}</span></div></li>`; }).join("")}</ul></div>`).join("")}</section>` : `<div class="card empty">No searches yet.${boss ? ' Start one with "New search".' : ""}</div>`}`;
     view.querySelectorAll("[data-role]").forEach((el) => el.addEventListener("click", () => { state.role = el.dataset.role; store.set("studio-role", state.role); renderChecklists(view); }));
     const tc = $("#toggleclosed", view); if (tc) tc.addEventListener("click", () => { state.showClosed = !state.showClosed; renderChecklists(view); });
     view.querySelectorAll("[data-recontact]").forEach((btn) => btn.addEventListener("click", async () => {
-      const c = state.candidates.find((x) => x.id === btn.dataset.recontact), from = roleOf(c.role_id);
-      btn.disabled = true;
-      await api("candidates", "POST", { role_id: role.id, name: c.name, linkedin: c.linkedin, email: c.email, location: c.location, headline: c.headline, english: c.english,
-        sources: "pool", stage: "applied", next_step: `Re-contact first: ${stageWord(reachedOf(c))} in ${from.short} (${c.id})` });
-      state.candidates = null; renderChecklists(view);
+      const c = state.candidates.find((x) => x.id === btn.dataset.recontact), from = roleOf(c.role_id), li = btn.closest("li");
+      const body = { role_id: role.id, name: c.name, linkedin: c.linkedin, email: c.email, location: c.location, headline: c.headline, english: c.english,
+        sources: "pool", stage: "applied", next_step: `Re-contact first: ${stageWord(reachedOf(c))} in ${from.short} (${c.id})` };
+      // already in this search (a 409 since 23 Nov, as for Add candidate): said in the row, where the click was
+      const box = li.querySelector(".addclash") || li.appendChild(Object.assign(document.createElement("div"), { className: "addclash", hidden: true }));
+      const add = async (extra) => {
+        btn.disabled = true; box.hidden = true;
+        try { await api("candidates", "POST", { ...body, ...extra }); }
+        catch (e) { btn.disabled = false; if (e.status === 409 && e.data && e.data.id) { notice(""); showClash(box, e.data, () => add({ as_new: true })); } return; }
+        state.candidates = null; renderChecklists(view);
+      };
+      await add({});
     }));
     view.querySelectorAll("[data-poolopen]").forEach((btn) => btn.addEventListener("click", () => openCandidate(btn.dataset.poolopen)));
     bindSeg(view, "filter", (v) => { state.filter = v; renderChecklists(view); });
@@ -2305,16 +2771,38 @@
     }));
     view.querySelectorAll("[data-doc]").forEach((b) => b.addEventListener("click", () => openDoc(b.dataset.doc)));
     view.querySelectorAll("[data-posts]").forEach((b) => b.addEventListener("click", () => setView("posts")));
+    // Who runs a search, its hiring manager (the second interview's decision), owner, recruiter and earlier rounds, is Kostya's and the
+    // robots' to change; its state is theirs and its own recruiter's (she sets her search Live, she can't close another's); the name and the
+    // status line are anyone's (Kostya, 23 Nov 2026; Yana could make herself the hiring manager and then take that decision). For anyone else
+    // those fields are read, not sent, and a refusal is said in the form, where the Save was.
+    const STATES = [["planned", "Planned"], ["live", "Live"], ["pool", "Quiet pool"], ["closed", "Closed"], ["archived", "Archived"]];
     const roleForm = (title, r, onSubmit) => {
-      openDrawer(title, `<form class="form" id="rform"><label class="full"><span class="lbl">Role name</span><input name="name" value="${h(r.name || "")}" required placeholder="Technical Designer"></label><label><span class="lbl">Short name</span><input name="short" value="${h(r.short || "")}" placeholder="TD"></label><label><span class="lbl">Owner</span><input name="owner" value="${h(r.owner || "")}" placeholder="Kostya"></label>
-        <label><span class="lbl">State</span><select name="state">${[["planned", "Planned"], ["live", "Live"], ["pool", "Quiet pool"], ["closed", "Closed"]].concat(isArchivedRole(r) ? [["archived", "Archived"]] : []).map(([v, l]) => `<option value="${v}" ${v === (r.state || "planned") ? "selected" : ""}>${l}</option>`).join("")}</select></label>
-        <label><span class="lbl">Hiring manager</span><input name="lead" value="${h(r.lead || "")}" placeholder="Decides at the second interview"></label>
+      const ownSearch = !!r.id && !!loginOf(r.recruiter) && loginOf(r.recruiter) === loginOf(state.boot.who), setsState = boss || ownSearch;
+      const ro = (label, v, full) => `<div class="fieldnote${full ? " full" : ""}"><span class="lbl">${h(label)}</span><span>${h(v)}</span></div>`;
+      // (the recruiter named only where it isn't Kostya himself: "Kostya or Kostya" on Brand & Content)
+      const lead = !r.lead ? "Not set" : /@/.test(r.lead) ? whoName(r.lead) : r.lead, rec = r.recruiter && !(state.boot.admins || []).map(loginOf).includes(loginOf(r.recruiter)) ? firstName(r.recruiter) : "";
+      const note = boss ? "" : setsState ? `Only ${adminName()} changes who runs a search.`
+        : rec ? `Only ${adminName()} changes who runs a search; ${adminName()} or ${rec} changes its state.` : `Only ${adminName()} changes who runs a search and its state.`;
+      openDrawer(title, `<form class="form" id="rform"><label class="full"><span class="lbl">Role name</span><input name="name" value="${h(r.name || "")}" required placeholder="Technical Designer"></label><label><span class="lbl">Short name</span><input name="short" value="${h(r.short || "")}" placeholder="TD"></label>
+        ${boss ? `<label><span class="lbl">Owner</span><input name="owner" value="${h(r.owner || "")}" placeholder="Kostya"></label>` : ro("Owner", r.owner || "Not set")}
+        ${setsState ? `<label><span class="lbl">State</span><select name="state">${STATES.filter(([v]) => v !== "archived" || isArchivedRole(r)).map(([v, l]) => `<option value="${v}" ${v === (r.state || "planned") ? "selected" : ""}>${l}</option>`).join("")}</select></label>`
+          : ro("State", (STATES.find(([v]) => v === (r.state || "planned")) || [r.state, r.state])[1])}
+        ${boss ? `<label><span class="lbl">Hiring manager</span><input name="lead" value="${h(r.lead || "")}" placeholder="Decides at the second interview"></label>
         <label><span class="lbl">Recruiter</span><select name="recruiter">${[["", "Not set"]].concat(people().map((x) => [x.email, x.name]), r.recruiter && !people().some((x) => x.email === r.recruiter) ? [[r.recruiter, r.recruiter]] : []).map(([v, l]) => `<option value="${h(v)}" ${v === (r.recruiter || "") ? "selected" : ""}>${h(l)}</option>`).join("")}</select></label>
-        <label class="full"><span class="lbl">Earlier rounds of</span><select name="family">${families(r)}</select></label><label class="full"><span class="lbl">Status line</span><input name="status" value="${h(r.status || "")}" placeholder="Opens when the first TA Manager round is hired"></label>
-        <div class="formfoot full"><button type="submit" class="btn">${r.id ? "Save" : "Create the checklist"}</button></div></form>`);
-      $("#rform").addEventListener("submit", async (e) => { e.preventDefault(); await onSubmit(Object.fromEntries(new FormData(e.target).entries())); state.boot = null; closeDrawer(); await loadBoot(); renderChecklists(view); });
+        <label class="full"><span class="lbl">Earlier rounds of</span><select name="family">${families(r)}</select></label>`
+          : ro("Hiring manager", lead) + ro("Recruiter", r.recruiter ? whoName(r.recruiter) : "Not set") + ro("Earlier rounds of", familyRead(r), true)}
+        <label class="full"><span class="lbl">Status line</span><input name="status" value="${h(r.status || "")}" placeholder="Opens when the first TA Manager round is hired"></label>
+        ${note ? `<p class="muted small full">${h(note)}</p>` : ""}
+        <div class="formfoot full"><span class="saved" id="rsaved"></span><button type="submit" class="btn">${r.id ? "Save" : "Create the checklist"}</button></div></form>`);
+      $("#rform").addEventListener("submit", async (e) => { e.preventDefault();
+        const f = e.target, btn = $('button[type="submit"]', f), msg = $("#rsaved", f);
+        btn.disabled = true; msg.textContent = ""; msg.classList.remove("bad");
+        try { await onSubmit(Object.fromEntries(new FormData(f).entries())); }
+        catch (err) { notice(""); btn.disabled = false; msg.textContent = `Not saved: ${(err && err.message) || err}`; msg.classList.add("bad"); return; }
+        state.boot = null; closeDrawer(); await loadBoot(); renderChecklists(view); });
     };
-    $("#newsearch", view).addEventListener("click", () => roleForm("New search", {}, async (d) => { const r = await api("roles", "POST", d); state.role = r.id; state.justCreated = r.id; store.set("studio-role", r.id); }));
+    const ns = $("#newsearch", view);
+    if (ns) ns.addEventListener("click", () => roleForm("New search", {}, async (d) => { const r = await api("roles", "POST", d); state.role = r.id; state.justCreated = r.id; store.set("studio-role", r.id); }));
     const er = $("#editrole", view); if (er) er.addEventListener("click", () => roleForm("Edit search", role, (d) => api("roles/" + role.id, "PATCH", d)));
   }
 
@@ -2355,7 +2843,9 @@
     // A read that lands after the visit ended or the data was dropped (forget(), the live refresh) is thrown away (review, 22 Nov).
     const visit = state.onbVisit, boot = state.boot, id = state.onbPlan, stale = () => state.onbVisit !== visit || state.boot !== boot;
     const stamped = id in visit.plans;  // this visit has the stamp's answer for this plan
-    const stamp = visit.stamps[id] || (visit.stamps[id] = api(onbPath(id) + "/seen", "POST", {}, null).catch(() => null)
+    // only a person opens the tab (the Worker's 403 to the robots' login, a console error on every visit; final check, 23 Nov): theirs is
+    // the same no-stamp answer, without the request
+    const stamp = visit.stamps[id] || (visit.stamps[id] = (boot.service ? Promise.resolve(null) : api(onbPath(id) + "/seen", "POST", {}, null).catch(() => null))
       .then((r) => { visit.plans[id] = r ? r.since || "" : null; }));
     const redraw = () => { if (!stale() && state.view === "onboarding" && state.onb && state.onb.plan.id === id) drawOnboarding(view); };
     const kept = state.onbKept[id];
@@ -2419,14 +2909,17 @@
     const link = (t) => !t.link ? `<span class="stitle">${h(t.title)}</span>`
       : /^#onboarding\//.test(t.link) ? `<a class="stitle" href="${h(t.link)}">${h(t.title)}</a>`
       : `<a class="stitle" href="${h(t.link)}" target="_blank" rel="noopener"${/^#doc\//.test(t.link) ? ` data-doc="${h(t.link.slice(5))}"` : ""}>${h(t.title)}</a>`;
-    const thread = (t) => `<div class="onbthread">${(by[t.id] || []).map((c) => `<div class="onbmsg"><span class="cmeta">${h(whoName(c.by))} · ${h(fmtTime(c.at))}</span><p>${linkify(c.body)}</p></div>`).join("")}
+    // the viewer's own comments carry Delete (Kostya, 23 Nov 2026; the Worker deletes only the writer's, since 17 Nov)
+    const thread = (t) => `<div class="onbthread">${(by[t.id] || []).map((c) => `<div class="onbmsg"><span class="cmeta">${h(whoName(c.by))} · ${h(fmtTime(c.at))}${can && c.by === me && c.id != null ? ` · <button type="button" class="linkbtn onbdel" data-cdel="${h(c.id)}" aria-label="Delete your comment of ${h(fmtTime(c.at))}">Delete</button>` : ""}</span><p>${linkify(c.body)}</p></div>`).join("")}
       ${can ? `<form class="onbform"><input name="body" maxlength="4000" autocomplete="off" placeholder="Write a comment" aria-label="Comment on ${h(t.title)}" value="${h(state.onbDraft[t.id] || "")}"><button type="submit" class="btn small">Send</button></form>` : ""}</div>`;
     const failed = (t) => state.onbErr[t.id] ? `<span class="saved bad onberr">${h(state.onbErr[t.id])}</span>` : "";
     // A calls task (22 Nov): the role's applicants of the window, Claude's call, then the person's call and each manager's, each with
-    // their reason. The viewer's own column is where they make theirs (the same screening call as on the record: one per person, the
-    // latest moves the stage). A row where two people's calls differ says so.
+    // their reason. The viewer's own column is where they make theirs (the same screening call as on the record: one per person; the
+    // search's recruiter's, once she has made one, else the latest, is the record's and moves the stage: Kostya, 23 Nov 2026). A row where
+    // two people's calls differ says so. A call that differs from Claude's needs its reason, as on the record (not while Claude's is hidden).
     const deciders = [plan.person_email, ...(plan.managers || [])].filter(Boolean).filter((e, i, a) => a.indexOf(e) === i);
     const callOf = (c, by) => ((screensOf(c) || []).find((r) => r.by === by) || {});
+    const claudeShown = (c) => blindNow(c) ? "" : claudeCall(c) || "";  // Claude's call as its column shows it ("" while hidden)
     const callsTally = (t) => { const list = inWindow(t.calls), made = deciders.map((by) => list.filter((c) => callOf(c, by).call).length);
       const both = list.filter((c) => deciders.filter((by) => callOf(c, by).call).length > 1), same = both.filter((c) => new Set(deciders.map((by) => callOf(c, by).call).filter(Boolean)).size === 1);
       return { list, made, both: both.length, same: same.length }; };
@@ -2437,9 +2930,9 @@
       // what is typed is kept per task and applicant (the Friday task lists the same people as Wednesday's; review, 22 Nov)
       const cell = (c, by) => { const r = callOf(c, by), key = `${t.id}|${c.id}`;
         if (by !== me || !can) return r.call ? `${callPill(r.call)}${r.reason ? `<span class="muted small clamp2" title="${h(r.reason)}">${h(r.reason)}</span>` : ""}` : '<span class="muted small">not made</span>';
-        const typed = state.onbCall[key] || {}, call = typed.call != null ? typed.call : r.call || "", reason = typed.reason != null ? typed.reason : r.reason || "";
+        const typed = state.onbCall[key] || {}, call = typed.call != null ? typed.call : r.call || "", reason = typed.reason != null ? typed.reason : r.reason || "", cl = claudeShown(c);
         return `<form class="onbcall" data-cid="${h(c.id)}" data-key="${h(key)}"${state.onbCall[key] ? ' data-dirty="1"' : ""}><div role="group" aria-label="Your call on ${h(c.name)}">${seg("occall", CALLS.slice(1).map((x) => [x, x]), call)}</div>
-          <input name="reason" maxlength="2000" autocomplete="off" placeholder="Reason" aria-label="Your reason for ${h(c.name)}" value="${h(reason)}">
+          <input name="reason" maxlength="2000" autocomplete="off" placeholder="${h(cl ? `Reason, needed if not ${cl}` : "Reason")}" aria-label="Your reason for ${h(c.name)}${cl ? `, needed when it differs from Claude's ${h(cl)}` : ""}" value="${h(reason)}">
           <div class="formfoot">${state.onbCallErr[key] ? `<span class="saved bad">${h(state.onbCallErr[key])}</span>` : ""}<button type="submit" class="btn small" aria-label="${r.call ? "Change" : "Save"} your call on ${h(c.name)}">${r.call ? "Change" : "Save"}</button></div></form>`; };
       const row = (c) => { const calls = deciders.map((by) => callOf(c, by).call).filter(Boolean), differ = new Set(calls).size > 1, ap = appliedOf(c), blind = blindNow(c);
         return `<tr${differ ? ' class="differ"' : ""}><td><a class="name" href="#candidates/${h(encodeURIComponent(c.id))}" target="_blank" rel="noopener">${h(c.name)}</a>${differ ? ` ${pill("Different calls", "warn")}` : ""}
@@ -2523,6 +3016,9 @@
         e.preventDefault();
         const pick = ($('[data-seg="occall"] button[aria-pressed="true"]', f) || {}).dataset?.v || "", btn = $('button[type="submit"]', f);
         if (!pick) { state.onbCallErr[key] = "Pick Shortlist, Hold or Decline."; redraw(); return; }
+        const cand = (state.candidates || []).find((x) => x.id === cid), cl = cand ? claudeShown(cand) : "";
+        if (cl && pick !== cl && !f.elements.reason.value.trim()) { keep(); state.onbCallErr[key] = "Add the reason: your call differs from Claude's."; redraw();
+          const i = view.querySelector(`form.onbcall[data-key="${CSS.escape(key)}"] input[name="reason"]`); if (i) i.focus(); return; }
         btn.disabled = true; delete state.onbCallErr[key];
         try { await api("candidates/" + encodeURIComponent(cid), "PATCH", { your_call: pick, your_reason: f.elements.reason.value.trim() });
           delete state.onbCall[key]; state.screens = null; await onbCallsLoad(); delete f.dataset.dirty; redraw(); }
@@ -2559,6 +3055,15 @@
           catch (err) { btn.disabled = false; }
         });
       }
+      // Delete asks first, and says what it can't take back: the Slack message about the comment (the Worker deletes nothing in Slack)
+      li.querySelectorAll("[data-cdel]").forEach((b) => b.addEventListener("click", async () => {
+        if (!confirm("Delete your comment? The Slack message about it stays.")) return;
+        b.disabled = true;
+        try { await api(path + encodeURIComponent(t.id) + "/comments/" + encodeURIComponent(b.dataset.cdel), "DELETE");
+          const i = comments.findIndex((x) => String(x.id) === b.dataset.cdel); if (i >= 0) comments.splice(i, 1); again();
+          const f = inTask(t.id, ".onbform input"); if (f) f.focus({ preventScroll: true }); }
+        catch (err) { b.disabled = false; }
+      }));
       const af = $("form[data-answer]", li);
       if (af) {
         const box = $("textarea", af), sent = a ? a.body : "";
@@ -2606,6 +3111,29 @@
   }
 
   // ---------- activity ----------
+  // A change to a record or a template in the app's words (23 Nov audit: "your_call = Shortlist; stage = confirmed" read as the viewer's own
+  // call whoever made it): "call: Shortlist; stage → Shortlisted". Only the view words it: the stored line keeps its keys, which reasonRows
+  // and the backfills read ("your_reason = "). The Worker cuts each part, at 200 characters (60 until 23 Nov), so a part of exactly that
+  // length ends in "…".
+  const ACT_WORDS = { your_call: "call", your_reason: "reason", next_step: "Next step", last_contact: "last contact", latest_reply: "latest reply", cv_check: "CV check",
+    screen_concern: "concern", screen_message: "screening message", reply_draft: "reply draft", reply_note: "reply note", referred_by: "referred by", bounty: "referral bounty",
+    bounty_due: "bounty due", hired_at: "hired on", screening: "screening answers", agent_call: "Claude's call", doubt: "doubt to probe", why: "Claude's why", sources: "Sources",
+    interview_sheet: "call sheet", cv_struct: "CV", first_lines: "first lines", rules_version: "rules version", ws_file: "work sample file", calib_batch: "calibration batch",
+    next_action: "Next action", message1_sent: "message 1 sent", followup1_sent: "follow-up 1 sent", followup2_sent: "follow-up 2 sent" };
+  const ACT_DAYS = ["due", "last_contact", "applied", "hired_at", "bounty_due", "invite_sent", "accepted", "message1_sent", "followup1_sent", "followup2_sent", "replied", "call_booked"];
+  const TPL_SAY = { Yes: "approved", Edit: "needs edits", No: "rejected" };
+  function actPart(p) {
+    const m = /^([a-z_]+) = ([\s\S]*)$/.exec(p); if (!m) return p;
+    const [, k, raw] = m, v = raw.replace(/\s+/g, " ").trim(), cut = (p.length === 60 || p.length === 200) && v ? "…" : "";
+    if (k === "stage" || k === "reached") return `${k === "stage" ? "stage" : "furthest stage"} → ${stageLabel(v)}`;
+    if (k === "approved") return TPL_SAY[v] || "not reviewed";
+    if (k === "your_call") return v ? `call: ${v}` : "call taken back";
+    const word = ACT_WORDS[k] || k.replace(/_/g, " ");
+    if (!v) return `${word} cleared`;
+    return `${word}: ${ACT_DAYS.includes(k) && dayOf(v) ? fmt(dayOf(v)) : v}${cut}`;
+  }
+  // "<name>: <part>; <part>", a part being "<column> = <value>" (a value may hold "; " itself, so a part starts only where a column does)
+  const worded = (s) => { const m = /^([\s\S]*?): (?=[a-z_]+ = )([\s\S]*)$/.exec(s); return m ? `${m[1]}: ${m[2].split(/; (?=[a-z_]+ = )/).map(actPart).join("; ")}` : s; };
   // People's changes first, the robots' a click away, and a sync line names its role and table (14 Nov live QA: 14 of the 15 lines on screen
   // were robot syncs reading "0 added, 4 updated (sd)", the one change a person made at the bottom; and only the latest 200 load)
   async function renderActivity(view) {
@@ -2614,6 +3142,7 @@
     // Any table's count line, its role added only when it has one (14 Nov live QA: a templates sync read "2 added, 0 updated"); a line that
     // says what it saved (a scorecard, the criteria) stays as written
     const what = (a) => { const t = /^(\w+)\.upsert$/.exec(a.kind || ""), s = String(a.summary || "");
+      if (/\.update$/.test(a.kind || "")) return worded(s);
       if (!t || !/^\d+ added, \d+ updated/.test(s)) return s;
       const body = a.scope && s.endsWith(` (${a.scope})`) ? s.slice(0, -a.scope.length - 3) : s;
       return a.scope ? `${roleName(a.scope)} ${t[1]}: ${body}` : `${t[1][0].toUpperCase() + t[1].slice(1)}: ${body}`; };
@@ -2655,24 +3184,47 @@
   // Links: #<view> opens a view, #candidates/<ID> opens that candidate's record on the Candidates view (the #talent posts link there),
   // #doc/<slug> opens a document over the view the person was on (the onboarding tasks link there), and #onboarding/<plan>/<task> opens
   // that task in the Onboarding tab (the Slack message about a comment or an answer links there).
-  // A first visit opens This week, or the person's own onboarding plan while they have one.
+  // A first visit opens the person's own onboarding plan while they have one, else This week where the login reads it, else Candidates
+  // (home); so does a saved or linked view the login doesn't have (This week for anyone but Kostya and the robots, 23 Nov 2026).
   async function follow() {
     const [v, id, sub] = decodeURIComponent((location.hash || "").slice(1)).split("/");
+    // On the Candidates list as drawn, a record's address opens it over the list and the list's own address closes the open record (Back),
+    // asking first about anything not saved; neither draws the list again nor moves it (23 Nov audit: through setView every close went back
+    // to the top of 1,100 rows). Kept open, the record's address comes back.
+    if (v === "candidates" && state.view === "candidates" && state.boot && $("#view #q")) {
+      const d = $("#recdlg"), cur = d.open ? d.dataset.cid : "";
+      if (id && id === cur) return;
+      // asked whenever something is open over the list, the Add form too (no id: 23 Nov review, a Forward to a record's address replaced a
+      // typed name and screening answers without a word); kept open, its own address comes back
+      if (d.open && !closeOk()) { (id ? history.replaceState : history.pushState).call(history, state.pushedRec ? { rec: cur } : null, "", cur ? "#candidates/" + encodeURIComponent(cur) : "#candidates"); return; }
+      notice("");  // what the address shows next says its own: the list's draw used to clear a notice (23 Nov review: "no candidate SD-9999" stayed)
+      if (id) {
+        if (!cur) state.recOrder = state.listIds.includes(id) ? state.listIds.slice() : null;
+        state.pushedRec = history.state && history.state.rec === id ? id : ""; state.lastOpen = id;
+        await openCandidate(id); return;
+      }
+      if (d.open) d.close();
+      return;
+    }
     const saved = store.get("studio-view");
     let view = VIEWS.includes(v) ? v : VIEWS.includes(saved) ? saved : "";
-    if (!view || view === "onboarding") {
-      try { if (!state.boot) await loadBoot(); } catch (e) {}
-      const plans = (state.boot && state.boot.onboarding) || [];
-      if (!view) view = plans.some((p) => p.person_email === state.boot.who) ? "onboarding" : "week";
-      else if (!plans.length) view = "week";  // a link to a tab this login doesn't have
-    }
+    // the bootstrap and the tabs first (the view drawn next reads them anyway); a failed read is said by that view
+    try { if (!state.boot) await loadBoot(); } catch (e) {}
+    if (state.boot && (!view || !tabOk(view))) view = home();
+    else if (!view) view = "week";
     if (view === "onboarding" && v === "onboarding" && id) state.onbPlan = id;  // a plan this login doesn't have falls back to its own
-    await setView(view);
+    // the address names the view shown (a first visit, a tab this login doesn't have), so Back from the next view comes back to it
+    if (v !== view && v !== "doc") history.replaceState(null, "", "#" + view);
+    await setView(view, true);
     if (v === "onboarding" && id) {  // the link has done its work (or this login has no such tab): the address goes back to the view's own
       if (view === "onboarding" && sub && state.onb && state.onb.plan.id === id && !openOnbTask($("#view"), sub)) notice(`There's no task ${sub} in this plan.`, true);
       history.replaceState(null, "", "#" + view);
     }
-    if (v === "candidates" && id && state.boot) await openCandidate(id);
+    if (v === "candidates" && id && state.boot) {
+      state.recOrder = state.listIds.includes(id) ? state.listIds.slice() : null; state.lastOpen = id;
+      state.pushedRec = history.state && history.state.rec === id ? id : "";
+      await openCandidate(id);
+    }
     if (v === "doc" && id && state.boot) { await openDoc(id); history.replaceState(null, "", "#" + state.view); }
   }
   window.addEventListener("hashchange", follow);

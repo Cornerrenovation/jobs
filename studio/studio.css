@@ -51,6 +51,7 @@ button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var
 .seg{display:inline-flex;gap:2px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:2px;flex-wrap:wrap}
 .seg button{font:500 13px/1 var(--f);color:var(--muted);background:none;border:none;border-radius:6px;padding:7px 10px;cursor:pointer;white-space:nowrap}
 .seg button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}
+.seg .segn{font-family:var(--m);font-weight:500;font-size:11px;opacity:.75;font-variant-numeric:tabular-nums}  /* a button's count (Candidates' role buttons) */
 .pill{display:inline-block;max-width:220px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;font-family:var(--m);font-size:11px;letter-spacing:.04em;text-transform:uppercase;padding:2px 8px;border-radius:99px;background:var(--bg-2);color:var(--text);white-space:nowrap}
 .pill.ok{background:var(--ok-bg);color:var(--ok)}.pill.warn{background:var(--warn-bg);color:var(--warn)}.pill.bad{background:var(--bad-bg);color:var(--bad)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
@@ -83,6 +84,8 @@ nav.views.fl.fr{-webkit-mask-image:linear-gradient(90deg,transparent,#000 28px,#
 
 /* Page */
 .wrap{max-width:1180px;margin:0 auto;padding:28px max(20px,env(safe-area-inset-left,0px)) 96px}
+/* Candidates uses a laptop's width (23 Nov audit: the table was 1140px at every laptop size, Next step 191px) */
+.wrap.wide{max-width:1440px;padding-top:20px}
 #view{display:flex;flex-direction:column;gap:20px}
 .notice{border:1px solid var(--line);background:var(--warn-bg);border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:14px}
 .notice.bad{background:var(--bad-bg)}
@@ -359,6 +362,12 @@ dialog.record .dhead{display:flex;justify-content:space-between;gap:12px;align-i
 dialog.record.hassub .dhead{border-bottom:none;padding-bottom:8px}
 dialog.record .dhead h2{font-size:24px;margin-top:2px;overflow-wrap:anywhere}
 #receyebrow:empty{display:none}
+/* ‹ 3 of 19 › beside Close: a record opened from the Candidates list steps through it (23 Nov audit) */
+dialog.record .dtools{display:flex;gap:12px;align-items:center;flex:none}
+.recnav{display:flex;gap:6px;align-items:center}
+.recnav .btn.small{min-width:34px;font-size:15px;padding:5px 10px}
+#recpos{color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+@media (max-width:600px){dialog.record .dtools{gap:8px}#recpos{font-size:11px}}
 .rsub{display:flex;flex-direction:column;gap:8px;padding:0 24px 16px;background:var(--card);border-bottom:1px solid var(--line);flex:none;min-width:0}
 .rsub:empty{display:none}
 .rchips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
@@ -641,6 +650,45 @@ td.cnext{min-width:140px;max-width:220px}
 td.nowrap{white-space:nowrap}
 .tablewrap.cands table{min-width:0}
 .tablewrap.cands th,.tablewrap.cands td{padding:12px 10px}
+/* Rows of two lines from 601px (Kostya, 23 Nov: laptop first; it replaces the 27 Oct two-line headline): the headline on one line, whole in
+   its title, the source and the call's step without wrapping, the status on one line, and Next step taking the width the page gives it
+   (23 Nov audit: 86px rows, 4 or 5 of them on a 1366x768 screen) */
+@media (min-width:601px){
+  .tablewrap.cands th,.tablewrap.cands td{padding:8px 10px}
+  .tablewrap.cands td.cname{min-width:150px;max-width:300px}
+  .tablewrap.cands td.cname .clamp2{-webkit-line-clamp:1}
+  .tablewrap.cands td.csrc{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px}
+  .tablewrap.cands td.ccall .small{white-space:nowrap}
+  .tablewrap.cands td.cstage{min-width:170px;max-width:none}
+  .tablewrap.cands td.cstage .stl{white-space:nowrap}
+  /* "decline not sent" stands where the stage group was, always Screening on a Messaged or Replied record: on a line of its own it made
+     those rows 78px, one row fewer on her first screen (23 Nov review) */
+  .tablewrap.cands td.cstage.owed .cgrp{display:none}
+  .tablewrap.cands td.cstage.owed .dnsflag{margin-top:2px}
+  .tablewrap.cands td.cnext{min-width:200px;max-width:none}
+  .tablewrap.cands tr.lastopen td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
+}
+/* The column titles stay under the top bar while the list scrolls, from 1200px, where the table fits the page; narrower, it scrolls
+   sideways and a sticky title can't work in a box that scrolls (23 Nov audit: clipped at 683px, Status, Next step and Due were out of reach) */
+@media (min-width:1200px){
+  .tablewrap.cands{overflow:clip}
+  .tablewrap.cands thead th{position:sticky;top:52px;z-index:2;background:var(--card);box-shadow:inset 0 -1px 0 var(--line)}
+}
+/* ...and fits there with room to spare: 21px too wide at 1200px on All open roles otherwise, more with a long status ("Test assignment
+   received") or call ("2nd interview · Julieta +1") */
+@media (min-width:1200px) and (max-width:1279px){.tablewrap.cands th,.tablewrap.cands td{padding-inline:7px}.tablewrap.cands td.cnext{min-width:180px}}
+/* From 1280px the Name column keeps 190px, 205px from 1366, the 150px above being for 1200 to 1279 (23 Nov review: 166px at 1280 and 184px
+   at 1366, narrower than before on a wider table, three words of a headline and names on two lines, while Next step had 263 to 331px; it
+   keeps about 240px at 1280) */
+@media (min-width:1280px){.tablewrap.cands td.cname{min-width:190px}}
+@media (min-width:1366px){.tablewrap.cands td.cname{min-width:205px}}
+/* A name is a link to its record: underlined under the pointer, like the row it opens. A long unbroken name (an email or a profile address
+   typed as the name) wraps rather than widen the table past its clip at 1200px and cut off Due (23 Nov review) */
+.tablewrap.cands td.cname a.name{text-decoration:none;overflow-wrap:anywhere}
+.tablewrap.cands tr.clickable:hover td.cname a.name,.tablewrap.cands td.cname a.name:focus-visible{text-decoration:underline}
+/* A closed record keeps its due day, quiet (23 Nov audit), and its note starts "Last note:" where the column says Next step */
+.tablewrap.cands td.cdue.quiet{color:var(--muted)}
+.tablewrap.cands .lnote{color:var(--muted)}
 
 /* Work sample (5 Nov): the file or link, the score in one line, the flaws, and the questions for the call with a tick and a note each */
 .wsflag{display:inline-block;margin-top:5px;font-size:11.5px;line-height:1.3;color:var(--ink);background:var(--white);border:1px solid var(--line);border-radius:99px;padding:1px 8px;white-space:nowrap}
@@ -700,14 +748,48 @@ details.rsec[open]>summary>.rsec-s,details.subp[open]>summary>.subh{display:none
 #recbody p{overflow-wrap:anywhere}
 /* Phones: the Candidates filters two to a row (seven selects since the Stage and Status filters) */
 @media (max-width:600px){.toolbar input[type=search]{width:100%}.toolbar select{flex:1 1 calc(50% - 5px);min-width:0;max-width:none;font-size:14px;padding-inline:8px}}
-/* Candidates (14 Nov review): on a wide screen the filters sit in the toolbar as before; on a phone they fold behind "Filters", with a
-   sort, and each row is a card that shows its status, so a filtered list says what it was filtered by without scrolling sideways */
-.ctools .ftoggle,.ctools .fsort{display:none}
+/* Candidates on a laptop (Kostya, 23 Nov: laptop first; it replaces the 14 Nov "on a wide screen the filters sit in the toolbar as before"):
+   the role buttons beside the title; one line of filters, the search, Stage, Status, My call and More filters, with the count at its end; the
+   other filters on a line of their own under More filters, and each one that is set as a chip under the toolbar. On a phone (14 Nov review)
+   they all fold behind "Filters", with the role buttons and a sort, and each row is a card that shows its status. */
+.chead{align-items:center}
+.chl{display:flex;align-items:center;gap:8px 20px;flex-wrap:wrap;min-width:0}
+.ctools .ftoggle,.ctools .fsort,.ctools .segphone,.ctools .fmore{display:none}
 .ctools .fsel{display:contents}
+.ctools .fmorebtn{display:inline-flex;align-items:center;min-height:42px}
+.ctools .fmorebtn[aria-expanded="true"]{border-color:var(--ink)}
+.ctools.more .fmore{display:flex;flex-wrap:wrap;gap:10px;flex-basis:100%;order:2}
+.ctools .ccount{order:1;margin:0 0 0 auto;font-size:13.5px;line-height:1.35;color:var(--muted);text-align:right}
+.ctools .ccount b{color:var(--ink);font-weight:600}
+/* Stage, Status and My call are as wide as the label picked (fitSelects in app.js sets the width): fixed at 180, 210 and 200px they cut
+   "Stage: First intervie" and "Status: Invited to 1st inte" (23 Nov review), and the role buttons they kept still have moved to the head.
+   The search gives way to them from 260px down to 200px, and the count's words wrap before it leaves the line. */
+@media (min-width:601px){
+  .ctools input[type=search]{flex:1 1 200px;width:auto;max-width:260px;min-width:0}
+  .ctools #fstage,.ctools #fstatus,.ctools .fmine{width:150px;min-width:150px;max-width:320px}
+  .ctools .ccount{flex:1 1 110px;min-width:0}
+}
+/* the chips and the quick views: close under the toolbar */
+.fchips{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:-10px}
+.fchips .qviews{display:flex;flex-wrap:wrap;gap:6px;margin-right:8px}
+.qview{font:500 13px/1 var(--f);color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:99px;padding:6px 11px;cursor:pointer;white-space:nowrap}
+.qview:hover{border-color:var(--ink)}
+.qview b{font-family:var(--m);font-weight:500;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.qview[aria-pressed="true"]{background:var(--ink);border-color:var(--ink);color:var(--bg)}
+.qview[aria-pressed="true"] b{color:var(--bg);opacity:.8}
+.fchip{display:inline-flex;gap:6px;align-items:center;font-size:12.5px;padding:5px 10px;background:var(--white)}
+.fchip span{color:var(--muted);font-size:14px;line-height:1}
+.fchips .linkbtn{font-size:13px;margin-left:4px}
 .csrc .sep{display:none}
 .csrc .cappm{display:none}
 .cdue .duew{display:none}
 @media (max-width:600px){
+  .chead .seghead,.ctools .fmorebtn{display:none}
+  .ctools .segphone{display:block;flex-basis:100%}
+  .ctools .fmore,.ctools.more .fmore{display:contents}
+  .ctools .ccount{flex-basis:100%;margin:0;text-align:left;font-size:13px}
+  .ctools .fsel{order:2}
+  .tablewrap.cands tr.lastopen{border-color:var(--accent);box-shadow:inset 3px 0 0 var(--accent)}
   .ctools input[type=search]{flex:1 1 0;width:auto;min-width:0}
   .ctools .ftoggle{display:inline-flex;align-items:center;min-height:42px;flex:none}
   .ctools .ftoggle[aria-expanded="true"]{border-color:var(--ink)}
@@ -936,3 +1018,30 @@ button.dlater:hover .lbl{color:var(--ink)}
 @media (max-width:600px){.decision .linkbtn.small{min-height:40px;padding:0 4px}button.dlater{min-height:40px;align-items:center}}
 .reclater{font-size:13.5px;line-height:1.5;padding:2px 4px;display:flex;flex-wrap:wrap;gap:4px 8px;align-items:baseline}
 @media (max-width:600px){.reclater .linkbtn{min-height:40px}}
+/* 23 Nov 2026 (Kostya): a screening card with nothing to write is one line (whose message 1 is, or where it stands); Log a message under a
+   record's conversation, opening in its place; Add candidate's "already in Studio", where the click was; Delete on one's own comment */
+.scrpanel.scrline{display:block}
+.scrline>p{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;line-height:1.45}
+.logmsg{margin-top:10px}
+.logform{display:flex;flex-direction:column;gap:8px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--bg-2)}
+.logrow{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center}
+.logday input{width:auto}
+.logform textarea{min-height:96px}
+.logform .formfoot{flex-wrap:wrap}
+.logform .saved:empty{display:none}
+.addclash{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border-radius:8px;background:var(--warn-bg);font-size:14px;line-height:1.45}
+.prow .addclash{margin-top:8px}
+.onbmsg .onbdel{font-size:11px;color:var(--muted)}
+@media (max-width:600px){.logmsg>.linkbtn,.logform .linkbtn,.onbmsg .onbdel{min-height:40px}}
+/* 23 Nov 2026 (Kostya): This week once its Sunday has passed reads Last week, with a line in the warn ink; "decline not sent" beside a
+   status (a Decline call on someone messaged or replied); Approved read, not set, by anyone but Kostya; the role form's read-only fields */
+.weekwarn{margin:-14px 0 0;font-size:14px;color:var(--warn);font-weight:500}
+.wsflag.dnsflag{color:var(--warn);background:var(--warn-bg);border-color:transparent}
+.tplro{display:flex;align-items:center;gap:10px;min-height:36px}
+#rform .fieldnote>span:last-child{padding:9px 0 2px}
+#rform .formfoot{flex-wrap:wrap}
+#rform .formfoot .saved{flex:1 1 auto;min-width:0;text-align:right}
+.onbcall .formfoot .saved{flex:1 1 100%;text-align:right}
+/* A step's mark that asks for something ("Add the reason: your call differs from Claude's.") takes its own line under the reason: in the
+   320px panel the max-content column squeezed the reason box to nothing and ran the words off the panel (23 Nov) */
+.decision .drow>.dact:has(.saved.bad){grid-column:1/-1;justify-content:flex-start;margin-bottom:0}
