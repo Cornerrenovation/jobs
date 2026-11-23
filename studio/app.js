@@ -54,7 +54,7 @@
     showClosed: false, justCreated: null, cards: null, cardStage: {}, cardEdit: null, srcFilter: "all", callFilter: "all", agentFilter: "all", confFilter: "all", personFilters: {}, screens: null,
     sort: { key: "", dir: 1 }, screenFilter: "tosend", calGroup: "", cvFilter: "all", stageFilter: "all", statusFilter: "all", resBy: {}, wsBy: {}, decBy: {}, reasonBy: {},
     decisions: null, secAsk: {}, dOpen: {}, carry: null,
-    subOpen: {}, focusSec: "", onb: null, onbPlan: "", onbOpen: {}, onbDraft: {}, onbAnswer: {}, onbScore: {}, onbErr: {}, onbVisit: null, onbRead: {}, onbCall: {}, onbCallErr: {} };
+    subOpen: {}, focusSec: "", onb: null, onbPlan: "", onbOpen: {}, onbDraft: {}, onbAnswer: {}, onbScore: {}, onbErr: {}, onbVisit: null, onbRead: {}, onbCall: {}, onbCallErr: {}, onbKept: {} };
   const store = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
 
   // missing: what to return on a 404 instead of an error (a route an older Worker doesn't have yet; the caller hides what it would show)
@@ -143,7 +143,7 @@
     const missing = keys.filter((k) => !state[k]);
     (await Promise.all(missing.map((k) => typeof load[k] === "function" ? load[k]() : api(load[k])))).forEach((v, i) => { state[missing[i]] = v; });
   }
-  const forget = () => { state.boot = null; state.candidates = null; state.summary = null; state.resBy = {}; state.cards = null; state.outreach = null; state.templates = null; state.msgs = null; state.onb = null; state.decisions = null; state.screens = null; };
+  const forget = () => { state.boot = null; state.candidates = null; state.summary = null; state.resBy = {}; state.cards = null; state.outreach = null; state.templates = null; state.msgs = null; state.onb = null; state.onbKept = {}; state.decisions = null; state.screens = null; };
 
   // ---------- shared candidate logic ----------
   const stageIdx = (s) => ORDER.indexOf(s || "");
@@ -211,7 +211,7 @@
     state.view = v; store.set("studio-view", v);
     // leaving the Onboarding tab ends the visit: what was new then counts as seen, and the next visit lands on the plan whose day has come
     // (a link to a plan sets it again before this view opens)
-    if (v !== "onboarding") { state.onbVisit = null; state.onbPlan = ""; }
+    if (v !== "onboarding") { state.onbVisit = null; state.onbPlan = ""; state.onbKept = {}; state.onb = null; }
     document.querySelectorAll("nav.views button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.view === v));
     showTab();
     return render();
@@ -2336,6 +2336,11 @@
   const onbPersonName = (p) => p.person_name || p.id;
   const onbPlansOf = (plans, key) => plans.filter((p) => onbPersonKey(p) === key).sort((a, b) => (a.order || 0) - (b.order || 0) || a.id.localeCompare(b.id));
   const onbLanding = (plans, key) => { const list = onbPlansOf(plans, key), open = list.filter((p) => p.opens && p.opens <= today()); return (open.length ? open[open.length - 1] : list[0]).id; };
+  // the applicants and screening calls a calls task lists, read once however many plans ask; a failure is kept so the task can say so.
+  // Both lists are needed: other views load the applicants without the calls (review, 22 Nov: every cell read "not made").
+  const onbCallsReady = () => !!(state.candidates && state.screens);
+  const onbCallsLoad = () => state.onbCallsP || (state.onbCallsErr = false, state.onbCallsP = need("candidates", "screens")
+    .then(() => { state.onbCallsErr = false; }, () => { state.onbCallsErr = true; }).finally(() => { state.onbCallsP = null; }));
   async function renderOnboarding(view) {
     const plans = state.boot.onboarding || [];
     if (!plans.length) { view.innerHTML = head("Onboarding") + '<div class="card empty">There is no onboarding plan for this login.</div>'; return; }
@@ -2343,16 +2348,35 @@
     // A visit starts when the tab is opened, not on a background refresh. The Worker answers when this login opened each plan the time
     // before: what came after that is new for as long as the tab stays open. Each sub-tab's plan is stamped once per visit (review, 22 Nov:
     // stamping again on every switch between Week 2 and Onboarding wiped "New from" before it was read).
-    if (!state.onbVisit) { state.onbVisit = { plans: {} }; state.onbRead = {}; }
-    if (!(state.onbPlan in state.onbVisit.plans)) {
-      const r = await api(onbPath(state.onbPlan) + "/seen", "POST", {}, null).catch(() => null);
-      state.onbVisit.plans[state.onbPlan] = r ? r.since || "" : null;
+    if (!state.onbVisit) { state.onbVisit = { plans: {}, stamps: {} }; state.onbRead = {}; }
+    // A sub-tab opens at once (Kostya, 22 Nov: "tab switcher works with a delay - when i click Week 2 i wait while it opens"): each plan
+    // read in a visit is kept, the person's other plans are read in the background after the first one draws, the stamp and the plan are
+    // read together, and a calls task's applicants load after the plan is on screen.
+    // A read that lands after the visit ended or the data was dropped (forget(), the live refresh) is thrown away (review, 22 Nov).
+    const visit = state.onbVisit, boot = state.boot, id = state.onbPlan, stale = () => state.onbVisit !== visit || state.boot !== boot;
+    const stamped = id in visit.plans;  // this visit has the stamp's answer for this plan
+    const stamp = visit.stamps[id] || (visit.stamps[id] = api(onbPath(id) + "/seen", "POST", {}, null).catch(() => null)
+      .then((r) => { visit.plans[id] = r ? r.since || "" : null; }));
+    const redraw = () => { if (!stale() && state.view === "onboarding" && state.onb && state.onb.plan.id === id) drawOnboarding(view); };
+    const kept = state.onbKept[id];
+    if (kept && stamped) state.onb = kept;
+    else if (kept) {
+      // read in the background, opened for the first time in this visit: drawn now, then read again with its stamp, so what came in
+      // between shows as new instead of being stamped unseen (review, 22 Nov)
+      state.onb = kept;
+      Promise.all([stamp, api(onbPath(id))]).then(([, p]) => { if (stale()) return; state.onbKept[id] = p; if (state.onbPlan === id) { state.onb = p; redraw(); } }).catch(() => {});
+    } else {
+      const [, p] = await Promise.all([stamp, api(onbPath(id))]);
+      if (stale() || state.onbPlan !== id) return;
+      state.onb = p;
     }
-    if (!state.onb || state.onb.plan.id !== state.onbPlan) state.onb = await api(onbPath(state.onbPlan));
-    // a task with a calls window lists the role's applicants of those days with each person's screening call: the lists it reads. If they
-    // don't load, the plan still draws and the task says so (review, 22 Nov: a failed list emptied the whole tab).
-    if (state.onb.tasks.some((t) => t.calls)) await need("candidates", "screens").catch(() => {});
     drawOnboarding(view);
+    if (state.onb.tasks.some((t) => t.calls) && !onbCallsReady()) onbCallsLoad().then(redraw);
+    onbPlansOf(plans, onbPersonKey(state.onb.plan)).filter((p) => !state.onbKept[p.id]).forEach((p) => api(onbPath(p.id)).then((x) => {
+      if (stale() || state.onbKept[p.id]) return;
+      state.onbKept[p.id] = x;
+      if (x.tasks.some((t) => t.calls) && !onbCallsReady()) onbCallsLoad();
+    }).catch(() => {}));
   }
   // The applicants a calls task covers: the role's records whose application day falls in the window, oldest first. Days are São Paulo's,
   // the reader's and the imports' convention, so Yana in Rivne and Kostya see the same list (review, 22 Nov). A day, or a day and a time
@@ -2370,6 +2394,7 @@
     return ma.join(" ") === mb.join(" ") ? `${da}–${db} ${mb.join(" ")}` : `${a} – ${b}`; };
   function drawOnboarding(view) {
     const { plan, tasks, comments, can } = state.onb, plans = state.boot.onboarding || [], me = state.boot.who;
+    state.onbKept[plan.id] = state.onb;  // what is on screen is what a switch back draws (after a comment, an answer or a reload)
     const manager = state.onb.role === "manager", person = state.onb.role === "person", pass = plan.pass || 90, name = plan.person_name || plan.id;
     const answers = {}, keys = {}, drafts = {}, by = {};
     (state.onb.answers || []).forEach((a) => { answers[a.task_id] = a; });
@@ -2405,10 +2430,10 @@
     const callsTally = (t) => { const list = inWindow(t.calls), made = deciders.map((by) => list.filter((c) => callOf(c, by).call).length);
       const both = list.filter((c) => deciders.filter((by) => callOf(c, by).call).length > 1), same = both.filter((c) => new Set(deciders.map((by) => callOf(c, by).call).filter(Boolean)).size === 1);
       return { list, made, both: both.length, same: same.length }; };
-    const callsLine = (t, k) => !state.candidates ? "The applicants didn't load: reload the page" : !k.list.length ? `Nobody applied on ${span(t.calls.from, t.calls.to)} yet`
+    const callsLine = (t, k) => !onbCallsReady() ? (state.onbCallsErr ? "The applicants didn't load: reload the page" : "Loading the applicants") : !k.list.length ? `Nobody applied on ${span(t.calls.from, t.calls.to)} yet`
       : [`${k.list.length} applied ${span(t.calls.from, t.calls.to)}`, ...deciders.map((by, i) => `${firstName(by)} ${k.made[i]} of ${k.list.length}`), ...(k.both ? [`same call ${k.same} of ${k.both}`] : [])].join(" · ");
     const callsHtml = (t) => { const k = callsTally(t);
-      if (!k.list.length) return `<p class="muted small">${h(callsLine(t, k))}.</p>`;
+      if (!onbCallsReady() || !k.list.length) return `<p class="muted small">${h(callsLine(t, k))}.</p>`;
       // what is typed is kept per task and applicant (the Friday task lists the same people as Wednesday's; review, 22 Nov)
       const cell = (c, by) => { const r = callOf(c, by), key = `${t.id}|${c.id}`;
         if (by !== me || !can) return r.call ? `${callPill(r.call)}${r.reason ? `<span class="muted small clamp2" title="${h(r.reason)}">${h(r.reason)}</span>` : ""}` : '<span class="muted small">not made</span>';
@@ -2475,13 +2500,16 @@
       ${who}</section>`;
     const again = () => drawOnboarding(view), path = onbPath(plan.id) + "/tasks/", inTask = (id, sel) => view.querySelector(`li[data-task="${CSS.escape(id)}"] ${sel}`);
     // after an answer or a score: the task's status and the rest follow, and the task stays in view
-    const reload = async (id) => { state.onb = await api(onbPath(plan.id)); again(); const li = id && view.querySelector(`li[data-task="${CSS.escape(id)}"]`); if (li) li.scrollIntoView({ block: "nearest" }); };
+    // (a switch made while it read stays where it went: the fresh plan is kept for the switch back; review, 22 Nov)
+    const reload = async (id) => { const p = await api(onbPath(plan.id)); state.onbKept[plan.id] = p;
+      if (!state.boot || state.view !== "onboarding" || state.onbPlan !== plan.id) return; state.onb = p; again(); const li = id && view.querySelector(`li[data-task="${CSS.escape(id)}"]`); if (li) li.scrollIntoView({ block: "nearest" }); };
     // a save that fails says so next to its button (the page's notice is at the top, out of sight from a task further down), and keeps
     // saying so through a redraw until the next try
     const tell = (id, err) => { state.onbErr[id] = String((err && err.message) || err || ""); };
     // Another sub-tab: what is typed and not sent stays (comments, answers, scores and calls are kept by task id, unique across a person's
     // plans), so going to week 1 and back loses nothing (review, 22 Nov); only the open tasks start closed.
-    const toPlan = (v) => { if (v === plan.id) return; state.onbPlan = v; state.onb = null; state.onbOpen = {}; renderOnboarding(view).catch((e) => notice(String(e.message || e), true)); };
+    // (a plan not read yet: the one on screen stays, and stays usable, until the read lands; review, 22 Nov)
+    const toPlan = (v) => { if (v === plan.id) return; state.onbPlan = v; if (state.onbKept[v]) state.onb = state.onbKept[v]; state.onbOpen = {}; renderOnboarding(view).catch((e) => notice(String(e.message || e), true)); };
     bindSeg(view, "onbplan", toPlan);
     bindSeg(view, "onbperson", (k) => toPlan(onbLanding(plans, k)));
     // a call made in a calls task: the viewer's own call and reason on the record, as the record's Screening step saves them. The form
@@ -2497,7 +2525,7 @@
         if (!pick) { state.onbCallErr[key] = "Pick Shortlist, Hold or Decline."; redraw(); return; }
         btn.disabled = true; delete state.onbCallErr[key];
         try { await api("candidates/" + encodeURIComponent(cid), "PATCH", { your_call: pick, your_reason: f.elements.reason.value.trim() });
-          delete state.onbCall[key]; state.screens = null; await need("screens").catch(() => {}); delete f.dataset.dirty; redraw(); }
+          delete state.onbCall[key]; state.screens = null; await onbCallsLoad(); delete f.dataset.dirty; redraw(); }
         catch (err) { state.onbCallErr[key] = String((err && err.message) || err || "Not saved."); btn.disabled = false; redraw(); }
       });
     });
