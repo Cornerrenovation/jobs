@@ -72,6 +72,15 @@
   const SORT_KEYS = ["name", "applied", "agent", "conf", "your", "stage", "due"];
   { const s = (store.get("studio-candsort") || "").split("|"); if (SORT_KEYS.includes(s[0])) state.sort = { key: s[0], dir: s[1] === "-1" ? -1 : 1 }; }
   const setSort = (s) => { state.sort = s; store.set("studio-candsort", s.key ? `${s.key}|${s.dir}` : ""); };
+  // Each history entry the app makes, or lands on, carries its place (n): Back lands on a lower one, Forward on a higher one, and a link in
+  // the page or an address typed opens a new entry with none yet, which takes the place after the one it came from (follow). So a move the
+  // person refuses (a record with something not saved kept open) is undone by going back to the entry they were on, never by adding one
+  // (23 Nov, third review: a refused Forward pushed the view's address again, so the next Back went to the page refused, and a refused link
+  // left "#candidates" over a record opened from the list)
+  let histAt = history.state && Number.isInteger(history.state.n) ? history.state.n : 0;
+  if (!(history.state && Number.isInteger(history.state.n))) history.replaceState({ ...(history.state && typeof history.state === "object" ? history.state : {}), n: histAt }, "");
+  const histPush = (extra, url) => { histAt += 1; history.pushState({ ...(extra || {}), n: histAt }, "", url); };
+  const histReplace = (extra, url) => history.replaceState({ ...(extra || {}), n: histAt }, "", url);
 
   // missing: what to return on a 404 instead of an error (a route an older Worker doesn't have yet; the caller hides what it would show)
   async function api(path, method, body, missing) {
@@ -269,7 +278,7 @@
   if ("scrollRestoration" in history) history.scrollRestoration = "manual";
   function setView(v, fromLink) {
     state.view = v; store.set("studio-view", v);
-    if (!fromLink && location.hash !== "#" + v) history.pushState(null, "", "#" + v);
+    if (!fromLink && location.hash !== "#" + v) histPush(null, "#" + v);
     // Candidates may use a laptop's width, up to 1440px (23 Nov audit: Next step had 191px of a 1366px screen); the other views keep 1180
     $("#main").classList.toggle("wide", v === "candidates");
     // leaving the Onboarding tab ends the visit: what was new then counts as seen, and the next visit lands on the plan whose day has come
@@ -360,7 +369,7 @@
     const d = await api("docs/" + slug, "GET", null, null);
     // not this login's page (This week is Kostya's: 23 Nov 2026), or not synced yet: never an error. This week then goes as its tab does,
     // to where the login lands, in place of the address that asked for it.
-    if (!d && slug === "this-week") { tabs.week = false; showTabs(); const v = home(); history.replaceState(null, "", "#" + v); return setView(v, true); }
+    if (!d && slug === "this-week") { tabs.week = false; showTabs(); const v = home(); histReplace(null, "#" + v); return setView(v, true); }
     // Posts is reached from Checklists; its way back to This week only where that tab is
     const back = slug === "posts" ? `<p class="crumbs"><button type="button" class="linkbtn" data-back="checklists">← Checklists</button>${tabs.week ? `<span class="muted"> · </span><button type="button" class="linkbtn" data-back="week">This week</button>` : ""}</p>` : "";
     // This week has a title and its dates, as the other views have (14 Nov live QA: it opened on "Right now", with no week on the page).
@@ -985,9 +994,9 @@
   // matched, Open <ID>, and where only the name matched (no LinkedIn or email to tell them apart), Add as a new person, which sends as_new.
   // The Add form and Re-contact's "Add to this search" both show it where the click was. Open is the dark button, the one her guide's part 5
   // takes first (final check, 23 Nov: Add as a new person was the dark one, under "Only the name is the same").
-  // carry: what the Add form holds that the record should get (her guide's step 7: "write the new application in Notes"), put in the opened
-  // record's fields as edits not saved yet, so a Save keeps them and a close asks first (23 Nov, second review: Open dropped the pasted
-  // screening answers without a word)
+  // carry: what the Add form holds that the record should get (the new application in Notes; her guide's part 5 step 7 says Open has put it
+  // there, to check and save), put in the opened record's fields as edits not saved yet, so a Save keeps them and a close asks first (23 Nov,
+  // second review: Open dropped the pasted screening answers without a word)
   function showClash(box, d, asNew, carry) {
     box.innerHTML = `<p>${h(String(d.error || "Already in Studio as " + d.id).replace(/\.$/, ""))}.${d.by === "name" ? " Only the name is the same: if this is someone else, add them as a new person." : ""}</p>
       <div class="pact"><button type="button" class="btn small" data-clashopen>Open ${h(d.id)}</button>${d.by === "name" ? '<button type="button" class="btn ghost small" data-clashnew>Add as a new person</button>' : ""}</div>`;
@@ -1161,7 +1170,9 @@
     if (!id && f.elements.role_id) f.elements.role_id.addEventListener("change", () => {
       const v = f.elements.role_id.value, li = $("#dstep-screening"); c.role_id = v;
       $("#receyebrow").textContent = v ? roleName(v) : "";
-      if (li) { li.innerHTML = screenStep({ ...c, your_call: f.elements.your_call.value, your_reason: f.elements.your_reason.value }, null); bindDecisions(c); }
+      // (the call row comes and goes with the search: a call and reason picked stay while it is there, and none goes for a search the viewer
+      // doesn't call on)
+      if (li) { li.innerHTML = screenStep({ ...c, your_call: f.elements.your_call ? f.elements.your_call.value : "", your_reason: f.elements.your_reason ? f.elements.your_reason.value : "" }, null); bindDecisions(c); }
       $("#addclash").hidden = true; marks(); });
     // edits put back in their fields and steps, still to be saved: carried over a redraw, or a save that failed
     const apply = (edits) => {
@@ -1370,10 +1381,14 @@
       const add = may && !mine && !open ? `<button type="button" class="linkbtn small dadd" data-dadd="screening">Add ${h(myCall())}</button>` : "";
       return `${label}${note}${shown.filter((r) => r.by !== me).map(line).join("")}${mine ? line(mine) : ""}${add}${may ? pastNote(open) + editRow(mine && mine.call, mine && mine.reason, open) : ""}`;
     }
-    // an older Worker, or a new record: the record's one call and reason, as before (Change on someone else's only for whoever makes calls here)
-    const may = !id || (made && by === me) || callsHere(c);
+    // an older Worker, or a new record: the record's one call and reason, as before (Change on someone else's only for whoever makes calls here).
+    // A new record's call row is for whoever makes calls on its search, as on a record (D2; 23 Nov, third review: the Add form gave it to
+    // every login, and Yuliia's Decline on a Sales designer applicant was stored as the record's call, Rejected, under "Yana makes this
+    // call."); anyone else reads whose call it is, and the Add sends no call of theirs. No search picked yet: no row, until one is.
+    const may = id ? (made && by === me) || callsHere(c) : !!c.role_id && callsHere(c);
+    const lead = !id && !rec ? leadEmail(roleOf(c.role_id)) : "", caller = rec && rec !== me ? rec : lead && lead !== me ? lead : "";
     const note = made ? (by && by !== me && may ? `<span class="dnote" data-dnote hidden>Saving replaces ${h(firstName(by))}'s call.</span>` : "")
-      : rec && rec !== me ? `<span class="dnote">${h(firstName(rec))} makes this call.</span>` : !may ? `<span class="dnote">No call yet.</span>` : "";
+      : caller ? `<span class="dnote">${h(firstName(caller))} makes this call.</span>` : !may && (id || c.role_id) ? `<span class="dnote">No call yet.</span>` : "";
     return `${label}${made ? roLine("screening", by ? `${firstName(by)}'s call` : "Call", c.your_call, c.your_reason, "", !may ? "" : by && by !== me ? "Change" : "Edit") : ""}${note}
       ${may ? pastNote(!made) + editRow(c.your_call, c.your_reason, !made) : ""}`;
   }
@@ -1540,23 +1555,36 @@
   // else reads the line alone, as on Brand & Content (23 Nov, second review: Yana's PM cards read "Message 1 is Yuliia's" over "Your message
   // 1" and a live Mark as sent, which moved Yuliia's candidate to Messaged with Yana's dates)
   const sendsHere = (c) => { const rec = loginOf(roleOf(c.role_id).recruiter); return !rec || rec === loginOf(state.boot.who); };
+  // The sender's first name, for the lines that tell everyone else whose message 1 it is
+  const senderName = (c) => { const rec = loginOf(roleOf(c.role_id).recruiter); return rec ? firstName(rec) : ""; };
   const ownLine = (c, own) => { const fam = familyOf(roleOf(c.role_id)), rec = loginOf(roleOf(c.role_id).recruiter);
     if (fam === "bc") return "No concern written yet. Claude writes one for every shortlisted candidate.";
     // named as the record names whose call it is (23 Nov review: "once the call is Shortlist" sat beside Claude's own Shortlist, and Kostya
-    // read "message 1 is yours" on Yana's cards): "yours" to the search's recruiter (or to anyone where it has none), her name to the others
+    // read "message 1 is yours" on Yana's cards): "yours" to the search's recruiter (or to anyone where it has none), her name to the others.
+    // A Shortlist of Claude's alone waits for a call: on a search with no recruiter "your call" only to whoever calls there (D2), the
+    // hiring manager's name to the others (23 Nov, third review: Yana and Yuliia read "once your call is Shortlist" with no call to make)
     const mine = !rec || rec === loginOf(state.boot.who), who = mine ? "" : firstName(rec), where = fam === "sd" ? " in LinkedIn" : "";
+    const lead = !rec && !own && !callsHere(c) ? leadEmail(roleOf(c.role_id)) : "", leadName = lead ? firstName(lead) : "";
     const line = own ? (mine ? `message 1 is yours. Send it${where}, then Mark as sent.` : `message 1 is ${who}'s. ${who} sends it${where}, then Mark as sent.`)
+      : !rec && !callsHere(c) ? (leadName ? `message 1 is ${leadName}'s, once ${leadName}'s call is Shortlist.` : "message 1 waits for the hiring manager's call.")
       : mine ? "message 1 is yours, once your call is Shortlist." : `message 1 is ${who}'s, once ${who}'s call is Shortlist.`;
     return fam === "sd" ? `Claude writes no message for sales designers: ${line}` : line[0].toUpperCase() + line.slice(1); };
+  // "Message 1 · sent 23 Nov" where nothing else says it went: no message text to show folded, and no conversation stored (23 Nov, third
+  // review: a sent card with a concern and no message read only "Concern to verify")
+  const sentPill = (c) => c.screen_message || msgsOf(c).length ? "" : `<p class="muted small">Message 1 <span class="pill ok">sent${c.last_contact ? " " + h(fmt(c.last_contact)) : ""}</span></p>`;
   function screenPanel(c, rec) {
     const blank = !c.screen_concern && !c.screen_message, own = ownFirst(c), mine = sendsHere(c), early = msgOnly(c), sent = wasSent(c) && !early;
     const closed = isClosedStage(c) || isClosedRole(roleOf(c.role_id)), extra = rec ? "" : convoHtml(c) + replyHtml(c);
     // Mark as messaged goes by the day the stored message went (the nudge, the Next step and Last contact), Mark as sent by the day it is clicked
     const day = early ? lastOutDay(c) : "", attrs = `data-sid="${h(c.id)}" data-stage="${h(c.stage || "applied")}"${day ? ` data-day="${h(day)}" data-contact="${h(day > (c.last_contact || "") ? day : c.last_contact)}"` : ""}`;
+    // the buttons are the sender's, the search's recruiter (anyone where it has none): a message written (Claude's on Brand & Content, or a
+    // draft saved in her box) is no one else's to send or edit (23 Nov, third review: Yana's saved draft gave Kostya, Yuliia and Julieta her
+    // box, Save the edit and Mark as sent, and Claude's on Brand & Content gave them to Yana)
     const act = sent ? `<span class="pill ok">sent${c.last_contact ? " " + h(fmt(c.last_contact)) : ""}</span>`
       : closed ? `<span class="muted small">Not sent · the record is closed</span>`
+      : !mine ? ""
       : early ? `<button type="button" class="btn ghost small" data-sent>Mark as messaged</button>`
-      : !blank || (own && mine) ? `<button type="button" class="btn ghost small" data-sent>Mark as sent</button>` : "";
+      : !blank || own ? `<button type="button" class="btn ghost small" data-sent>Mark as sent</button>` : "";
     const reply = c.latest_reply && !repliedAt(c) ? `<div class="answer"><span class="lbl">Latest reply</span><p>${h(c.latest_reply)}</p></div>` : "";
     // nothing to write: whose message it is, or where it stands, on one line. Past message 1 with a conversation stored, the conversation
     // says what happened (a reply logged may have come first: "sent" would be a guess); with none, "Message 1 · sent" and its day.
@@ -1565,12 +1593,19 @@
       return line || shown || reply ? `<div class="scrpanel noconcern scrline" ${attrs}>${line || shown ? `<p class="muted small">${h(line)}${line && shown ? " " : ""}${shown}</p>` : ""}${reply}</div>${extra}` : extra;
     }
     const application = urlsIn(c.cv).filter((u) => /linkedin\.com\/hiring\/applicants/.test(u)).map((u) => `<a class="btn ghost small" href="${h(u)}" target="_blank" rel="noopener">Application ↗</a>`).join("");
+    const links = rec ? "" : [cvOpen(c, "btn ghost small"), c.linkedin ? `<a class="btn ghost small" href="${h(c.linkedin)}" target="_blank" rel="noopener">LinkedIn ↗</a>` : "", application].filter(Boolean).join("");
     // Sent, or past message 1, with a message written: the message as it went, read-only and folded, as the record shows it (23 Nov, second
     // review: the Sent card read "Message to send on LinkedIn" over a box that could still be edited, and an edit offered Save the edit over
     // the text of a message already sent); the card keeps its links for the reply
-    if (sent) {
-      const links = rec ? "" : [cvOpen(c, "btn ghost small"), c.linkedin ? `<a class="btn ghost small" href="${h(c.linkedin)}" target="_blank" rel="noopener">LinkedIn ↗</a>` : "", application].filter(Boolean).join("");
-      return `<div class="scrpanel scrline${c.screen_concern ? "" : " noconcern"}" ${attrs}>${sentScreenHtml(c) || `<p class="muted small">${act}</p>`}${links ? `<div class="pact">${links}</div>` : ""}</div>${extra}`;
+    if (sent) return `<div class="scrpanel scrline${c.screen_concern ? "" : " noconcern"}" ${attrs}>${sentScreenHtml(c)}${sentPill(c)}${links ? `<div class="pact">${links}</div>` : ""}</div>${extra}`;
+    // not the viewer's to send: the concern and the message as written, read-only and folded, and whose message 1 it is
+    if (!mine) {
+      const who = senderName(c), bc = claudeWrites(c);
+      const line = closed ? "" : early ? `A message to them is stored, and the record is still ${statusOf(c)}.` : bc ? `Message 1 is ${who}'s: ${who} sends it in LinkedIn, then Mark as sent.` : ownLine(c, own);
+      return `<div class="scrpanel scrline${c.screen_concern ? "" : " noconcern"}" ${attrs}>
+        ${c.screen_concern ? `<div class="kvline scrsentc"><span class="lbl">Concern to verify</span><span>${h(c.screen_concern)}</span></div>` : ""}
+        ${c.screen_message ? `<details class="fold plain scrsent"><summary>${h(bc ? `Claude's message 1 · not sent yet` : `${who}'s draft of message 1 · not sent yet`)}</summary><p class="scrtext">${linkify(c.screen_message)}</p></details>` : ""}
+        ${line || act ? `<p class="muted small">${h(line)}${line && act ? " " : ""}${act}</p>` : ""}${links ? `<div class="pact">${links}</div>` : ""}${reply}</div>${extra}`;
     }
     // blank: their own message 1, in a box that starts empty; Copy shows once it holds a text, and Mark as sent keeps the text on the record
     return `<div class="scrpanel${c.screen_concern ? "" : " noconcern"}" ${attrs}>
@@ -1613,6 +1648,10 @@
       const press = (name, v) => f.querySelectorAll(`[data-seg="${name}"] button`).forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === v && !!v));
       open.addEventListener("click", () => show(true));
       ["logdir", "logch"].forEach((n) => bindSeg(f, n, (v) => { press(n, v); say(""); }));
+      // what was typed here and not logged yet, back in the record drawn again (logTyped, msgsAgain)
+      const t = state.logCarry && state.logCarry.cid === c.id ? state.logCarry : null;
+      if (t) { state.logCarry = null; f.hidden = false; open.hidden = true; open.setAttribute("aria-expanded", "true"); press("logdir", t.dir); if (t.ch) press("logch", t.ch);
+        if (t.day) f.elements.day.value = t.day; f.elements.body.value = t.body; f.dataset.dirty = "1"; }
       $("[data-logcancel]", f).addEventListener("click", () => { f.reset(); Object.entries(dflt).forEach(([n, v]) => press(n, v)); say(""); delete f.dataset.dirty; show(false); open.focus(); });
       f.addEventListener("submit", async (e) => {
         e.preventDefault();
@@ -1633,22 +1672,34 @@
     });
   }
   // A message marked sent, a reply sent or a message logged on the record: the record read again (the Worker may have moved its stage), back
-  // at its Messages
-  const msgsAgain = (id) => async () => { state.focusSec = "msgs"; forget(); await render(true); await openCandidate(id); };
+  // at its Messages, with what is typed in Log a message and not logged yet still in it (23 Nov, third review: Mark as sent, offered next to
+  // an open Log form since the redraw after a save, dropped her typed email without a word)
+  const logTyped = (id) => { const f = isOpen(id) && $("#recbody .logform"); if (!f || f.hidden || !f.elements.body.value.trim()) return null;
+    const pick = (n) => (f.querySelector(`[data-seg="${n}"] button[aria-pressed="true"]`) || { dataset: {} }).dataset.v || "";
+    return { cid: id, dir: pick("logdir"), ch: pick("logch"), day: f.elements.day.value, body: f.elements.body.value }; };
+  const msgsAgain = (id) => async () => { state.focusSec = "msgs"; state.logCarry = logTyped(id); forget(); await render(true);
+    try { await openCandidate(id); } finally { state.logCarry = null; } };
   const bindMsgs = (root, c) => { const again = msgsAgain(c.id); bindScreen(root, again); bindReply(root, again); bindLog(root, c, again); };
   // The record's Messages section, the thing to act on first (14 Nov review: the reply draft came last, 2,000px down): Claude's reply draft,
   // then for someone in screening or with a concern written the message screen (the message to send; once sent, one line), then the
   // conversation with its last two messages open. Hidden in a blind batch, as the message screen always was.
   // Then Log a message, for one neither the robots nor her reader read (23 Nov 2026). With no concern and no message (a sales designer's
   // message 1 is hers, written in LinkedIn) the panel's one line says where message 1 stands, sent or not.
-  const screenPart = (c) => inScreening(c) || c.screen_concern ? (wasSent(c) && !msgOnly(c) && (c.screen_concern || c.screen_message) ? sentScreenHtml(c) : screenPanel(c, true)) : "";
+  const screenPart = (c) => inScreening(c) || c.screen_concern ? (wasSent(c) && !msgOnly(c) && (c.screen_concern || c.screen_message) ? sentScreenHtml(c) + sentPill(c) : screenPanel(c, true)) : "";
   const messagesHtml = (c) => blindNow(c) ? "" : [replyHtml(c), screenPart(c), convoHtml(c, 2), logHtml(c)].filter(Boolean).join("");
   // The section drawn again after a save that changed the call or the stage, which change what it offers (23 Nov, second review: after her
   // Shortlist it still read "message 1 is yours, once your call is Shortlist", with no box and no Mark as sent, until the record was opened
   // again). Not over an edited message or reply; Log a message stays as it is, with what is typed in it.
   function redrawMsgs(c) {
-    const body = isOpen(c.id) && $("#sec-msgs .rsec-b");
-    if (!body || blindNow(c)) return;
+    const sec = isOpen(c.id) && $("#sec-msgs"), body = sec && $(".rsec-b", sec);
+    if (!body) return;
+    // blind again (the viewer took their call back): the section goes, as the record opened now draws it, and only Log a message with
+    // something typed in it stays (23 Nov, third review: Messages kept message 1's box and Mark as sent under "Yana's call, not made yet")
+    if (blindNow(c)) {
+      const log = body.querySelector(":scope > .logmsg"), typed = !!log && [...log.querySelectorAll("textarea")].some((t) => t.value.trim());
+      if (!typed) { sec.remove(); return; }
+      [...body.children].forEach((el) => { if (el !== log) el.remove(); }); return;
+    }
     setSum("msgs", msgsSummary(c));
     if (body.querySelector('.scrmsg[data-dirty="1"], .rmsg[data-dirty="1"]')) return;
     const log = body.querySelector(":scope > .logmsg"), again = msgsAgain(c.id), tmp = document.createElement("div");
@@ -1953,7 +2004,7 @@
     // written waits for the call (23 Nov: on Sales designer those came first and her own Shortlists last). On All roles the viewer's own
     // search comes first, and someone else's message 1 isn't the viewer's to send (23 Nov, second review: Yuliia's 40 PM cards came before
     // Yana's own)
-    const ready = (c) => !!(c.screen_concern || c.screen_message || (ownFirst(c) && sendsHere(c)));
+    const ready = (c) => sendsHere(c) && !!(c.screen_concern || c.screen_message || ownFirst(c));
     const list = all.filter(pick).sort((a, b) => (state.screenFilter === "replied" ? repliedAt(b).localeCompare(repliedAt(a)) : 0) || (wasSent(a) - wasSent(b)) || (sendsHere(b) - sendsHere(a)) || (ready(b) - ready(a)) || a.role_id.localeCompare(b.role_id) || (CONF_RANK[a.confidence] ?? 3) - (CONF_RANK[b.confidence] ?? 3) || a.name.localeCompare(b.name));
     // only where Claude writes the concern is one "without a concern yet" (Kostya, 23 Nov: not sales designers; the review: nor PM, whose
     // cards say message 1 is Yuliia's)
@@ -1966,7 +2017,11 @@
     const own = openRoles().filter((r) => familyOf(r) !== "bc").map((r) => r.short || r.name);
     // (a search another person recruits for: the line says whose message 1 it is, as its cards do)
     const recOf = loginOf(roleOf(tab).recruiter), theirs = tab !== "all" && recOf && recOf !== loginOf(state.boot.who) ? firstName(recOf) : "";
-    const how = writes ? `Edit ${tab === "all" ? "Claude's" : "the"} message if you want, copy it into LinkedIn ${app}, then mark it sent: the candidate moves to "messaged".${tab === "all" && own.length ? ` On ${own.join(" and ")} Claude writes none: message 1 is the recruiter's own.` : ""}`
+    // (a search where Claude writes the message and someone else sends it: theirs, as on its cards; All roles: each search's recruiter's;
+    // 23 Nov, third review: Yana read "Edit the message if you want … then mark it sent" over Kostya's Brand & Content cards)
+    const how = tab === "all" ? `Message 1 is each search's recruiter's to send: edit Claude's message if you want, copy it into LinkedIn ${app}, then mark it sent, and the candidate moves to "messaged".${own.length ? ` On ${own.join(" and ")} Claude writes none: message 1 is the recruiter's own.` : ""}`
+      : writes && theirs ? `Claude writes the concern and message 1 here. Message 1 is ${theirs}'s: ${theirs} edits it if needed, sends it in LinkedIn ${app} and marks it sent, and the candidate moves to "messaged".`
+      : writes ? `Edit the message if you want, copy it into LinkedIn ${app}, then mark it sent: the candidate moves to "messaged".`
       : theirs ? `Claude writes no message here. Message 1 is ${theirs}'s: ${theirs} sends it in LinkedIn ${app} and marks it sent, and the candidate moves to "messaged".`
       : `Claude writes no message here. Write message 1 in LinkedIn ${app}, or in the card's box first to keep it on the record, then mark it sent: the candidate moves to "messaged".`;
     view.innerHTML = head("Screening",`One message per shortlisted candidate${writes ? ", asking the one thing we need to verify" : ""}. ${toSend} to send · ${all.length - toSend} sent · ${replied} replied${drafts ? ` · ${drafts} repl${drafts > 1 ? "ies" : "y"} drafted` : ""}${noConcern ? ` · ${noConcern} without a concern yet` : ""}`,
@@ -2467,7 +2522,7 @@
   // and its address can be copied (23 Nov audit: Back, or a trackpad swipe, left Studio); the list's order is kept for ‹ › and J/K
   function openFromList(id) {
     state.recOrder = state.listIds.slice(); state.lastOpen = id; state.pushedRec = id;
-    history.pushState({ rec: id }, "", "#candidates/" + encodeURIComponent(id));
+    histPush({ rec: id }, "#candidates/" + encodeURIComponent(id));
     return openCandidate(id);
   }
   // "‹ 3 of 19 ›" in the record's header, and J and K outside a field (23 Nov audit: 18 screening calls meant closing each record and
@@ -2485,7 +2540,7 @@
     if (!next || stepping || !closeOk()) return;
     stepping = true;
     try {  // the address follows the record shown, in the same history entry: Back still closes the record
-      history.replaceState(state.pushedRec ? { rec: next } : null, "", "#candidates/" + encodeURIComponent(next));
+      histReplace(state.pushedRec ? { rec: next } : null, "#candidates/" + encodeURIComponent(next));
       if (state.pushedRec) state.pushedRec = next;
       state.lastOpen = next;
       await openCandidate(next);
@@ -2531,7 +2586,7 @@
   }));
   $("#recdlg").addEventListener("scroll", () => { const d = $("#recdlg"); d.classList.toggle("scrolled", d.scrollTop > 4); });
   // Closing a record opened from a link leaves the address at the list, so a reload doesn't open it again.
-  const leaveLink = () => { if (/^#candidates\//.test(location.hash)) history.replaceState(null, "", "#candidates"); };
+  const leaveLink = () => { if (/^#candidates\//.test(location.hash)) histReplace(null, "#candidates"); };
   // Closing a record with changes not saved asks first (14 Nov review: a Go and its reason picked in a step went with no word): the Decision
   // panel's fields and steps, a scorecard being written, an edited message, a work sample link or file not added yet
   const unsavedParts = () => {
@@ -2552,8 +2607,13 @@
   $("#recdlg").addEventListener("cancel", (e) => { if (!closeOk()) { e.preventDefault(); return; } leaveRecord(); });  // Escape
   // Closed over the Candidates list: the row just worked on is marked, and its name has the focus again, without moving the list (23 Nov
   // audit: the focus fell to the page and nothing marked the row in a list of 1,100); a row J or K left out of sight is brought into view
+  // (closed by follow, which has done this already and may be opening the record a link names: that one keeps its ‹ › and its entry; 23 Nov,
+  // third review: the event came after follow had set the list's order for the record opened next, so it had no ‹ › and J did nothing)
+  const recDone = () => { state.recOrder = null; state.pushedRec = ""; };
+  let quietClose = false;
   $("#recdlg").addEventListener("close", () => {
-    state.recOrder = null; state.pushedRec = "";
+    if (quietClose) { quietClose = false; return; }
+    recDone();
     const id = state.lastOpen, tr = state.view === "candidates" && id ? $(`#view tr[data-id="${CSS.escape(id)}"]`) : null;
     if (!tr) return;
     document.querySelectorAll("#view tr.lastopen").forEach((x) => { if (x !== tr) x.classList.remove("lastopen"); });
@@ -2874,6 +2934,7 @@
   // the applicants and screening calls a calls task lists, read once however many plans ask; a failure is kept so the task can say so.
   // Both lists are needed: other views load the applicants without the calls (review, 22 Nov: every cell read "not made").
   const onbCallsReady = () => !!(state.candidates && state.screens);
+  const CALL_PICK = "Pick Shortlist, Hold or Decline.", CALL_REASON = "Add the reason: your call differs from Claude's.";
   // A call typed in a calls task (state.onbCall, by task and applicant) that isn't the one stored for the viewer: its row says "Not saved
   // yet", and a reload or a closed tab asks first, as for a record (23 Nov, second review). Not read yet: counted as not saved.
   const onbCallDirty = (key) => { const t = state.onbCall[key]; if (!t || !state.boot) return false;
@@ -3064,19 +3125,32 @@
       const cid = f.dataset.cid, key = f.dataset.key;
       // a call picked or a reason typed that isn't saved says so on its row until Save, and a reload asks first (onbCallsUnsaved; 23 Nov,
       // second review: the row looked saved, kept its call when folded, and a reload lost it with no word)
-      const mark = () => { const dirty = onbCallDirty(key); let m = $("[data-ocmark]", f);
+      // One line under the row at a time: an error says the row isn't saved, "Not saved yet" only once it has gone (23 Nov, third review: the
+      // red "Add the reason" stayed beside "Not saved yet" after the reason was typed)
+      const mark = () => { const dirty = onbCallDirty(key) && !state.onbCallErr[key]; let m = $("[data-ocmark]", f);
         if (dirty && !m) { m = Object.assign(document.createElement("span"), { className: "saved warn", textContent: "Not saved yet" }); m.dataset.ocmark = ""; $(".formfoot", f).prepend(m); }
         else if (!dirty && m) m.remove(); };
-      const keep = () => { state.onbCall[key] = { call: ($('[data-seg="occall"] button[aria-pressed="true"]', f) || {}).dataset?.v || "", reason: f.elements.reason.value }; mark(); };
-      if (!state.onbCallErr[key]) mark();
+      const pressed = () => ($('[data-seg="occall"] button[aria-pressed="true"]', f) || {}).dataset?.v || "";
+      const keep = () => {
+        state.onbCall[key] = { call: pressed(), reason: f.elements.reason.value };
+        // a call and reason the same as stored are nothing to save: no entry, so the lists read again later (the minute's refresh, on another
+        // tab) can't count it as not saved, and the refresh may draw the row again (23 Nov, third review: a click on the stored call, then
+        // a refresh on Activity, and the reload asked "Leave site?")
+        if (onbCallsReady() && !onbCallDirty(key)) { delete state.onbCall[key]; setTimeout(() => { if (!state.onbCall[key]) delete f.dataset.dirty; }, 0); }
+        // the error goes once what it asked for is there, as in the record: a call picked, the reason typed, or a call that is Claude's
+        const err = state.onbCallErr[key], cand = (state.candidates || []).find((x) => x.id === cid), cl = cand ? claudeShown(cand) : "", call = pressed();
+        if ((err === CALL_PICK && call) || (err === CALL_REASON && (!call || !cl || call === cl || f.elements.reason.value.trim()))) {
+          delete state.onbCallErr[key]; const e = $(".formfoot .saved.bad", f); if (e) e.remove(); }
+        mark(); };
+      mark();
       bindSeg(f, "occall", (v) => { f.querySelectorAll('[data-seg="occall"] button').forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === v)); keep(); });
       f.elements.reason.addEventListener("input", keep);
       f.addEventListener("submit", async (e) => {
         e.preventDefault();
         const pick = ($('[data-seg="occall"] button[aria-pressed="true"]', f) || {}).dataset?.v || "", btn = $('button[type="submit"]', f);
-        if (!pick) { state.onbCallErr[key] = "Pick Shortlist, Hold or Decline."; redraw(); return; }
+        if (!pick) { state.onbCallErr[key] = CALL_PICK; redraw(); return; }
         const cand = (state.candidates || []).find((x) => x.id === cid), cl = cand ? claudeShown(cand) : "";
-        if (cl && pick !== cl && !f.elements.reason.value.trim()) { keep(); state.onbCallErr[key] = "Add the reason: your call differs from Claude's."; redraw();
+        if (cl && pick !== cl && !f.elements.reason.value.trim()) { keep(); state.onbCallErr[key] = CALL_REASON; redraw();
           const i = view.querySelector(`form.onbcall[data-key="${CSS.escape(key)}"] input[name="reason"]`); if (i) i.focus(); return; }
         btn.disabled = true; delete state.onbCallErr[key];
         try { await api("candidates/" + encodeURIComponent(cid), "PATCH", { your_call: pick, your_reason: f.elements.reason.value.trim() });
@@ -3247,17 +3321,31 @@
   // that task in the Onboarding tab (the Slack message about a comment or an answer links there).
   // A first visit opens the person's own onboarding plan while they have one, else This week where the login reads it, else Candidates
   // (home); so does a saved or linked view the login doesn't have (This week for anyone but Kostya and the robots, 23 Nov 2026).
+  let followed = false;
   async function follow() {
+    // the entry landed on, and its place: a new one (a link in the page, an address typed) takes the place after the one it came from
+    const st = history.state, first = !followed, was = histAt; followed = true;
+    let n = st && Number.isInteger(st.n) ? st.n : null;
+    if (n == null) { n = first ? was : was + 1; history.replaceState({ ...(st && typeof st === "object" ? st : {}), n }, ""); }
+    if (!first && n === was) return;  // the entry shown already: a move undone (below) landing back
+    // a move refused: back to the entry the person was on (Back undone by Forward, Forward by Back, a link's new entry by Back), so no entry
+    // is added and the record keeps its own address
+    const undo = () => history.go(was - n);
     const [v, id, sub] = decodeURIComponent((location.hash || "").slice(1)).split("/");
+    // A document's address opens the document over what is shown, which stays as it is under it, and the address goes back to the entry it
+    // was opened from (23 Nov, third review: over a record opened from the list it became "#candidates", so once the document and the record
+    // were closed, Back opened the record again). A first visit's lands on the view, as before (below).
+    if (!first && v === "doc" && id) { await openDoc(id); undo(); return; }
     // On the Candidates list as drawn, a record's address opens it over the list and the list's own address closes the open record (Back),
     // asking first about anything not saved; neither draws the list again nor moves it (23 Nov audit: through setView every close went back
-    // to the top of 1,100 rows). Kept open, the record's address comes back.
+    // to the top of 1,100 rows). Kept open, the move is undone.
     if (v === "candidates" && state.view === "candidates" && state.boot && $("#view #q")) {
       const d = $("#recdlg"), cur = d.open ? d.dataset.cid : "";
-      if (id && id === cur) return;
+      if (id && id === cur) { histAt = n; return; }
       // asked whenever something is open over the list, the Add form too (no id: 23 Nov review, a Forward to a record's address replaced a
-      // typed name and screening answers without a word); kept open, its own address comes back
-      if (d.open && !closeOk()) { (id ? history.replaceState : history.pushState).call(history, state.pushedRec ? { rec: cur } : null, "", cur ? "#candidates/" + encodeURIComponent(cur) : "#candidates"); return; }
+      // typed name and screening answers without a word)
+      if (d.open && !closeOk()) { undo(); return; }
+      histAt = n; closeDoc();
       notice("");  // what the address shows next says its own: the list's draw used to clear a notice (23 Nov review: "no candidate SD-9999" stayed)
       if (id) {
         if (!cur) state.recOrder = state.listIds.includes(id) ? state.listIds.slice() : null;
@@ -3269,13 +3357,13 @@
     }
     // Any other address while a record or the Add form is open over a view (one opened from Screening, Pipeline, Calibration or Checklists
     // has no history entry of its own): asked first about anything not saved, then closed, so Back shows the view it names and not that view
-    // behind a record still open (23 Nov, second review: a second Back then left Studio). Kept open, the view's own address comes back. A
-    // document opens over the record, as it always did.
+    // behind a record still open (23 Nov, second review: a second Back then left Studio). Kept open, the move is undone.
     const rd = $("#recdlg");
-    if (rd.open && v !== "doc" && !(v === "candidates" && id && id === rd.dataset.cid)) {
-      if (!closeOk()) { history.pushState(null, "", "#" + state.view); return; }
-      rd.close();
+    if (rd.open && !(v === "candidates" && id && id === rd.dataset.cid)) {
+      if (!closeOk()) { undo(); return; }
+      quietClose = true; rd.close(); recDone();
     }
+    histAt = n; closeDoc();
     const saved = store.get("studio-view");
     let view = VIEWS.includes(v) ? v : VIEWS.includes(saved) ? saved : "";
     // the bootstrap and the tabs first (the view drawn next reads them anyway); a failed read is said by that view
@@ -3284,19 +3372,21 @@
     else if (!view) view = "week";
     if (view === "onboarding" && v === "onboarding" && id) state.onbPlan = id;  // a plan this login doesn't have falls back to its own
     // the address names the view shown (a first visit, a tab this login doesn't have), so Back from the next view comes back to it
-    if (v !== view && v !== "doc") history.replaceState(null, "", "#" + view);
+    if (v !== view && v !== "doc") histReplace(null, "#" + view);
     await setView(view, true);
     if (v === "onboarding" && id) {  // the link has done its work (or this login has no such tab): the address goes back to the view's own
       if (view === "onboarding" && sub && state.onb && state.onb.plan.id === id && !openOnbTask($("#view"), sub)) notice(`There's no task ${sub} in this plan.`, true);
-      history.replaceState(null, "", "#" + view);
+      histReplace(null, "#" + view);
     }
     if (v === "candidates" && id && state.boot) {
       state.recOrder = state.listIds.includes(id) ? state.listIds.slice() : null; state.lastOpen = id;
       state.pushedRec = history.state && history.state.rec === id ? id : "";
       await openCandidate(id);
     }
-    if (v === "doc" && id && state.boot) { await openDoc(id); history.replaceState(null, "", "#" + state.view); }
+    if (v === "doc" && id && state.boot) { await openDoc(id); histReplace(null, "#" + state.view); }  // a first visit to a document's address
   }
+  // A document open over the view closes when the address moves on to something else (a link in it, Back, Forward), once the move is taken
+  function closeDoc() { const d = $("#docview"); if (d.open) d.close(); }
   window.addEventListener("hashchange", follow);
   follow();
 })();
