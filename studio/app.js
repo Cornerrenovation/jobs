@@ -2331,7 +2331,7 @@
   const onbKey = (plan, task) => `studio-onb-answer-${plan}-${task}`;  // an answer being written also survives a reload
   const firstWords = (s, n) => { const t = String(s || "").replace(/\s+/g, " ").trim(); return t.length > n ? t.slice(0, n).trimEnd() + "…" : t; };
   // A person's plans are the sub-tabs of their tab (22 Nov): in each plan's order, labelled with its tab (else its title). A visit lands on
-  // the latest plan whose day has come (opens), else the first: from Mon 23 Nov Yana's Week 2, before it her first week.
+  // the latest plan whose day has come (opens), else the first: from Sun 22 Nov Yana's Week 2 (Kostya, 22 Nov: "week 2 tab should be opened by default"), before it her first week.
   const onbPersonKey = (p) => String(p.person_name || p.person_email || p.id).toLowerCase();
   const onbPersonName = (p) => p.person_name || p.id;
   const onbPlansOf = (plans, key) => plans.filter((p) => onbPersonKey(p) === key).sort((a, b) => (a.order || 0) - (b.order || 0) || a.id.localeCompare(b.id));
@@ -2636,6 +2636,17 @@
     if (!d) { if (dlg.open) dlg.close(); notice(`The document "${slug}" isn't in Studio yet.`, true); return; }
     $("#doctitle").textContent = d.title || slug; $("#docpath").textContent = d.path || ""; $("#docbody").innerHTML = d.html || "<p>Not found.</p>"; $("#docbody").scrollTop = 0;
     dlg.showModal ? dlg.showModal() : dlg.setAttribute("open", "");
+    // a prompt to copy (a ```prompt block: the reader text) shows its first lines and "Show more" (Kostya, 22 Nov: "should be concealed,
+    // with Show more"); other code boxes stay open. Folding back keeps the box in view (review, 22 Nov).
+    $("#docbody").querySelectorAll("pre > code.language-prompt").forEach((code, i) => {
+      const pre = code.parentNode; if (pre.scrollHeight <= 220) return;
+      pre.classList.add("folded"); pre.id = pre.id || `docfold-${i}`;
+      const b = document.createElement("button"); b.type = "button"; b.className = "linkbtn small showmore"; b.textContent = "Show more";
+      b.setAttribute("aria-expanded", "false"); b.setAttribute("aria-controls", pre.id);
+      b.addEventListener("click", () => { const open = !pre.classList.toggle("folded"); b.textContent = open ? "Show less" : "Show more"; b.setAttribute("aria-expanded", String(open));
+        if (!open) b.scrollIntoView({ block: "nearest" }); });
+      pre.after(b);
+    });
   }
   $("#docclose").addEventListener("click", () => $("#docview").close());
   $("#docview").addEventListener("click", (e) => { if (e.target === $("#docview")) $("#docview").close(); });
