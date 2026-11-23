@@ -330,12 +330,13 @@ dialog#docview::backdrop{background:rgba(28,28,28,.5)}
 dialog .dhead{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--card)}
 .dpath{color:var(--muted)}
 .docbody{overflow:auto;padding:16px 20px 28px;display:flex;flex-direction:column;gap:10px;font-size:15px}
-.docbody>*{margin:0}
+.docbody>*{margin:0;flex-shrink:0}  /* a block that scrolls (a code box, a wide table) never shrinks to a sliver in the column (Kostya, 22 Nov: the reader text showed one cut line) */
 .docbody h1{font-size:24px}.docbody h2{font-size:19px;margin-top:14px}.docbody h3{font-size:16px;margin-top:8px}
 .docbody p,.docbody li{max-width:72ch}
 .docbody ul,.docbody ol{padding-left:22px;display:flex;flex-direction:column;gap:4px}
 .docbody pre{white-space:pre-wrap;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px;font-family:var(--m);font-size:13px;overflow-x:auto}
 .docbody code{font-family:var(--m);font-size:.9em;background:var(--code);padding:1px 5px;border-radius:4px}
+.docbody pre code{background:none;padding:0;font-size:inherit}
 .docbody blockquote{margin:0;padding:4px 14px;border-left:3px solid var(--line)}
 .docbody table{min-width:560px}
 /* a document that came as an HTML page (the sourcing playbook): its header and sections keep the dialog's rhythm */
