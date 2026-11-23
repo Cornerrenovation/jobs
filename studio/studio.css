@@ -342,6 +342,8 @@ dialog .dhead{display:flex;justify-content:space-between;gap:12px;align-items:fl
 .docbody pre code{background:none;padding:0;font-size:inherit}
 .docbody pre.folded{max-height:150px;overflow:hidden;-webkit-mask-image:linear-gradient(#000 55%,transparent);mask-image:linear-gradient(#000 55%,transparent)}
 .docbody .showmore{align-self:flex-start;margin-top:-4px;color:var(--muted)}
+/* a text to copy in a document: Show more and Copy in one row under it (23 Nov, fifth review) */
+.docbody .docfold{display:flex;align-items:center;gap:14px;align-self:flex-start}.docbody .docfold .showmore{margin-top:0}
 @media (max-width:600px){.docbody .showmore{min-height:40px}}
 .docbody blockquote{margin:0;padding:4px 14px;border-left:3px solid var(--line)}
 .docbody table{min-width:560px}

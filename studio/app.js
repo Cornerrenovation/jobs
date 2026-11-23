@@ -79,15 +79,17 @@
   // left "#candidates" over a record opened from the list)
   // The place is the browser's own index of the entry where it has the Navigation API (every entry, one an older app made or a link's, and
   // the same after a reload), else the n the entry carries (23 Nov, fourth review: in a tab begun on app v56 its entries had no n, so a Back
-  // onto them was counted as a new entry, and a refused Back went on back, two prompts and "Leave site?"). histLen: without the API, a new
-  // entry changes the length, so an entry with no n reached with the length unchanged is one whose direction isn't known.
-  // histGuess: the place shown is a guess (an entry with no n reached that way, and every entry made from it), from which no move is undone
+  // onto them was counted as a new entry, and a refused Back went on back, two prompts and "Leave site?"). Without the API an entry with no
+  // n is a new one (23 Nov, fifth review: taking one reached with the history's length unchanged for an older app's entry also took a link
+  // followed right after a Back for one, and a refused Back then wrote the record over the list's entry, so Close left Candidates).
+  // histKey: where the API is, the key of the entry shown, which a refused move goes back to (23 Nov, fifth review: at the browser's 50
+  // entries the index stops growing while the app's count goes on, so going back by the difference went past the last entry, nowhere)
   const navAt = () => { try { const e = window.navigation && window.navigation.currentEntry; return e && Number.isInteger(e.index) && e.index >= 0 ? e.index : null; } catch (e) { return null; } };
-  let histAt = navAt() ?? (history.state && Number.isInteger(history.state.n) ? history.state.n : 0), histLen = history.length;
-  let histGuess = navAt() == null && !!(history.state && history.state.guess);
-  const placed = (extra, n = histAt) => { const o = { ...(extra && typeof extra === "object" ? extra : {}), n }; if (histGuess) o.guess = true; else delete o.guess; return o; };
+  const navKey = () => { try { const e = window.navigation && window.navigation.currentEntry; return (e && e.key) || ""; } catch (e) { return ""; } };
+  let histAt = navAt() ?? (history.state && Number.isInteger(history.state.n) ? history.state.n : 0), histKey = navKey();
+  const placed = (extra, n = histAt) => ({ ...(extra && typeof extra === "object" ? extra : {}), n });
   if (!(history.state && history.state.n === histAt)) history.replaceState(placed(history.state), "");
-  const histPush = (extra, url) => { histAt += 1; history.pushState(placed(extra), "", url); histLen = history.length; };
+  const histPush = (extra, url) => { histAt += 1; history.pushState(placed(extra), "", url); histKey = navKey(); };
   const histReplace = (extra, url) => history.replaceState(placed(extra), "", url);
 
   // missing: what to return on a 404 instead of an error (a route an older Worker doesn't have yet; the caller hides what it would show)
@@ -204,10 +206,13 @@
         Object.keys(state.decBy).forEach((k) => { if (!isOpen(k)) delete state.decBy[k]; });
         return rows.reduce((m, d) => ((m[d.candidate_id] = m[d.candidate_id] || []).push(d), m), {}); }),
       // each person's screening call, by candidate (19 Nov, "calls"), for the filter by person
-      // (read now, they replace what records opened earlier read, except the open record's own, as for the decisions)
-      screens: () => has("calls") ? api("reasons", "GET", null, []).then((rows) => {
-        Object.keys(state.reasonBy).forEach((k) => { if (!isOpen(k)) delete state.reasonBy[k]; });
-        return rows.reduce((m, r) => ((m[r.candidate_id] = m[r.candidate_id] || []).push(r), m), {}); }) : Promise.resolve({}) };
+      // (read now, they replace what records opened earlier read, except the open record's own, as for the decisions; the bootstrap first
+      // when the live refresh has just dropped it, else "calls" read as unknown and every call as none until the data changed again: 23 Nov,
+      // fifth review, after a calls task's Decline)
+      screens: async () => { if (!state.boot) await loadBoot();
+        return has("calls") ? api("reasons", "GET", null, []).then((rows) => {
+          Object.keys(state.reasonBy).forEach((k) => { if (!isOpen(k)) delete state.reasonBy[k]; });
+          return rows.reduce((m, r) => ((m[r.candidate_id] = m[r.candidate_id] || []).push(r), m), {}); }) : {}; } };
     // what was dropped while it loaded (a save's forget()) is read again, so the caller never reads one of its lists as null (23 Nov, fourth
     // review: "Cannot read properties of null (reading 'filter')" over Screening)
     for (let tries = 0; tries < 3; tries++) {
@@ -427,17 +432,19 @@
     view.querySelectorAll("[data-back]").forEach((b) => b.addEventListener("click", () => setView(b.dataset.back)));
     view.querySelectorAll("pre").forEach(copyBar);
   }
+  // A code box's whole text to the clipboard (a folded one too), else the text selected for ⌘C
+  const copyPre = (pre, btn) => {
+    const t = pre.textContent.replace(/\n$/, "");
+    const ok = () => { btn.textContent = "Copied"; setTimeout(() => { btn.textContent = "Copy"; }, 1600); };
+    const pick = () => { const r = document.createRange(); r.selectNodeContents(pre); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); btn.textContent = "Selected: press ⌘C"; };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(ok, pick); else pick();
+  };
   function copyBar(pre) {
     const box = document.createElement("div"); box.className = "post";
     const bar = document.createElement("div"); bar.className = "postbar";
     const lab = document.createElement("span"); lab.className = "eyebrow"; lab.textContent = pre.textContent.trim().split("\n")[0].slice(0, 48);
     const btn = document.createElement("button"); btn.className = "btn ghost small"; btn.type = "button"; btn.textContent = "Copy";
-    btn.addEventListener("click", () => {
-      const t = pre.textContent.replace(/\n$/, "");
-      const ok = () => { btn.textContent = "Copied"; setTimeout(() => { btn.textContent = "Copy"; }, 1600); };
-      const pick = () => { const r = document.createRange(); r.selectNodeContents(pre); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); btn.textContent = "Selected: press ⌘C"; };
-      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(ok, pick); else pick();
-    });
+    btn.addEventListener("click", () => copyPre(pre, btn));
     pre.parentNode.insertBefore(box, pre); bar.appendChild(lab); bar.appendChild(btn); box.appendChild(bar); box.appendChild(pre);
   }
 
@@ -3041,6 +3048,9 @@
   // "23–24 Nov", "30 Nov – 1 Dec", "23 Nov"
   const span = (from, to) => { const a = fmt(from), b = fmt(to); if (from === to) return a; const [da, ...ma] = a.split(" "), [db, ...mb] = b.split(" ");
     return ma.join(" ") === mb.join(" ") ? `${da}–${db} ${mb.join(" ")}` : `${a} – ${b}`; };
+  // The US and Canadian metros LinkedIn names without the country, the largest ones (drawOnboarding's usca)
+  const METRO_CITIES = "New York|San Francisco|Los Angeles|Chicago|Dallas|Houston|Washington|Miami|Philadelphia|Atlanta|Boston|Phoenix|Seattle|Detroit|Minneapolis|San Diego|Tampa|Denver|St\\.? Louis|Charlotte|Orlando|San Antonio|Portland|Sacramento|Pittsburgh|Austin|Las Vegas|Cincinnati|Kansas City|Columbus|Indianapolis|Cleveland|Nashville|Raleigh|Salt Lake City|Jacksonville|Milwaukee|New Orleans|Toronto|Montr[eé]al|Vancouver|Calgary|Edmonton|Ottawa|Winnipeg|Qu[eé]bec";
+  const US_CA_METRO = new RegExp(`\\b(?:${METRO_CITIES})\\b.*\\b(?:Metropolitan|Metroplex|Metro|Area|Region)\\b|\\bGreater (?:${METRO_CITIES})\\b`, "iu");
   function drawOnboarding(view) {
     const { plan, tasks, comments, can } = state.onb, plans = state.boot.onboarding || [], me = state.boot.who;
     state.onbKept[plan.id] = state.onb;  // what is on screen is what a switch back draws (after a comment, an answer or a reload)
@@ -3085,7 +3095,12 @@
     // Applicants who live in the US or Canada are filtered out by default (Kostya, 23 Nov call with Yana): out of the table and the counts,
     // in a folded line with one Decline for all of them.
     // (Mexico is a fit, so "Estados Unidos Mexicanos" is not the US; review, 23 Nov: "U.S.", "Canadá", "EUA" and "Estados Unidos" were missed)
-    const usca = (c) => /(?<![\p{L}.])(United States|USA|U\.S\.(A\.?)?|Canad[aá]|Estados Unidos(?! Mexicanos)|EUA|EE\.? ?UU\.?)(?![\p{L}])/iu.test(c.location || "");
+    // LinkedIn names a US or Canadian metro without the country ("New York City Metropolitan Area", "San Francisco Bay Area", "Greater
+    // Boston", "Dallas-Fort Worth Metroplex", "Greater Montreal Metropolitan Area"): its city with a metro word after it or "Greater" before
+    // it (Chile's "Los Angeles, Biobío" has neither); Argentina's "Canada de Gomez" isn't Canada; and every row shows its location, so one
+    // the test misses is seen (23 Nov, fifth review: those read as any other applicant, with only the headline on the row)
+    const usca = (c) => { const l = c.location || "";
+      return /(?<![\p{L}.])(United States|USA|U\.S\.(A\.?)?|Canad[aá](?!\s+de\b)|Estados Unidos(?! Mexicanos)|EUA|EE\.? ?UU\.?)(?![\p{L}])|,\s*US\s*$/iu.test(l) || US_CA_METRO.test(l); };
     const callsTally = (t) => { const all = inWindow(t.calls), list = all.filter((c) => !usca(c)), out = all.filter(usca), made = deciders.map((by) => list.filter((c) => callOf(c, by).call).length);
       const both = list.filter((c) => deciders.filter((by) => callOf(c, by).call).length > 1), same = both.filter((c) => new Set(deciders.map((by) => callOf(c, by).call).filter(Boolean)).size === 1);
       return { list, out, made, both: both.length, same: same.length }; };
@@ -3107,7 +3122,7 @@
           <div class="formfoot">${state.onbCallErr[key] ? `<span class="saved bad">${h(state.onbCallErr[key])}</span>` : ""}<button type="submit" class="btn small" aria-label="${r.call ? "Change" : "Save"} your call on ${h(c.name)}">${r.call ? "Change" : "Save"}</button></div></form>`; };
       const row = (c) => { const calls = deciders.map((by) => callOf(c, by).call).filter(Boolean), differ = new Set(calls).size > 1, ap = appliedOf(c), blind = blindNow(c);
         return `<tr${differ ? ' class="differ"' : ""}><td><a class="name" href="#candidates/${h(encodeURIComponent(c.id))}" target="_blank" rel="noopener">${h(c.name)}</a>${differ ? ` ${pill("Different calls", "warn")}` : ""}
-          <span class="muted small clamp2">${h([c.headline || c.location || "", (ap.added ? "added " : "applied ") + fmt(ap.day)].filter(Boolean).join(" · "))}</span></td>
+          ${c.headline ? `<span class="muted small clamp2">${h(c.headline)}</span>` : ""}<span class="muted small clamp2">${h([c.location || "", (ap.added ? "added " : "applied ") + fmt(ap.day)].filter(Boolean).join(" · "))}</span></td>
           <td data-label="Claude">${blind ? pill("blind") : `${callPill(claudeCall(c))}${c.why ? `<span class="muted small clamp2" title="${h(c.why)}">${h(c.why)}</span>` : ""}`}</td>${deciders.map((by) => `<td class="onbcallcell" data-label="${h(firstName(by))}">${cell(c, by)}</td>`).join("")}</tr>`; };
       // the count stays on the task's own line, above (it showed twice once the task was open)
       return `<div class="onbcalls">${table(["Candidate", "Claude", ...deciders.map((by) => firstName(by))], k.list.map(row))}</div>${outHtml(t, k)}`; };
@@ -3179,23 +3194,36 @@
     // a call made in a calls task: the viewer's own call and reason on the record, as the record's Screening step saves them. The form
     // stays "edited" until the fresh calls are read, so the minute's refresh can't redraw in between (review, 22 Nov).
     const redraw = () => { if (state.onb && state.boot && state.view === "onboarding") again(); };
-    // the filtered-out applicants of a calls task, declined in one click: the viewer's own call on each, with the reason (23 Nov call)
+    // the filtered-out applicants of a calls task, declined in one click: the viewer's own call on each, with the reason (23 Nov call).
+    // Who has no call of hers is read again first, and each Decline goes with call_was "", which the Worker refuses (409) where she has a
+    // call by then: one she made on the record, which the names open in a new tab, stays and is named (23 Nov, fifth review: her Shortlist
+    // became the filtered-out Decline, Rejected, with no word). The notice says what the click did, and nothing once all went.
     view.querySelectorAll("[data-outfold]").forEach((d) => d.addEventListener("toggle", () => { state.onbOutOpen[d.dataset.outfold] = d.open; }));
     view.querySelectorAll("[data-declineout]").forEach((b) => b.addEventListener("click", async () => {
-      const t = tasks.find((x) => x.id === b.dataset.declineout); if (!t || state.onbDeclining) return;
-      const k = callsTally(t), todo = k.out.filter((c) => !callOf(c, me).call);
-      state.onbDeclining = true; b.disabled = true; let failed = 0, signin = false;
+      const t = tasks.find((x) => x.id === b.dataset.declineout); if (!t || state.onbDeclining || !state.boot) return;  // (no bootstrap: the refresh is drawing again)
+      const offered = callsTally(t).out.filter((c) => !callOf(c, me).call).map((c) => c.id);
+      state.onbDeclining = true; b.disabled = true; let todo = [], failed = 0, signin = false; const kept = [], had = state.screens;
       try {
+        if (state.onbCallsP) await state.onbCallsP;  // a read already on its way started before her last save
+        state.screens = null; await onbCallsLoad();
+        if (!state.screens) state.screens = had;  // not read again: the calls as read before (the Worker still keeps a call made since)
+        const k = callsTally(t);
+        todo = k.out.filter((c) => !callOf(c, me).call);
+        kept.push(...k.out.filter((c) => offered.includes(c.id) && callOf(c, me).call));
         for (const c of todo) {
-          try { await api("candidates/" + encodeURIComponent(c.id), "PATCH", { your_call: "Decline", your_reason: "Lives in the US or Canada: filtered out" }); }
-          catch (err) { failed++; if (/sign/i.test(String((err && err.message) || err))) signin = true; }
+          try { await api("candidates/" + encodeURIComponent(c.id), "PATCH", { your_call: "Decline", your_reason: "Lives in the US or Canada: filtered out", call_was: "" }); }
+          catch (err) { if (err && err.status === 409 && err.data && typeof err.data.call === "string") kept.push(c);
+            else { failed++; if (/sign/i.test(String((err && err.message) || err))) signin = true; } }
         }
       } finally { state.onbDeclining = false; }
-      if (state.onbCallsP) await state.onbCallsP;  // a read already on its way started before the last save
+      if (state.onbCallsP) await state.onbCallsP;
       // the applicants' list is read again too, so every view has the declines and the stage each moved (as a row's Save puts its record
       // in: 23 Nov, fourth review, Screening kept the old call until the minute's refresh)
       state.screens = null; state.candidates = null; await onbCallsLoad(); redraw();
-      if (failed && !signin) notice(`${failed} of ${todo.length} declines didn't save: open "Filtered out" and click Decline again.`, true);
+      const names = kept.map((c) => c.name || c.id), keptLine = names.length ? ` Kept your own call on ${names.length > 1 ? names.slice(0, -1).join(", ") + " and " + names[names.length - 1] : names[0]}: you made it after this page read the calls.` : "";
+      if (signin) return;  // "Your sign-in expired…" stays
+      if (failed) notice(`${failed} of ${todo.length} declines didn't save: open "Filtered out" and click Decline again.${keptLine}`, true);
+      else notice(keptLine.trim());
     }));
     view.querySelectorAll("form.onbcall").forEach((f) => {
       const cid = f.dataset.cid, key = f.dataset.key;
@@ -3232,8 +3260,10 @@
         try { await api("candidates/" + encodeURIComponent(cid), "PATCH", { your_call: pick, your_reason: f.elements.reason.value.trim() });
           // the record as stored now (its call, and the stage the call moved) goes into the applicants' list every view reads, as the
           // calls do, so Screening shows her Shortlist's card at once (23 Nov, fourth review: the card was missing from To send, and its
-          // counts one short, until the minute's refresh); unread, the list is read again
-          const row = await api("candidates/" + encodeURIComponent(cid), "GET", null, null).catch(() => null), i = row && state.candidates ? state.candidates.findIndex((x) => x.id === cid) : -1;
+          // counts one short, until the minute's refresh); unread, the list is read again. Read quietly: the call is saved, so a failed
+          // read says nothing (23 Nov, fifth review: its red error stood over the saved row)
+          const row = await fetch(API + "candidates/" + encodeURIComponent(cid), { credentials: "same-origin" }).then((x) => x.ok ? x.json() : null).catch(() => null);
+          const i = row && !row.error && state.candidates ? state.candidates.findIndex((x) => x.id === cid) : -1;
           if (i >= 0) Object.assign(state.candidates[i], row); else state.candidates = null;
           delete state.onbCall[key]; state.screens = null; await onbCallsLoad(); delete f.dataset.dirty; redraw(); }
         catch (err) { state.onbCallErr[key] = String((err && err.message) || err || "Not saved."); btn.disabled = false; redraw(); }
@@ -3382,15 +3412,21 @@
     $("#doctitle").textContent = d.title || slug; $("#docpath").textContent = d.path || ""; $("#docbody").innerHTML = d.html || "<p>Not found.</p>"; $("#docbody").scrollTop = 0;
     dlg.showModal ? dlg.showModal() : dlg.setAttribute("open", "");
     // a prompt to copy (a ```prompt block: the reader text) shows its first lines and "Show more" (Kostya, 22 Nov: "should be concealed,
-    // with Show more"); other code boxes stay open. Folding back keeps the box in view (review, 22 Nov).
+    // with Show more"); other code boxes stay open. Folding back keeps the box in view (review, 22 Nov). Copy, beside it, takes the whole
+    // text, folded or not (23 Nov, fifth review: her Tuesday task says "Copy all of the reader text", 3,016 characters she had to drag-select
+    // across the scrolling dialog, where Posts has a Copy on each text)
     $("#docbody").querySelectorAll("pre > code.language-prompt").forEach((code, i) => {
-      const pre = code.parentNode; if (pre.scrollHeight <= 220) return;
+      const pre = code.parentNode, row = document.createElement("div"); row.className = "docfold";
+      const c = document.createElement("button"); c.type = "button"; c.className = "btn ghost small"; c.textContent = "Copy";
+      c.addEventListener("click", () => copyPre(pre, c));
+      row.append(c); pre.after(row);
+      if (pre.scrollHeight <= 220) return;
       pre.classList.add("folded"); pre.id = pre.id || `docfold-${i}`;
       const b = document.createElement("button"); b.type = "button"; b.className = "linkbtn small showmore"; b.textContent = "Show more";
       b.setAttribute("aria-expanded", "false"); b.setAttribute("aria-controls", pre.id);
       b.addEventListener("click", () => { const open = !pre.classList.toggle("folded"); b.textContent = open ? "Show less" : "Show more"; b.setAttribute("aria-expanded", String(open));
         if (!open) b.scrollIntoView({ block: "nearest" }); });
-      pre.after(b);
+      row.prepend(b);
     });
   }
   $("#docclose").addEventListener("click", () => $("#docview").close());
@@ -3405,24 +3441,18 @@
   let followed = false;
   async function follow() {
     // the entry landed on, and its place (navAt): without the Navigation API, one with no place yet (a link in the page, an address typed)
-    // takes the place after the one it came from, which only a length that changed says for sure
-    const st = history.state, first = !followed, was = histAt, wasGuess = histGuess; followed = true;
-    const fresh = !first && !(st && Number.isInteger(st.n)), at = navAt();
-    let n;
-    if (at != null) { n = at; histGuess = false; }
-    else if (st && Number.isInteger(st.n) && !st.guess) { n = st.n; histGuess = false; }
-    else if (first) n = was;
-    else { n = was + 1; histGuess = wasGuess || history.length === histLen; }  // a new entry after a known place, or a guess
-    const sure = !wasGuess && !histGuess;
-    histLen = history.length;
-    if (!(st && st.n === n && !!st.guess === histGuess)) history.replaceState(placed(st, n), "");
-    if (!first && n === was) return;  // the entry shown already: a move undone (below) landing back
+    // takes the place after the one it came from
+    const st = history.state, first = !followed, was = histAt, wasKey = histKey; followed = true;
+    const fresh = !first && !(st && Number.isInteger(st.n)), at = navAt(), key = navKey();
+    const n = at != null ? at : st && Number.isInteger(st.n) ? st.n : first ? was : was + 1;
+    if (!(st && st.n === n)) history.replaceState(placed(st, n), "");
+    // the entry shown already: a move undone (below) landing back, told by its key where the API is
+    if (!first && (key && wasKey ? key === wasKey : n === was)) return;
+    const took = () => { histAt = n; histKey = key; };  // the move is taken: this entry is the one shown
     // a move refused: back to the entry the person was on (Back undone by Forward, Forward by Back, a link's new entry by Back), so no entry
-    // is added and the record keeps its own address. Where the way back isn't known (an older app's entry, no Navigation API), the record
-    // stays open and this entry takes what is shown, instead of a guess that goes on past the entry and asks again
-    const undo = () => { if (sure) { history.go(was - n); return; }
-      histAt = n; const cur = $("#recdlg").open ? $("#recdlg").dataset.cid : "";
-      histReplace(state.pushedRec && cur ? { rec: cur } : null, state.view === "candidates" && cur ? "#candidates/" + encodeURIComponent(cur) : "#" + state.view); };
+    // is added and the record keeps its own address; where the API is, by that entry's key
+    const undo = () => { if (!(key && wasKey && typeof window.navigation.traverseTo === "function")) { history.go(was - n); return; }
+      const t = window.navigation.traverseTo(wasKey); t.committed.catch(() => {}); t.finished.catch(() => {}); };
     const [v, id, sub] = decodeURIComponent((location.hash || "").slice(1)).split("/");
     // A document's address opens the document over what is shown, which stays as it is under it, and the address goes back to the entry it
     // was opened from (23 Nov, third review: over a record opened from the list it became "#candidates", so once the document and the record
@@ -3433,11 +3463,11 @@
     // to the top of 1,100 rows). Kept open, the move is undone.
     if (v === "candidates" && state.view === "candidates" && state.boot && $("#view #q")) {
       const d = $("#recdlg"), cur = d.open ? d.dataset.cid : "";
-      if (id && id === cur) { histAt = n; return; }
+      if (id && id === cur) { took(); return; }
       // asked whenever something is open over the list, the Add form too (no id: 23 Nov review, a Forward to a record's address replaced a
       // typed name and screening answers without a word)
       if (d.open && !closeOk()) { undo(); return; }
-      histAt = n; closeDoc();
+      took(); closeDoc();
       notice("");  // what the address shows next says its own: the list's draw used to clear a notice (23 Nov review: "no candidate SD-9999" stayed)
       if (id) {
         if (!cur) state.recOrder = state.listIds.includes(id) ? state.listIds.slice() : null;
@@ -3459,7 +3489,7 @@
       if (!closeOk()) { undo(); return; }
       quietClose = true; rd.close(); recDone();
     }
-    histAt = n; closeDoc();
+    took(); closeDoc();
     const saved = store.get("studio-view");
     let view = VIEWS.includes(v) ? v : VIEWS.includes(saved) ? saved : "";
     // the bootstrap and the tabs first (the view drawn next reads them anyway); a failed read is said by that view
