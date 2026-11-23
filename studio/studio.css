@@ -1025,6 +1025,8 @@ button.dlater:hover .lbl{color:var(--ink)}
 /* a sent card's parts (the concern, the message as it went, the card's links) apart from each other, as in the record (23 Nov, second review) */
 .scrpanel.scrline>*+*{margin-top:10px}
 .logmsg{margin-top:10px}
+/* 23 Nov call: a calls task's applicants in the US or Canada, folded under the table */
+.onbout{margin-top:8px}.onbout ul{list-style:none;padding:0;margin:6px 0 8px;display:flex;flex-direction:column;gap:4px}
 .logform{display:flex;flex-direction:column;gap:8px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--bg-2)}
 .logrow{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center}
 .logday input{width:auto}

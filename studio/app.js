@@ -65,7 +65,7 @@
     // and K); the record last opened (its row is marked); a record opened from the list, which is a history entry of its own
     moreOpen: false, listIds: [], recOrder: null, lastOpen: "", pushedRec: "",
     decisions: null, secAsk: {}, dOpen: {}, carry: null,
-    subOpen: {}, focusSec: "", onb: null, onbPlan: "", onbOpen: {}, onbDraft: {}, onbAnswer: {}, onbScore: {}, onbErr: {}, onbVisit: null, onbRead: {}, onbCall: {}, onbCallErr: {}, onbKept: {} };
+    subOpen: {}, focusSec: "", onb: null, onbPlan: "", onbOpen: {}, onbDraft: {}, onbAnswer: {}, onbScore: {}, onbErr: {}, onbVisit: null, onbRead: {}, onbCall: {}, onbCallErr: {}, onbKept: {}, onbOutOpen: {}, onbDeclining: false };
   const store = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
   // The Candidates sort is kept in the browser, like the role (23 Nov audit: it was lost on reload); a key the list doesn't know is ignored,
   // a name every object has too ("__proto__", "constructor": 23 Nov, second review, a stored "__proto__|-1" left Candidates blank for good)
@@ -1631,13 +1631,15 @@
   // answers reached Studio): from them or to them, where, the day (São Paulo's, the imports' days), the words. It is stored as the robots'
   // and her reader's are (messages/upsert, her login as by, her name as a sent message's author), and the Worker moves an early stage with
   // it: Replied for a message from them, Messaged for one to them. Not on an earlier round's record: a re-contact is a record of its own.
-  const logHtml = (c) => isClosedRole(roleOf(c.role_id)) ? "" : `<div class="logmsg"><button type="button" class="linkbtn small" data-logopen aria-expanded="false">Log a message</button>
+  // Write an email (Kostya, 23 Nov call with Yana: email from Studio): the same form, set to an email to them; "Open in Gmail" opens her
+  // Gmail with the address, a subject and the words typed here, and "Log it" stores the same words once she has sent it.
+  const logHtml = (c) => isClosedRole(roleOf(c.role_id)) ? "" : `<div class="logmsg"><button type="button" class="linkbtn small" data-logopen aria-expanded="false">Log a message</button>${c.email ? ` <button type="button" class="linkbtn small" data-mailopen>Write an email</button>` : ""}
     <form class="logform" hidden><span class="lbl">Log a message</span><div class="logrow">
       <div role="group" aria-label="Who wrote it">${seg("logdir", [["in", "From them"], ["out", "To them"]], "")}</div>
       <div role="group" aria-label="Channel">${seg("logch", [["linkedin", "LinkedIn"], ["email", "Email"], ["other", "Other"]], c.email ? "email" : "linkedin")}</div>
       <label class="inline logday"><span class="lbl">Date</span><input type="date" name="day" value="${h(spDay(new Date()))}" max="${h(spDay(new Date()))}" required></label></div>
       <textarea name="body" rows="4" maxlength="20000" required placeholder="The message, word for word" aria-label="The message"></textarea>
-      <div class="formfoot"><span class="saved" data-logmark></span><button type="button" class="linkbtn small" data-logcancel>Cancel</button><button type="submit" class="btn small">Log it</button></div></form></div>`;
+      <div class="formfoot"><span class="saved" data-logmark></span><button type="button" class="linkbtn small" data-logcancel>Cancel</button>${c.email ? `<button type="button" class="btn ghost small" data-mailgo hidden>Open in Gmail</button>` : ""}<button type="submit" class="btn small">Log it</button></div></form></div>`;
   function bindLog(root, c, after) {
     root.querySelectorAll(".logmsg").forEach((box) => {
       const open = $("[data-logopen]", box), f = $("form", box), mark = $("[data-logmark]", f), btn = $('button[type="submit"]', f);
@@ -1646,13 +1648,29 @@
       const show = (on) => { f.hidden = !on; open.hidden = on; open.setAttribute("aria-expanded", on); if (on) { const b = f.querySelector('[data-seg="logdir"] button'); if (b) b.focus(); } };
       const dflt = { logdir: "", logch: pick("logch") };
       const press = (name, v) => f.querySelectorAll(`[data-seg="${name}"] button`).forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === v && !!v));
-      open.addEventListener("click", () => show(true));
-      ["logdir", "logch"].forEach((n) => bindSeg(f, n, (v) => { press(n, v); say(""); }));
+      open.addEventListener("click", () => { show(true); const m = $("[data-mailopen]", box); if (m) m.hidden = true; });
+      // an email to them: Open in Gmail shows while the form is set to it (the record has an address)
+      const go = $("[data-mailgo]", f), mailOpen = $("[data-mailopen]", box);
+      const mailable = () => { if (go) go.hidden = !(pick("logdir") === "out" && pick("logch") === "email"); };
+      if (mailOpen) mailOpen.addEventListener("click", () => { show(true); press("logdir", "out"); press("logch", "email"); mailable(); mailOpen.hidden = true; f.elements.body.focus(); });
+      if (go) go.addEventListener("click", () => {
+        const body = f.elements.body.value.trim(); if (!body) { say("Write the email first.", true); f.elements.body.focus(); return; }
+        const role = roleOf(c.role_id), su = `${(role && role.name) || roleName(c.role_id)} at Corner`;
+        const q = new URLSearchParams({ view: "cm", fs: "1", authuser: state.boot.who || "", to: c.email.trim(), su, body });
+        // a long text doesn't fit an address Gmail takes (about 8 KB): it goes to the clipboard and Gmail opens without it (review, 23 Nov)
+        if (q.toString().length > 7500) {
+          q.delete("body"); navigator.clipboard && navigator.clipboard.writeText(body).catch(() => {});
+          window.open("https://mail.google.com/mail/?" + q.toString(), "_blank", "noopener");
+          say("The text is long: it is on your clipboard. Paste it in Gmail, send it, then click Log it."); return; }
+        window.open("https://mail.google.com/mail/?" + q.toString(), "_blank", "noopener");
+        say("Sent it in Gmail? Click Log it."); });
+      ["logdir", "logch"].forEach((n) => bindSeg(f, n, (v) => { press(n, v); say(""); mailable(); }));
       // what was typed here and not logged yet, back in the record drawn again (logTyped, msgsAgain)
       const t = state.logCarry && state.logCarry.cid === c.id ? state.logCarry : null;
       if (t) { state.logCarry = null; f.hidden = false; open.hidden = true; open.setAttribute("aria-expanded", "true"); press("logdir", t.dir); if (t.ch) press("logch", t.ch);
-        if (t.day) f.elements.day.value = t.day; f.elements.body.value = t.body; f.dataset.dirty = "1"; }
-      $("[data-logcancel]", f).addEventListener("click", () => { f.reset(); Object.entries(dflt).forEach(([n, v]) => press(n, v)); say(""); delete f.dataset.dirty; show(false); open.focus(); });
+        if (t.day) f.elements.day.value = t.day; f.elements.body.value = t.body; f.dataset.dirty = "1";
+        const m = $("[data-mailopen]", box); if (m) m.hidden = true; const g = $("[data-mailgo]", f); if (g) g.hidden = !(t.dir === "out" && t.ch === "email"); }
+      $("[data-logcancel]", f).addEventListener("click", () => { f.reset(); Object.entries(dflt).forEach(([n, v]) => press(n, v)); say(""); delete f.dataset.dirty; show(false); if (mailOpen) mailOpen.hidden = false; mailable(); open.focus(); });
       f.addEventListener("submit", async (e) => {
         e.preventDefault();
         const dir = pick("logdir"), ch = pick("logch"), body = f.elements.body.value.trim(), day = f.elements.day.value, now = new Date();
@@ -3033,13 +3051,22 @@
     const deciders = [plan.person_email, ...(plan.managers || [])].filter(Boolean).filter((e, i, a) => a.indexOf(e) === i);
     const callOf = (c, by) => ((screensOf(c) || []).find((r) => r.by === by) || {});
     const claudeShown = (c) => blindNow(c) ? "" : claudeCall(c) || "";  // Claude's call as its column shows it ("" while hidden)
-    const callsTally = (t) => { const list = inWindow(t.calls), made = deciders.map((by) => list.filter((c) => callOf(c, by).call).length);
+    // Applicants who live in the US or Canada are filtered out by default (Kostya, 23 Nov call with Yana): out of the table and the counts,
+    // in a folded line with one Decline for all of them.
+    // (Mexico is a fit, so "Estados Unidos Mexicanos" is not the US; review, 23 Nov: "U.S.", "Canadá", "EUA" and "Estados Unidos" were missed)
+    const usca = (c) => /(?<![\p{L}.])(United States|USA|U\.S\.(A\.?)?|Canad[aá]|Estados Unidos(?! Mexicanos)|EUA|EE\.? ?UU\.?)(?![\p{L}])/iu.test(c.location || "");
+    const callsTally = (t) => { const all = inWindow(t.calls), list = all.filter((c) => !usca(c)), out = all.filter(usca), made = deciders.map((by) => list.filter((c) => callOf(c, by).call).length);
       const both = list.filter((c) => deciders.filter((by) => callOf(c, by).call).length > 1), same = both.filter((c) => new Set(deciders.map((by) => callOf(c, by).call).filter(Boolean)).size === 1);
-      return { list, made, both: both.length, same: same.length }; };
-    const callsLine = (t, k) => !onbCallsReady() ? (state.onbCallsErr ? "The applicants didn't load: reload the page" : "Loading the applicants") : !k.list.length ? `Nobody applied on ${span(t.calls.from, t.calls.to)} yet`
-      : [`${k.list.length} applied ${span(t.calls.from, t.calls.to)}`, ...deciders.map((by, i) => `${firstName(by)} ${k.made[i]} of ${k.list.length}`), ...(k.both ? [`same call ${k.same} of ${k.both}`] : [])].join(" · ");
+      return { list, out, made, both: both.length, same: same.length }; };
+    const callsLine = (t, k) => !onbCallsReady() ? (state.onbCallsErr ? "The applicants didn't load: reload the page" : "Loading the applicants") : !k.list.length ? (k.out.length ? `Nobody to call on ${span(t.calls.from, t.calls.to)} · ${k.out.length} in the US or Canada, filtered out` : `Nobody applied on ${span(t.calls.from, t.calls.to)} yet`)
+      : [`${k.list.length} applied ${span(t.calls.from, t.calls.to)}`, ...deciders.map((by, i) => `${firstName(by)} ${k.made[i]} of ${k.list.length}`), ...(k.both ? [`same call ${k.same} of ${k.both}`] : []), ...(k.out.length ? [`${k.out.length} in the US or Canada, filtered out`] : [])].join(" · ");
+    const outHtml = (t, k) => { if (!k.out.length) return "";
+      // only people with no call of the viewer's yet: a Shortlist or Hold she made on purpose (someone moving to Mexico) stays (review, 23 Nov)
+      const open = can && deciders.includes(me) ? k.out.filter((c) => !callOf(c, me).call) : [];
+      return `<details class="fold plain onbout"${state.onbOutOpen[t.id] ? " open" : ""} data-outfold="${h(t.id)}"><summary>Filtered out: ${k.out.length} in the US or Canada</summary><ul>${k.out.map((c) => `<li><a class="name" href="#candidates/${h(encodeURIComponent(c.id))}" target="_blank" rel="noopener">${h(c.name)}</a> <span class="muted small">${h(c.location || "")}${callOf(c, me).call ? ` · ${h(callOf(c, me).call)}` : ""}</span></li>`).join("")}</ul>
+        ${open.length ? `<button type="button" class="btn small" data-declineout="${h(t.id)}"${state.onbDeclining ? " disabled" : ""}>Decline ${open.length === 1 ? "this one" : `all ${open.length}`}</button>` : ""}</details>`; };
     const callsHtml = (t) => { const k = callsTally(t);
-      if (!onbCallsReady() || !k.list.length) return `<p class="muted small">${h(callsLine(t, k))}.</p>`;
+      if (!onbCallsReady() || !k.list.length) return `<p class="muted small">${h(callsLine(t, k))}.</p>${onbCallsReady() ? outHtml(t, k) : ""}`;
       // what is typed is kept per task and applicant (the Friday task lists the same people as Wednesday's; review, 22 Nov)
       const cell = (c, by) => { const r = callOf(c, by), key = `${t.id}|${c.id}`;
         if (by !== me || !can) return r.call ? `${callPill(r.call)}${r.reason ? `<span class="muted small clamp2" title="${h(r.reason)}">${h(r.reason)}</span>` : ""}` : '<span class="muted small">not made</span>';
@@ -3052,7 +3079,7 @@
           <span class="muted small clamp2">${h([c.headline || c.location || "", (ap.added ? "added " : "applied ") + fmt(ap.day)].filter(Boolean).join(" · "))}</span></td>
           <td data-label="Claude">${blind ? pill("blind") : `${callPill(claudeCall(c))}${c.why ? `<span class="muted small clamp2" title="${h(c.why)}">${h(c.why)}</span>` : ""}`}</td>${deciders.map((by) => `<td class="onbcallcell" data-label="${h(firstName(by))}">${cell(c, by)}</td>`).join("")}</tr>`; };
       // the count stays on the task's own line, above (it showed twice once the task was open)
-      return `<div class="onbcalls">${table(["Candidate", "Claude", ...deciders.map((by) => firstName(by))], k.list.map(row))}</div>`; };
+      return `<div class="onbcalls">${table(["Candidate", "Claude", ...deciders.map((by) => firstName(by))], k.list.map(row))}</div>${outHtml(t, k)}`; };
     // the person's side of an answer: one text box and Submit; once passed it stays as it is
     const mine = (t) => { const a = answers[t.id], s = stand(t), text = typed(t);
       const verdict = a && a.score != null ? `<p class="onbverdict">${pill(s.label, s.k === "passed" ? "ok" : "warn")}${a.note ? `<span>${linkify(a.note)}</span>` : ""}</p>` : "";
@@ -3121,6 +3148,22 @@
     // a call made in a calls task: the viewer's own call and reason on the record, as the record's Screening step saves them. The form
     // stays "edited" until the fresh calls are read, so the minute's refresh can't redraw in between (review, 22 Nov).
     const redraw = () => { if (state.onb && state.boot && state.view === "onboarding") again(); };
+    // the filtered-out applicants of a calls task, declined in one click: the viewer's own call on each, with the reason (23 Nov call)
+    view.querySelectorAll("[data-outfold]").forEach((d) => d.addEventListener("toggle", () => { state.onbOutOpen[d.dataset.outfold] = d.open; }));
+    view.querySelectorAll("[data-declineout]").forEach((b) => b.addEventListener("click", async () => {
+      const t = tasks.find((x) => x.id === b.dataset.declineout); if (!t || state.onbDeclining) return;
+      const k = callsTally(t), todo = k.out.filter((c) => !callOf(c, me).call);
+      state.onbDeclining = true; b.disabled = true; let failed = 0, signin = false;
+      try {
+        for (const c of todo) {
+          try { await api("candidates/" + encodeURIComponent(c.id), "PATCH", { your_call: "Decline", your_reason: "Lives in the US or Canada: filtered out" }); }
+          catch (err) { failed++; if (/sign/i.test(String((err && err.message) || err))) signin = true; }
+        }
+      } finally { state.onbDeclining = false; }
+      if (state.onbCallsP) await state.onbCallsP;  // a read already on its way started before the last save
+      state.screens = null; await onbCallsLoad(); redraw();
+      if (failed && !signin) notice(`${failed} of ${todo.length} declines didn't save: open "Filtered out" and click Decline again.`, true);
+    }));
     view.querySelectorAll("form.onbcall").forEach((f) => {
       const cid = f.dataset.cid, key = f.dataset.key;
       // a call picked or a reason typed that isn't saved says so on its row until Save, and a reload asks first (onbCallsUnsaved; 23 Nov,
