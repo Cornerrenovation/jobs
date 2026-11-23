@@ -77,10 +77,18 @@
   // person refuses (a record with something not saved kept open) is undone by going back to the entry they were on, never by adding one
   // (23 Nov, third review: a refused Forward pushed the view's address again, so the next Back went to the page refused, and a refused link
   // left "#candidates" over a record opened from the list)
-  let histAt = history.state && Number.isInteger(history.state.n) ? history.state.n : 0;
-  if (!(history.state && Number.isInteger(history.state.n))) history.replaceState({ ...(history.state && typeof history.state === "object" ? history.state : {}), n: histAt }, "");
-  const histPush = (extra, url) => { histAt += 1; history.pushState({ ...(extra || {}), n: histAt }, "", url); };
-  const histReplace = (extra, url) => history.replaceState({ ...(extra || {}), n: histAt }, "", url);
+  // The place is the browser's own index of the entry where it has the Navigation API (every entry, one an older app made or a link's, and
+  // the same after a reload), else the n the entry carries (23 Nov, fourth review: in a tab begun on app v56 its entries had no n, so a Back
+  // onto them was counted as a new entry, and a refused Back went on back, two prompts and "Leave site?"). histLen: without the API, a new
+  // entry changes the length, so an entry with no n reached with the length unchanged is one whose direction isn't known.
+  // histGuess: the place shown is a guess (an entry with no n reached that way, and every entry made from it), from which no move is undone
+  const navAt = () => { try { const e = window.navigation && window.navigation.currentEntry; return e && Number.isInteger(e.index) && e.index >= 0 ? e.index : null; } catch (e) { return null; } };
+  let histAt = navAt() ?? (history.state && Number.isInteger(history.state.n) ? history.state.n : 0), histLen = history.length;
+  let histGuess = navAt() == null && !!(history.state && history.state.guess);
+  const placed = (extra, n = histAt) => { const o = { ...(extra && typeof extra === "object" ? extra : {}), n }; if (histGuess) o.guess = true; else delete o.guess; return o; };
+  if (!(history.state && history.state.n === histAt)) history.replaceState(placed(history.state), "");
+  const histPush = (extra, url) => { histAt += 1; history.pushState(placed(extra), "", url); histLen = history.length; };
+  const histReplace = (extra, url) => history.replaceState(placed(extra), "", url);
 
   // missing: what to return on a 404 instead of an error (a route an older Worker doesn't have yet; the caller hides what it would show)
   async function api(path, method, body, missing) {
@@ -200,8 +208,13 @@
       screens: () => has("calls") ? api("reasons", "GET", null, []).then((rows) => {
         Object.keys(state.reasonBy).forEach((k) => { if (!isOpen(k)) delete state.reasonBy[k]; });
         return rows.reduce((m, r) => ((m[r.candidate_id] = m[r.candidate_id] || []).push(r), m), {}); }) : Promise.resolve({}) };
-    const missing = keys.filter((k) => !state[k]);
-    (await Promise.all(missing.map((k) => typeof load[k] === "function" ? load[k]() : api(load[k])))).forEach((v, i) => { state[missing[i]] = v; });
+    // what was dropped while it loaded (a save's forget()) is read again, so the caller never reads one of its lists as null (23 Nov, fourth
+    // review: "Cannot read properties of null (reading 'filter')" over Screening)
+    for (let tries = 0; tries < 3; tries++) {
+      const missing = keys.filter((k) => !state[k]);
+      if (!missing.length) return;
+      (await Promise.all(missing.map((k) => typeof load[k] === "function" ? load[k]() : api(load[k])))).forEach((v, i) => { state[missing[i]] = v; });
+    }
   }
   const forget = () => { fmtMemo = new Map(); state.boot = null; state.candidates = null; state.summary = null; state.resBy = {}; state.cards = null; state.outreach = null; state.templates = null; state.msgs = null; state.onb = null; state.onbKept = {}; state.decisions = null; state.screens = null; };
 
@@ -289,7 +302,10 @@
     return render();
   }
   document.querySelectorAll("nav.views button").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
-  async function render(quiet) {
+  // Views being drawn and records being opened: while any is, the live refresh keeps the data they are reading (see refresh)
+  let busy = 0;
+  async function render(quiet) { busy++; try { await renderNow(quiet); } finally { busy--; } }
+  async function renderNow(quiet) {
     notice("");
     const view = $("#view"), y = window.scrollY;
     if (!quiet) view.innerHTML = '<p class="muted">Loading…</p>';
@@ -318,12 +334,20 @@
   document.addEventListener("input", (e) => { const f = e.target.closest && e.target.closest("form"); if (f) f.dataset.dirty = "1"; });
   const editing = () => document.querySelector("dialog[open], #view form[data-dirty], #drawer:not([hidden]) form[data-dirty], [data-note] textarea, .scrmsg[data-dirty=\"1\"]")
     || ["INPUT", "TEXTAREA", "SELECT"].includes((document.activeElement || {}).tagName);
+  // The same holds once the counter has answered: a click made while it was asked (back in the window from LinkedIn, a row, a card's name,
+  // a tab) opens or draws with the data it started on, and the refresh comes a few seconds later (23 Nov, fourth review: the data was
+  // dropped from under the click, so the record didn't open, or a red "Cannot read properties of null" stayed over the view drawn again)
+  let later = 0;
+  const refreshSoon = (force) => { clearTimeout(later); later = setTimeout(() => refresh(force), 3000); };
   async function refresh(force) {
     if (document.hidden || editing() || (!force && Date.now() - lastCheck < 55000)) return;
+    if (busy) { refreshSoon(force); return; }
     lastCheck = Date.now();
     let version;
     try { version = (await api("changes")).version; } catch (e) { return; }
     if (state.boot && version === state.boot.version) return;
+    if (document.hidden || editing()) { lastCheck = 0; return; }  // the next minute's check, or the window's focus, tries again
+    if (busy) { refreshSoon(true); return; }
     forget();
     await render(true);
   }
@@ -1006,12 +1030,15 @@
     if (nb) nb.addEventListener("click", () => { nb.disabled = true; asNew(); });
     open.focus({ preventScroll: true }); box.scrollIntoView({ block: "nearest" });
   }
-  async function openCandidate(id) {
+  // (busy while it opens: the live refresh leaves the lists it reads in place; see refresh)
+  async function openCandidate(id) { busy++; try { await openCandidateNow(id); } finally { busy--; } }
+  async function openCandidateNow(id) {
     if (wsLive) await wsLive.flush();  // a call note still in its field is saved before any record is read (again)
     // What was typed in the Decision panel and not saved yet stays when the same record is drawn again (a link or a file added, a message
     // marked sent, a save refused because the stage changed meanwhile)
     const f0 = id && isOpen(id) && $("#cform"), carry = (state.carry && state.carry.cid === id ? state.carry : null) || (f0 && f0._edits ? f0._edits() : null);
     state.carry = null;
+    if (!state.boot) await loadBoot();  // dropped by a save just before (forget): the record reads the searches, criteria and people
     if (id) await need("candidates", "cards");
     // a new record's search: the one the list shows, else the viewer's own, else none yet (the form asks; 23 Nov audit)
     let c = id ? state.candidates.find((x) => x.id === id) : { stage: "applied", role_id: openRoles().some((r) => r.id === state.roleFilter) ? state.roleFilter : ownRole() };
@@ -1029,6 +1056,7 @@
       if (why) state.reasonBy[id] = why; else delete state.reasonBy[id];
       if (state.decisions) state.decisions[id] = dec;
     }
+    if (!state.boot) await loadBoot();
     if (!id) openRecord("New candidate", roleName(c.role_id), `<div class="reclayout solo">${decisionHtml(c, id)}</div>`, null, "");
     else {
       const sheets = parseSheets(c.interview_sheet), focus = state.focusSec;
@@ -3016,6 +3044,9 @@
   function drawOnboarding(view) {
     const { plan, tasks, comments, can } = state.onb, plans = state.boot.onboarding || [], me = state.boot.who;
     state.onbKept[plan.id] = state.onb;  // what is on screen is what a switch back draws (after a comment, an answer or a reload)
+    // the plan on screen is noted on its history entry, which Back and Forward then show again (follow)
+    if (state.view === "onboarding" && /^#onboarding(?:\/|$)/.test(location.hash) && (history.state || {}).plan !== plan.id)
+      history.replaceState({ ...(history.state && typeof history.state === "object" ? history.state : {}), plan: plan.id }, "");
     const manager = state.onb.role === "manager", person = state.onb.role === "person", pass = plan.pass || 90, name = plan.person_name || plan.id;
     const answers = {}, keys = {}, drafts = {}, by = {};
     (state.onb.answers || []).forEach((a) => { answers[a.task_id] = a; });
@@ -3161,7 +3192,9 @@
         }
       } finally { state.onbDeclining = false; }
       if (state.onbCallsP) await state.onbCallsP;  // a read already on its way started before the last save
-      state.screens = null; await onbCallsLoad(); redraw();
+      // the applicants' list is read again too, so every view has the declines and the stage each moved (as a row's Save puts its record
+      // in: 23 Nov, fourth review, Screening kept the old call until the minute's refresh)
+      state.screens = null; state.candidates = null; await onbCallsLoad(); redraw();
       if (failed && !signin) notice(`${failed} of ${todo.length} declines didn't save: open "Filtered out" and click Decline again.`, true);
     }));
     view.querySelectorAll("form.onbcall").forEach((f) => {
@@ -3197,6 +3230,11 @@
           const i = view.querySelector(`form.onbcall[data-key="${CSS.escape(key)}"] input[name="reason"]`); if (i) i.focus(); return; }
         btn.disabled = true; delete state.onbCallErr[key];
         try { await api("candidates/" + encodeURIComponent(cid), "PATCH", { your_call: pick, your_reason: f.elements.reason.value.trim() });
+          // the record as stored now (its call, and the stage the call moved) goes into the applicants' list every view reads, as the
+          // calls do, so Screening shows her Shortlist's card at once (23 Nov, fourth review: the card was missing from To send, and its
+          // counts one short, until the minute's refresh); unread, the list is read again
+          const row = await api("candidates/" + encodeURIComponent(cid), "GET", null, null).catch(() => null), i = row && state.candidates ? state.candidates.findIndex((x) => x.id === cid) : -1;
+          if (i >= 0) Object.assign(state.candidates[i], row); else state.candidates = null;
           delete state.onbCall[key]; state.screens = null; await onbCallsLoad(); delete f.dataset.dirty; redraw(); }
         catch (err) { state.onbCallErr[key] = String((err && err.message) || err || "Not saved."); btn.disabled = false; redraw(); }
       });
@@ -3366,14 +3404,25 @@
   // (home); so does a saved or linked view the login doesn't have (This week for anyone but Kostya and the robots, 23 Nov 2026).
   let followed = false;
   async function follow() {
-    // the entry landed on, and its place: a new one (a link in the page, an address typed) takes the place after the one it came from
-    const st = history.state, first = !followed, was = histAt; followed = true;
-    let n = st && Number.isInteger(st.n) ? st.n : null;
-    if (n == null) { n = first ? was : was + 1; history.replaceState({ ...(st && typeof st === "object" ? st : {}), n }, ""); }
+    // the entry landed on, and its place (navAt): without the Navigation API, one with no place yet (a link in the page, an address typed)
+    // takes the place after the one it came from, which only a length that changed says for sure
+    const st = history.state, first = !followed, was = histAt, wasGuess = histGuess; followed = true;
+    const fresh = !first && !(st && Number.isInteger(st.n)), at = navAt();
+    let n;
+    if (at != null) { n = at; histGuess = false; }
+    else if (st && Number.isInteger(st.n) && !st.guess) { n = st.n; histGuess = false; }
+    else if (first) n = was;
+    else { n = was + 1; histGuess = wasGuess || history.length === histLen; }  // a new entry after a known place, or a guess
+    const sure = !wasGuess && !histGuess;
+    histLen = history.length;
+    if (!(st && st.n === n && !!st.guess === histGuess)) history.replaceState(placed(st, n), "");
     if (!first && n === was) return;  // the entry shown already: a move undone (below) landing back
     // a move refused: back to the entry the person was on (Back undone by Forward, Forward by Back, a link's new entry by Back), so no entry
-    // is added and the record keeps its own address
-    const undo = () => history.go(was - n);
+    // is added and the record keeps its own address. Where the way back isn't known (an older app's entry, no Navigation API), the record
+    // stays open and this entry takes what is shown, instead of a guess that goes on past the entry and asks again
+    const undo = () => { if (sure) { history.go(was - n); return; }
+      histAt = n; const cur = $("#recdlg").open ? $("#recdlg").dataset.cid : "";
+      histReplace(state.pushedRec && cur ? { rec: cur } : null, state.view === "candidates" && cur ? "#candidates/" + encodeURIComponent(cur) : "#" + state.view); };
     const [v, id, sub] = decodeURIComponent((location.hash || "").slice(1)).split("/");
     // A document's address opens the document over what is shown, which stays as it is under it, and the address goes back to the entry it
     // was opened from (23 Nov, third review: over a record opened from the list it became "#candidates", so once the document and the record
@@ -3392,6 +3441,10 @@
       notice("");  // what the address shows next says its own: the list's draw used to clear a notice (23 Nov review: "no candidate SD-9999" stayed)
       if (id) {
         if (!cur) state.recOrder = state.listIds.includes(id) ? state.listIds.slice() : null;
+        // a record's address typed or linked over the list, nothing open: a history entry of its own, as a record opened from the list is,
+        // so Close goes back to the list's entry (23 Nov, fourth review: Close made it "#candidates", the address of the list's entry before
+        // it, and Back between the two did nothing)
+        if (fresh && !cur) history.replaceState({ ...history.state, rec: id }, "");
         state.pushedRec = history.state && history.state.rec === id ? id : ""; state.lastOpen = id;
         await openCandidate(id); return;
       }
@@ -3414,12 +3467,15 @@
     if (state.boot && (!view || !tabOk(view))) view = home();
     else if (!view) view = "week";
     if (view === "onboarding" && v === "onboarding" && id) state.onbPlan = id;  // a plan this login doesn't have falls back to its own
+    // Back or Forward onto an Onboarding entry: the plan it showed (drawOnboarding notes it on the entry), so Week 2 and week 1's task a link
+    // opened from it are two entries Back goes between, though both read "#onboarding" (23 Nov, fourth review: that Back did nothing)
+    else if (view === "onboarding" && !first && !id && st && typeof st.plan === "string" && st.plan) state.onbPlan = st.plan;
     // the address names the view shown (a first visit, a tab this login doesn't have), so Back from the next view comes back to it
     if (v !== view && v !== "doc") histReplace(null, "#" + view);
     await setView(view, true);
     if (v === "onboarding" && id) {  // the link has done its work (or this login has no such tab): the address goes back to the view's own
       if (view === "onboarding" && sub && state.onb && state.onb.plan.id === id && !openOnbTask($("#view"), sub)) notice(`There's no task ${sub} in this plan.`, true);
-      histReplace(null, "#" + view);
+      histReplace(view === "onboarding" && state.onbPlan ? { plan: state.onbPlan } : null, "#" + view);
     }
     if (v === "candidates" && id && state.boot) {
       state.recOrder = state.listIds.includes(id) ? state.listIds.slice() : null; state.lastOpen = id;
@@ -3430,6 +3486,14 @@
   }
   // A document open over the view closes when the address moves on to something else (a link in it, Back, Forward), once the move is taken
   function closeDoc() { const d = $("#docview"); if (d.open) d.close(); }
-  window.addEventListener("hashchange", follow);
+  // Every move in the tab's history comes here. popstate comes first for each (Back, Forward, a link in the page, an address typed), then
+  // hashchange where the address changed, which is the same move again; a move between two entries of one address has popstate alone
+  // (23 Nov, fourth review: with hashchange only, Back between two "#onboarding" entries left the place one ahead, so a refused move later
+  // was undone by going nowhere, and a Forward onto a record's address was taken for that undo landing). A browser that sends hashchange
+  // alone still comes here.
+  // (the same move: the address popstate came with, which a refused move may have written over since)
+  let popped = null;
+  window.addEventListener("popstate", () => { popped = location.href; follow(); });
+  window.addEventListener("hashchange", (e) => { const same = popped === e.newURL; popped = null; if (!same) follow(); });
   follow();
 })();
