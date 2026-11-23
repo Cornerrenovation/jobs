@@ -1022,6 +1022,8 @@ button.dlater:hover .lbl{color:var(--ink)}
    record's conversation, opening in its place; Add candidate's "already in Studio", where the click was; Delete on one's own comment */
 .scrpanel.scrline{display:block}
 .scrline>p{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;line-height:1.45}
+/* a sent card's parts (the concern, the message as it went, the card's links) apart from each other, as in the record (23 Nov, second review) */
+.scrpanel.scrline>*+*{margin-top:10px}
 .logmsg{margin-top:10px}
 .logform{display:flex;flex-direction:column;gap:8px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--bg-2)}
 .logrow{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center}

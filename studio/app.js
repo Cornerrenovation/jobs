@@ -67,8 +67,10 @@
     decisions: null, secAsk: {}, dOpen: {}, carry: null,
     subOpen: {}, focusSec: "", onb: null, onbPlan: "", onbOpen: {}, onbDraft: {}, onbAnswer: {}, onbScore: {}, onbErr: {}, onbVisit: null, onbRead: {}, onbCall: {}, onbCallErr: {}, onbKept: {} };
   const store = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
-  // The Candidates sort is kept in the browser, like the role (23 Nov audit: it was lost on reload); a key the list doesn't know is ignored there
-  { const s = (store.get("studio-candsort") || "").split("|"); if (s[0]) state.sort = { key: s[0], dir: s[1] === "-1" ? -1 : 1 }; }
+  // The Candidates sort is kept in the browser, like the role (23 Nov audit: it was lost on reload); a key the list doesn't know is ignored,
+  // a name every object has too ("__proto__", "constructor": 23 Nov, second review, a stored "__proto__|-1" left Candidates blank for good)
+  const SORT_KEYS = ["name", "applied", "agent", "conf", "your", "stage", "due"];
+  { const s = (store.get("studio-candsort") || "").split("|"); if (SORT_KEYS.includes(s[0])) state.sort = { key: s[0], dir: s[1] === "-1" ? -1 : 1 }; }
   const setSort = (s) => { state.sort = s; store.set("studio-candsort", s.key ? `${s.key}|${s.dir}` : ""); };
 
   // missing: what to return on a 404 instead of an error (a route an older Worker doesn't have yet; the caller hides what it would show)
@@ -550,7 +552,7 @@
     const SORTS = { name: (c) => fold(c.name) || null, applied: (c) => c.applied || c.created_at || null, agent: (c) => blindNow(c) ? null : CALL_RANK[c.agent_call] ?? null,
       conf: (c) => blindNow(c) ? null : CONF_RANK[c.confidence] ?? null, your: (c) => { const i = CALL_KEYS.findIndex(([k]) => k === V.get(c).call); return i < 0 ? null : i; },
       stage: stageRank, due: (c) => c.due || null };
-    const sk = SORTS[state.sort.key] ? state.sort.key : "", sd = state.sort.dir;
+    const sk = SORT_KEYS.includes(state.sort.key) && Object.hasOwn(SORTS, state.sort.key) ? state.sort.key : "", sd = state.sort.dir;
     if (sk) { const key = new Map(list.map((c) => [c, SORTS[sk](c)]));
       list.sort((a, b) => { const x = key.get(a), y = key.get(b), none = (x == null) - (y == null);
         return none || (x == null ? 0 : (x < y ? -1 : x > y ? 1 : 0) * sd) || (a.name || "").localeCompare(b.name || ""); }); }
@@ -983,12 +985,15 @@
   // matched, Open <ID>, and where only the name matched (no LinkedIn or email to tell them apart), Add as a new person, which sends as_new.
   // The Add form and Re-contact's "Add to this search" both show it where the click was. Open is the dark button, the one her guide's part 5
   // takes first (final check, 23 Nov: Add as a new person was the dark one, under "Only the name is the same").
-  function showClash(box, d, asNew) {
+  // carry: what the Add form holds that the record should get (her guide's step 7: "write the new application in Notes"), put in the opened
+  // record's fields as edits not saved yet, so a Save keeps them and a close asks first (23 Nov, second review: Open dropped the pasted
+  // screening answers without a word)
+  function showClash(box, d, asNew, carry) {
     box.innerHTML = `<p>${h(String(d.error || "Already in Studio as " + d.id).replace(/\.$/, ""))}.${d.by === "name" ? " Only the name is the same: if this is someone else, add them as a new person." : ""}</p>
       <div class="pact"><button type="button" class="btn small" data-clashopen>Open ${h(d.id)}</button>${d.by === "name" ? '<button type="button" class="btn ghost small" data-clashnew>Add as a new person</button>' : ""}</div>`;
     box.hidden = false;
     const open = $("[data-clashopen]", box), nb = $("[data-clashnew]", box);
-    open.addEventListener("click", () => openCandidate(d.id));
+    open.addEventListener("click", () => { const e = carry ? carry() : null; if (e) state.carry = { cid: d.id, ...e }; openCandidate(d.id); });
     if (nb) nb.addEventListener("click", () => { nb.disabled = true; asNew(); });
     open.focus({ preventScroll: true }); box.scrollIntoView({ block: "nearest" });
   }
@@ -1003,7 +1008,9 @@
     let c = id ? state.candidates.find((x) => x.id === id) : { stage: "applied", role_id: openRoles().some((r) => r.id === state.roleFilter) ? state.roleFilter : ownRole() };
     // a record added since the list was read (the robots' new applicant, linked from #talent): the list is read again once
     if (!c) { forget(); await render(true); await need("candidates", "cards"); c = state.candidates.find((x) => x.id === id); }
-    if (!c) { notice(`There's no candidate ${id} in the studio.`, true); return; }
+    // none: the address goes back to the list's, so the record opened next and closed comes back to the list, not to this link (23 Nov,
+    // second review: a link to an archived TA-0001 stayed the list's history entry, and every close read Studio again under the notice)
+    if (!c) { if (state.pushedRec === id) state.pushedRec = ""; leaveLink(); notice(`There's no candidate ${id} in the studio.`, true); return; }
     if (id) {  // the full row (CV, screening answers, written answer, first lines, the call sheets), this candidate's criteria and decisions
       // the work sample only from a Worker that has its routes (an older one would answer 404 into the console)
       const [full, res, msgs, ws, dec, why] = await Promise.all([api("candidates/" + encodeURIComponent(id)), api("criteria/results?candidate_id=" + encodeURIComponent(id)), api("messages?candidate_id=" + encodeURIComponent(id)),
@@ -1159,7 +1166,10 @@
     // edits put back in their fields and steps, still to be saved: carried over a redraw, or a save that failed
     const apply = (edits) => {
       for (const [k, v] of Object.entries(edits.fields || {})) { const el = f.elements[k]; if (!el || el instanceof RadioNodeList) continue; el.value = v; if (el.tagName === "TEXTAREA") fitArea(el); }
-      if (edits.fields && ("your_call" in edits.fields || "your_reason" in edits.fields)) { press(f, "yourcall", f.elements.your_call.value); show("screening", true); }
+      // text added after what the field holds (an Add that matched this record: its new application in Notes)
+      for (const [k, v] of Object.entries(edits.append || {})) { const el = f.elements[k]; if (!el || el instanceof RadioNodeList || !v) continue; el.value = el.value.trim() ? `${el.value.trimEnd()}\n\n${v}` : v; if (el.tagName === "TEXTAREA") fitArea(el); }
+      // (a viewer with no screening row of their own on this record, D2, gets no call carried)
+      if (edits.fields && ("your_call" in edits.fields || "your_reason" in edits.fields) && f.elements.your_call) { press(f, "yourcall", f.elements.your_call.value); show("screening", true); }
       for (const [step, v] of Object.entries(edits.decs || {})) {
         if (!f.querySelector(`.drow[data-dstep="${step}"]`)) { state.dOpen[`${c.id}|${step}`] = true; redraw(step); }
         const row = f.querySelector(`.drow[data-dstep="${step}"]`); if (!row) continue;
@@ -1180,6 +1190,12 @@
         for (const [k, v] of Object.entries(snap())) { const t = (k === "next_step" || k === "your_reason" ? oneLine(v) : String(v)).trim();
           if (t && !(k === "stage" && t === (init.stage || "applied"))) body[k] = t; }
         const box = $("#addclash"), btn = $('button[type="submit"]', f);
+        // the record already there gets the new application in its Notes (the day, the source, the screening answers), and the call and
+        // reason picked here, all as edits to save
+        const clashCarry = () => { const v = snap(), ans = String(v.screening || "").trim(), src = String(v.sources || "").trim(), day = dayOf(v.applied);
+          const note = ans || src || day ? `New application${day ? " " + fmt(day) : ""}${src ? ` (${src})` : ""}${ans ? `: ${ans}` : "."}` : "";
+          const fields = Object.fromEntries(["your_call", "your_reason"].filter((k) => String(v[k] || "").trim()).map((k) => [k, String(v[k]).trim()]));
+          return note || Object.keys(fields).length ? { fields, append: note ? { notes: note } : {} } : null; };
         const add = async (extra) => {
           btn.disabled = true; box.hidden = true; say("Adding…");
           try { await api("candidates", "POST", { ...body, ...extra }); }
@@ -1187,7 +1203,7 @@
             btn.disabled = false;
             // already in Studio (Kostya, 23 Nov): nothing was written; the record it matched opens from here, and a match on the name alone
             // can be someone else of the same name
-            if (err.status === 409 && err.data && err.data.id) { notice(""); say(""); showClash(box, err.data, () => add({ as_new: true })); }
+            if (err.status === 409 && err.data && err.data.id) { notice(""); say(""); showClash(box, err.data, () => add({ as_new: true }), clashCarry); }
             else say(`Not added (${(err && err.message) || err})`, true);
             return;
           }
@@ -1270,7 +1286,9 @@
       if (isOpen(id) && f.isConnected) {
         dres.forEach((r, i) => { if (r.ok && !rowDirty(decs[i].row)) redraw(decs[i].step); });
         if (rec && rec.ok) {
+          const hadMsgs = !!$("#sec-msgs");  // (a section syncSections adds now is drawn as the record is)
           sync(); setNow(c); syncSections(c);
+          if (hadMsgs && (called || reasoned || "stage" in data)) redrawMsgs(c);
           // a stage saved can bring a step's turn (2 · Interview from the first interview's booking on): the steps nobody is typing in follow
           ["interview", "second"].forEach((s) => { const row = f.querySelector(`.drow[data-dstep="${s}"]`); if (!row || !rowDirty(row)) redraw(s); });
           if (wasBlind) { const rb = $("#sec-read .rsec-b"); if (rb) rb.innerHTML = readBlock(c); setSum("read", readSummary(c)); }  // a blind record shows Claude's read now
@@ -1518,6 +1536,10 @@
   // would write it over a box that said it was Kostya's).
   const claudeWrites = (c) => familyOf(roleOf(c.role_id)) === "bc";
   const ownFirst = (c) => c.your_call === "Shortlist" && !claudeWrites(c);
+  // whose message 1 it is: the search's recruiter's, anyone's where the search has none. Only she gets the box and Mark as sent; everyone
+  // else reads the line alone, as on Brand & Content (23 Nov, second review: Yana's PM cards read "Message 1 is Yuliia's" over "Your message
+  // 1" and a live Mark as sent, which moved Yuliia's candidate to Messaged with Yana's dates)
+  const sendsHere = (c) => { const rec = loginOf(roleOf(c.role_id).recruiter); return !rec || rec === loginOf(state.boot.who); };
   const ownLine = (c, own) => { const fam = familyOf(roleOf(c.role_id)), rec = loginOf(roleOf(c.role_id).recruiter);
     if (fam === "bc") return "No concern written yet. Claude writes one for every shortlisted candidate.";
     // named as the record names whose call it is (23 Nov review: "once the call is Shortlist" sat beside Claude's own Shortlist, and Kostya
@@ -1527,22 +1549,29 @@
       : mine ? "message 1 is yours, once your call is Shortlist." : `message 1 is ${who}'s, once ${who}'s call is Shortlist.`;
     return fam === "sd" ? `Claude writes no message for sales designers: ${line}` : line[0].toUpperCase() + line.slice(1); };
   function screenPanel(c, rec) {
-    const blank = !c.screen_concern && !c.screen_message, own = ownFirst(c), early = msgOnly(c), sent = wasSent(c) && !early;
+    const blank = !c.screen_concern && !c.screen_message, own = ownFirst(c), mine = sendsHere(c), early = msgOnly(c), sent = wasSent(c) && !early;
     const closed = isClosedStage(c) || isClosedRole(roleOf(c.role_id)), extra = rec ? "" : convoHtml(c) + replyHtml(c);
     // Mark as messaged goes by the day the stored message went (the nudge, the Next step and Last contact), Mark as sent by the day it is clicked
     const day = early ? lastOutDay(c) : "", attrs = `data-sid="${h(c.id)}" data-stage="${h(c.stage || "applied")}"${day ? ` data-day="${h(day)}" data-contact="${h(day > (c.last_contact || "") ? day : c.last_contact)}"` : ""}`;
     const act = sent ? `<span class="pill ok">sent${c.last_contact ? " " + h(fmt(c.last_contact)) : ""}</span>`
       : closed ? `<span class="muted small">Not sent · the record is closed</span>`
       : early ? `<button type="button" class="btn ghost small" data-sent>Mark as messaged</button>`
-      : !blank || own ? `<button type="button" class="btn ghost small" data-sent>Mark as sent</button>` : "";
+      : !blank || (own && mine) ? `<button type="button" class="btn ghost small" data-sent>Mark as sent</button>` : "";
     const reply = c.latest_reply && !repliedAt(c) ? `<div class="answer"><span class="lbl">Latest reply</span><p>${h(c.latest_reply)}</p></div>` : "";
     // nothing to write: whose message it is, or where it stands, on one line. Past message 1 with a conversation stored, the conversation
     // says what happened (a reply logged may have come first: "sent" would be a guess); with none, "Message 1 · sent" and its day.
-    if (blank && (!own || sent || early || closed)) {
-      const told = sent && msgsOf(c).length, line = told ? "" : sent ? "Message 1" : closed ? "" : early ? `A message to them is stored, and the record is still ${statusOf(c)}.` : ownLine(c, false), shown = told ? "" : act;
+    if (blank && (!own || !mine || sent || early || closed)) {
+      const told = sent && msgsOf(c).length, line = told ? "" : sent ? "Message 1" : closed ? "" : early ? `A message to them is stored, and the record is still ${statusOf(c)}.` : ownLine(c, own), shown = told ? "" : act;
       return line || shown || reply ? `<div class="scrpanel noconcern scrline" ${attrs}>${line || shown ? `<p class="muted small">${h(line)}${line && shown ? " " : ""}${shown}</p>` : ""}${reply}</div>${extra}` : extra;
     }
     const application = urlsIn(c.cv).filter((u) => /linkedin\.com\/hiring\/applicants/.test(u)).map((u) => `<a class="btn ghost small" href="${h(u)}" target="_blank" rel="noopener">Application ↗</a>`).join("");
+    // Sent, or past message 1, with a message written: the message as it went, read-only and folded, as the record shows it (23 Nov, second
+    // review: the Sent card read "Message to send on LinkedIn" over a box that could still be edited, and an edit offered Save the edit over
+    // the text of a message already sent); the card keeps its links for the reply
+    if (sent) {
+      const links = rec ? "" : [cvOpen(c, "btn ghost small"), c.linkedin ? `<a class="btn ghost small" href="${h(c.linkedin)}" target="_blank" rel="noopener">LinkedIn ↗</a>` : "", application].filter(Boolean).join("");
+      return `<div class="scrpanel scrline${c.screen_concern ? "" : " noconcern"}" ${attrs}>${sentScreenHtml(c) || `<p class="muted small">${act}</p>`}${links ? `<div class="pact">${links}</div>` : ""}</div>${extra}`;
+    }
     // blank: their own message 1, in a box that starts empty; Copy shows once it holds a text, and Mark as sent keeps the text on the record
     return `<div class="scrpanel${c.screen_concern ? "" : " noconcern"}" ${attrs}>
       ${c.screen_concern ? `<div class="scrcol"><span class="lbl">Concern to verify</span><p class="concern">${h(c.screen_concern)}</p></div>` : ""}
@@ -1612,9 +1641,22 @@
   // conversation with its last two messages open. Hidden in a blind batch, as the message screen always was.
   // Then Log a message, for one neither the robots nor her reader read (23 Nov 2026). With no concern and no message (a sales designer's
   // message 1 is hers, written in LinkedIn) the panel's one line says where message 1 stands, sent or not.
-  const messagesHtml = (c) => blindNow(c) ? "" : [replyHtml(c),
-    inScreening(c) || c.screen_concern ? (wasSent(c) && !msgOnly(c) && (c.screen_concern || c.screen_message) ? sentScreenHtml(c) : screenPanel(c, true)) : "",
-    convoHtml(c, 2), logHtml(c)].filter(Boolean).join("");
+  const screenPart = (c) => inScreening(c) || c.screen_concern ? (wasSent(c) && !msgOnly(c) && (c.screen_concern || c.screen_message) ? sentScreenHtml(c) : screenPanel(c, true)) : "";
+  const messagesHtml = (c) => blindNow(c) ? "" : [replyHtml(c), screenPart(c), convoHtml(c, 2), logHtml(c)].filter(Boolean).join("");
+  // The section drawn again after a save that changed the call or the stage, which change what it offers (23 Nov, second review: after her
+  // Shortlist it still read "message 1 is yours, once your call is Shortlist", with no box and no Mark as sent, until the record was opened
+  // again). Not over an edited message or reply; Log a message stays as it is, with what is typed in it.
+  function redrawMsgs(c) {
+    const body = isOpen(c.id) && $("#sec-msgs .rsec-b");
+    if (!body || blindNow(c)) return;
+    setSum("msgs", msgsSummary(c));
+    if (body.querySelector('.scrmsg[data-dirty="1"], .rmsg[data-dirty="1"]')) return;
+    const log = body.querySelector(":scope > .logmsg"), again = msgsAgain(c.id), tmp = document.createElement("div");
+    [...body.children].forEach((el) => { if (el !== log) el.remove(); });
+    tmp.innerHTML = [replyHtml(c), screenPart(c), convoHtml(c, 2)].filter(Boolean).join("");
+    body.prepend(...tmp.childNodes);
+    bindScreen(body, again); bindReply(body, again);
+  }
 
   // ---------- the call sheets on the card (5 Nov) ----------
   // candidates.interview_sheet holds one Markdown sheet per call, newest first, each starting "# <step> · <date, time (-03)>"; text
@@ -1908,9 +1950,11 @@
     const all = state.candidates.filter(inScreening).filter(inRoleOf(tab));
     const pick = { tosend: (c) => !wasSent(c), sent: wasSent, replied: hasReply, all: () => true }[state.screenFilter] || (() => true);
     // what can go now first: a message written, or a person's Shortlist (their own message 1); a Shortlist of Claude's alone with nothing
-    // written waits for the call (23 Nov: on Sales designer those came first and her own Shortlists last)
-    const ready = (c) => !!(c.screen_concern || c.screen_message || ownFirst(c));
-    const list = all.filter(pick).sort((a, b) => (state.screenFilter === "replied" ? repliedAt(b).localeCompare(repliedAt(a)) : 0) || (wasSent(a) - wasSent(b)) || (ready(b) - ready(a)) || a.role_id.localeCompare(b.role_id) || (CONF_RANK[a.confidence] ?? 3) - (CONF_RANK[b.confidence] ?? 3) || a.name.localeCompare(b.name));
+    // written waits for the call (23 Nov: on Sales designer those came first and her own Shortlists last). On All roles the viewer's own
+    // search comes first, and someone else's message 1 isn't the viewer's to send (23 Nov, second review: Yuliia's 40 PM cards came before
+    // Yana's own)
+    const ready = (c) => !!(c.screen_concern || c.screen_message || (ownFirst(c) && sendsHere(c)));
+    const list = all.filter(pick).sort((a, b) => (state.screenFilter === "replied" ? repliedAt(b).localeCompare(repliedAt(a)) : 0) || (wasSent(a) - wasSent(b)) || (sendsHere(b) - sendsHere(a)) || (ready(b) - ready(a)) || a.role_id.localeCompare(b.role_id) || (CONF_RANK[a.confidence] ?? 3) - (CONF_RANK[b.confidence] ?? 3) || a.name.localeCompare(b.name));
     // only where Claude writes the concern is one "without a concern yet" (Kostya, 23 Nov: not sales designers; the review: nor PM, whose
     // cards say message 1 is Yuliia's)
     const toSend = all.filter((c) => !wasSent(c)).length, noConcern = all.filter((c) => !c.screen_concern && claudeWrites(c)).length, replied = all.filter(hasReply).length, drafts = all.filter((c) => c.reply_draft).length;
@@ -1920,7 +1964,10 @@
     // the person's own, as its cards do (final check, 23 Nov: "Edit the message if you want" over Sales designer cards that have none)
     const writes = tab === "all" || familyOf(roleOf(tab)) === "bc", app = "(where a card has an Application button, it opens their LinkedIn application, where messaging is free)";
     const own = openRoles().filter((r) => familyOf(r) !== "bc").map((r) => r.short || r.name);
+    // (a search another person recruits for: the line says whose message 1 it is, as its cards do)
+    const recOf = loginOf(roleOf(tab).recruiter), theirs = tab !== "all" && recOf && recOf !== loginOf(state.boot.who) ? firstName(recOf) : "";
     const how = writes ? `Edit ${tab === "all" ? "Claude's" : "the"} message if you want, copy it into LinkedIn ${app}, then mark it sent: the candidate moves to "messaged".${tab === "all" && own.length ? ` On ${own.join(" and ")} Claude writes none: message 1 is the recruiter's own.` : ""}`
+      : theirs ? `Claude writes no message here. Message 1 is ${theirs}'s: ${theirs} sends it in LinkedIn ${app} and marks it sent, and the candidate moves to "messaged".`
       : `Claude writes no message here. Write message 1 in LinkedIn ${app}, or in the card's box first to keep it on the record, then mark it sent: the candidate moves to "messaged".`;
     view.innerHTML = head("Screening",`One message per shortlisted candidate${writes ? ", asking the one thing we need to verify" : ""}. ${toSend} to send · ${all.length - toSend} sent · ${replied} replied${drafts ? ` · ${drafts} repl${drafts > 1 ? "ies" : "y"} drafted` : ""}${noConcern ? ` · ${noConcern} without a concern yet` : ""}`,
       seg("scrf", [["tosend", `To send · ${toSend}`], ["sent", `Sent · ${all.length - toSend}`], ["replied", `Replied · ${replied}`], ["all", `All · ${all.length}`]], state.screenFilter)) +
@@ -2515,7 +2562,7 @@
     const r = tr.getBoundingClientRect(), th = $("#view .tablewrap.cands thead"), top = th && getComputedStyle(th.querySelector("th")).position === "sticky" ? th.getBoundingClientRect().bottom : 52;
     if (r.top < top || r.bottom > window.innerHeight) tr.scrollIntoView({ block: "center" });
   });
-  window.addEventListener("beforeunload", (e) => { if (unsavedParts().length) { e.preventDefault(); e.returnValue = ""; } });
+  window.addEventListener("beforeunload", (e) => { if (unsavedParts().length || Object.keys(state.onbCall).some(onbCallDirty)) { e.preventDefault(); e.returnValue = ""; } });
   $("#recclose").addEventListener("click", () => closeRecord());
   $("#recdlg").addEventListener("click", (e) => { if (e.target === $("#recdlg")) closeRecord(); });
 
@@ -2827,6 +2874,11 @@
   // the applicants and screening calls a calls task lists, read once however many plans ask; a failure is kept so the task can say so.
   // Both lists are needed: other views load the applicants without the calls (review, 22 Nov: every cell read "not made").
   const onbCallsReady = () => !!(state.candidates && state.screens);
+  // A call typed in a calls task (state.onbCall, by task and applicant) that isn't the one stored for the viewer: its row says "Not saved
+  // yet", and a reload or a closed tab asks first, as for a record (23 Nov, second review). Not read yet: counted as not saved.
+  const onbCallDirty = (key) => { const t = state.onbCall[key]; if (!t || !state.boot) return false;
+    const c = (state.candidates || []).find((x) => x.id === key.split("|")[1]), r = c ? (screensOf(c) || []).find((x) => x.by === state.boot.who) || {} : null;
+    return !r || (t.call || "") !== (r.call || "") || (t.reason || "").trim() !== (r.reason || "").trim(); };
   const onbCallsLoad = () => state.onbCallsP || (state.onbCallsErr = false, state.onbCallsP = need("candidates", "screens")
     .then(() => { state.onbCallsErr = false; }, () => { state.onbCallsErr = true; }).finally(() => { state.onbCallsP = null; }));
   async function renderOnboarding(view) {
@@ -3009,7 +3061,14 @@
     // stays "edited" until the fresh calls are read, so the minute's refresh can't redraw in between (review, 22 Nov).
     const redraw = () => { if (state.onb && state.boot && state.view === "onboarding") again(); };
     view.querySelectorAll("form.onbcall").forEach((f) => {
-      const cid = f.dataset.cid, key = f.dataset.key, keep = () => { state.onbCall[key] = { call: ($('[data-seg="occall"] button[aria-pressed="true"]', f) || {}).dataset?.v || "", reason: f.elements.reason.value }; };
+      const cid = f.dataset.cid, key = f.dataset.key;
+      // a call picked or a reason typed that isn't saved says so on its row until Save, and a reload asks first (onbCallsUnsaved; 23 Nov,
+      // second review: the row looked saved, kept its call when folded, and a reload lost it with no word)
+      const mark = () => { const dirty = onbCallDirty(key); let m = $("[data-ocmark]", f);
+        if (dirty && !m) { m = Object.assign(document.createElement("span"), { className: "saved warn", textContent: "Not saved yet" }); m.dataset.ocmark = ""; $(".formfoot", f).prepend(m); }
+        else if (!dirty && m) m.remove(); };
+      const keep = () => { state.onbCall[key] = { call: ($('[data-seg="occall"] button[aria-pressed="true"]', f) || {}).dataset?.v || "", reason: f.elements.reason.value }; mark(); };
+      if (!state.onbCallErr[key]) mark();
       bindSeg(f, "occall", (v) => { f.querySelectorAll('[data-seg="occall"] button').forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === v)); keep(); });
       f.elements.reason.addEventListener("input", keep);
       f.addEventListener("submit", async (e) => {
@@ -3113,8 +3172,10 @@
   // ---------- activity ----------
   // A change to a record or a template in the app's words (23 Nov audit: "your_call = Shortlist; stage = confirmed" read as the viewer's own
   // call whoever made it): "call: Shortlist; stage → Shortlisted". Only the view words it: the stored line keeps its keys, which reasonRows
-  // and the backfills read ("your_reason = "). The Worker cuts each part, at 200 characters (60 until 23 Nov), so a part of exactly that
-  // length ends in "…".
+  // and the backfills read ("your_reason = "). The Worker cuts each part, at 200 characters since its deploy of 23 Nov (60 before), so a
+  // part of exactly that length, by when its line was written, ends in "…" (23 Nov, second review: a reason whose part was 60 characters long
+  // read as cut, though it was stored whole)
+  const CUT_200 = Date.parse("2026-11-23T11:21:41Z");
   const ACT_WORDS = { your_call: "call", your_reason: "reason", next_step: "Next step", last_contact: "last contact", latest_reply: "latest reply", cv_check: "CV check",
     screen_concern: "concern", screen_message: "screening message", reply_draft: "reply draft", reply_note: "reply note", referred_by: "referred by", bounty: "referral bounty",
     bounty_due: "bounty due", hired_at: "hired on", screening: "screening answers", agent_call: "Claude's call", doubt: "doubt to probe", why: "Claude's why", sources: "Sources",
@@ -3122,9 +3183,9 @@
     next_action: "Next action", message1_sent: "message 1 sent", followup1_sent: "follow-up 1 sent", followup2_sent: "follow-up 2 sent" };
   const ACT_DAYS = ["due", "last_contact", "applied", "hired_at", "bounty_due", "invite_sent", "accepted", "message1_sent", "followup1_sent", "followup2_sent", "replied", "call_booked"];
   const TPL_SAY = { Yes: "approved", Edit: "needs edits", No: "rejected" };
-  function actPart(p) {
+  function actPart(p, at) {
     const m = /^([a-z_]+) = ([\s\S]*)$/.exec(p); if (!m) return p;
-    const [, k, raw] = m, v = raw.replace(/\s+/g, " ").trim(), cut = (p.length === 60 || p.length === 200) && v ? "…" : "";
+    const [, k, raw] = m, v = raw.replace(/\s+/g, " ").trim(), cut = p.length === (Date.parse(at) >= CUT_200 ? 200 : 60) && v ? "…" : "";
     if (k === "stage" || k === "reached") return `${k === "stage" ? "stage" : "furthest stage"} → ${stageLabel(v)}`;
     if (k === "approved") return TPL_SAY[v] || "not reviewed";
     if (k === "your_call") return v ? `call: ${v}` : "call taken back";
@@ -3133,7 +3194,7 @@
     return `${word}: ${ACT_DAYS.includes(k) && dayOf(v) ? fmt(dayOf(v)) : v}${cut}`;
   }
   // "<name>: <part>; <part>", a part being "<column> = <value>" (a value may hold "; " itself, so a part starts only where a column does)
-  const worded = (s) => { const m = /^([\s\S]*?): (?=[a-z_]+ = )([\s\S]*)$/.exec(s); return m ? `${m[1]}: ${m[2].split(/; (?=[a-z_]+ = )/).map(actPart).join("; ")}` : s; };
+  const worded = (s, at) => { const m = /^([\s\S]*?): (?=[a-z_]+ = )([\s\S]*)$/.exec(s); return m ? `${m[1]}: ${m[2].split(/; (?=[a-z_]+ = )/).map((p) => actPart(p, at)).join("; ")}` : s; };
   // People's changes first, the robots' a click away, and a sync line names its role and table (14 Nov live QA: 14 of the 15 lines on screen
   // were robot syncs reading "0 added, 4 updated (sd)", the one change a person made at the bottom; and only the latest 200 load)
   async function renderActivity(view) {
@@ -3142,7 +3203,7 @@
     // Any table's count line, its role added only when it has one (14 Nov live QA: a templates sync read "2 added, 0 updated"); a line that
     // says what it saved (a scorecard, the criteria) stays as written
     const what = (a) => { const t = /^(\w+)\.upsert$/.exec(a.kind || ""), s = String(a.summary || "");
-      if (/\.update$/.test(a.kind || "")) return worded(s);
+      if (/\.update$/.test(a.kind || "")) return worded(s, a.at);
       if (!t || !/^\d+ added, \d+ updated/.test(s)) return s;
       const body = a.scope && s.endsWith(` (${a.scope})`) ? s.slice(0, -a.scope.length - 3) : s;
       return a.scope ? `${roleName(a.scope)} ${t[1]}: ${body}` : `${t[1][0].toUpperCase() + t[1].slice(1)}: ${body}`; };
@@ -3205,6 +3266,15 @@
       }
       if (d.open) d.close();
       return;
+    }
+    // Any other address while a record or the Add form is open over a view (one opened from Screening, Pipeline, Calibration or Checklists
+    // has no history entry of its own): asked first about anything not saved, then closed, so Back shows the view it names and not that view
+    // behind a record still open (23 Nov, second review: a second Back then left Studio). Kept open, the view's own address comes back. A
+    // document opens over the record, as it always did.
+    const rd = $("#recdlg");
+    if (rd.open && v !== "doc" && !(v === "candidates" && id && id === rd.dataset.cid)) {
+      if (!closeOk()) { history.pushState(null, "", "#" + state.view); return; }
+      rd.close();
     }
     const saved = store.get("studio-view");
     let view = VIEWS.includes(v) ? v : VIEWS.includes(saved) ? saved : "";
