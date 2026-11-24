@@ -92,6 +92,56 @@
   const histPush = (extra, url) => { histAt += 1; history.pushState(placed(extra), "", url); histKey = navKey(); };
   const histReplace = (extra, url) => history.replaceState(placed(extra), "", url);
 
+  // A record's own reads, made ahead (24 Nov, Kostya: "when I click on a candidate there's a slight delay before the card opens"). Opening
+  // a record waits for six reads of it (the full row, Claude's criteria, the messages, the work sample, the decisions, the calls). They
+  // start when the pointer rests on a row or a name that opens a record, or goes down on it, and for the record J opens next, so the click
+  // usually finds them read. A read ahead is used once, within 30 seconds, and only while nothing was saved or read again since: every
+  // write and every refresh's forget() ends it (aheadGen), so a record never opens on what a save just changed. It reads quietly (no
+  // notice), and when it failed or is stale the record reads as it always did.
+  const ahead = new Map(), AHEAD_MS = 30000;
+  let aheadGen = 0, aheadBusy = 0, aheadCards = null;  // (reads ahead still going: a resting pointer starts one only while fewer than two are)
+  const quietGet = async (path, missing) => {
+    const r = await fetch(API + path, { credentials: "same-origin" });
+    if (r.status === 404 && missing !== undefined) return missing;
+    const j = await r.json();
+    if (!r.ok || (j && j.error)) throw new Error("not read");
+    return j;
+  };
+  function readAhead(id, resting) {
+    if (!id || !state.boot || !state.candidates || isOpen(id) || (resting && aheadBusy >= 2)) return;
+    const x = ahead.get(id);
+    if (x && x.gen === aheadGen && Date.now() - x.at < AHEAD_MS) return;
+    const q = encodeURIComponent(id);
+    // the scorecards list every record open reads, when a save or the refresh has dropped it: read once, ahead, too
+    if (!state.cards && !aheadCards) aheadCards = need("cards").catch(() => {}).finally(() => { aheadCards = null; });
+    aheadBusy++;
+    const p = Promise.all([quietGet("candidates/" + q), quietGet("criteria/results?candidate_id=" + q), quietGet("messages?candidate_id=" + q),
+      has("worksample") ? quietGet("worksample/" + q, null) : null, quietGet("decisions?candidate_id=" + q, []),
+      has("reasons") ? quietGet("reasons?candidate_id=" + q, null) : null]).catch(() => null).finally(() => { aheadBusy--; });
+    ahead.delete(id); ahead.set(id, { at: Date.now(), gen: aheadGen, p });
+    while (ahead.size > 12) ahead.delete(ahead.keys().next().value);
+  }
+  // the read ahead for this record, taken (once), or null
+  const takeAhead = (id) => { const x = ahead.get(id); ahead.delete(id); return x && x.gen === aheadGen && Date.now() - x.at < AHEAD_MS ? x : null; };
+  // what opens a record: a Candidates row, a Pipeline or Calibration row, a Screening card's name, the other views' openers, a link to one
+  const OPENERS = '.tablewrap.cands tbody tr[data-id], tr.clickable[data-id], .srow[data-id], .scrcard [data-open], [data-bopen], [data-cand], [data-poolopen], a[href^="#candidates/"]:not([target])';
+  const openerId = (el) => {
+    const t = el && el.closest ? el.closest(OPENERS) : null;
+    if (!t) return "";
+    const href = t.getAttribute("href") || "";
+    return t.dataset.id || t.dataset.open || t.dataset.bopen || t.dataset.cand || t.dataset.poolopen
+      || (href.startsWith("#candidates/") ? decodeURIComponent(href.slice(12).split("/")[0]) : "");
+  };
+  let aheadHover = "", aheadTimer = 0;
+  document.addEventListener("pointerover", (e) => {
+    if (e.pointerType !== "mouse") return;
+    const id = openerId(e.target);
+    if (id === aheadHover) return;
+    clearTimeout(aheadTimer); aheadHover = id;
+    if (id) aheadTimer = setTimeout(() => readAhead(id, true), 200);
+  }, true);
+  document.addEventListener("pointerdown", (e) => { if (!e.button) readAhead(openerId(e.target)); }, true);
+
   // missing: what to return on a 404 instead of an error (a route an older Worker doesn't have yet; the caller hides what it would show)
   async function api(path, method, body, missing) {
     const payload = body ? JSON.stringify(body) : undefined;
@@ -99,6 +149,13 @@
     return send(path, { method: method || "GET", keepalive: !!payload && payload.length < 60000, headers: body ? { "content-type": "application/json" } : {}, body: payload }, missing);
   }
   async function send(path, init, missing) {  // any body (a file upload sends its bytes), the same sign-in and error handling as api()
+    // a write ends every read made ahead, before it goes and once it has answered (readAhead)
+    const write = !!(init && init.method && init.method !== "GET");
+    if (!write) return sendNow(path, init, missing);
+    aheadGen++;
+    try { return await sendNow(path, init, missing); } finally { aheadGen++; }
+  }
+  async function sendNow(path, init, missing) {
     const r = await fetch(API + path, { credentials: "same-origin", ...init });
     if (r.status === 401) { notice("Your sign-in expired. Reload the page to sign in again.", true); throw new Error("unauthorized"); }
     if (r.status === 404 && missing !== undefined) return missing;
@@ -221,7 +278,7 @@
       (await Promise.all(missing.map((k) => typeof load[k] === "function" ? load[k]() : api(load[k])))).forEach((v, i) => { state[missing[i]] = v; });
     }
   }
-  const forget = () => { fmtMemo = new Map(); state.boot = null; state.candidates = null; state.summary = null; state.resBy = {}; state.cards = null; state.outreach = null; state.templates = null; state.msgs = null; state.onb = null; state.onbKept = {}; state.decisions = null; state.screens = null; };
+  const forget = () => { aheadGen++; fmtMemo = new Map(); state.boot = null; state.candidates = null; state.summary = null; state.resBy = {}; state.cards = null; state.outreach = null; state.templates = null; state.msgs = null; state.onb = null; state.onbKept = {}; state.decisions = null; state.screens = null; };
 
   // ---------- shared candidate logic ----------
   const stageIdx = (s) => ORDER.indexOf(s || "");
@@ -1046,6 +1103,7 @@
     const f0 = id && isOpen(id) && $("#cform"), carry = (state.carry && state.carry.cid === id ? state.carry : null) || (f0 && f0._edits ? f0._edits() : null);
     state.carry = null;
     if (!state.boot) await loadBoot();  // dropped by a save just before (forget): the record reads the searches, criteria and people
+    if (id && aheadCards) await aheadCards;  // (the scorecards already being read ahead: not read twice)
     if (id) await need("candidates", "cards");
     // a new record's search: the one the list shows, else the viewer's own, else none yet (the form asks; 23 Nov audit)
     let c = id ? state.candidates.find((x) => x.id === id) : { stage: "applied", role_id: openRoles().some((r) => r.id === state.roleFilter) ? state.roleFilter : ownRole() };
@@ -1056,7 +1114,9 @@
     if (!c) { if (state.pushedRec === id) state.pushedRec = ""; leaveLink(); notice(`There's no candidate ${id} in the studio.`, true); return; }
     if (id) {  // the full row (CV, screening answers, written answer, first lines, the call sheets), this candidate's criteria and decisions
       // the work sample only from a Worker that has its routes (an older one would answer 404 into the console)
-      const [full, res, msgs, ws, dec, why] = await Promise.all([api("candidates/" + encodeURIComponent(id)), api("criteria/results?candidate_id=" + encodeURIComponent(id)), api("messages?candidate_id=" + encodeURIComponent(id)),
+      // (read ahead when the pointer rested on it or went down on it, if that read is still good: readAhead)
+      const pre = takeAhead(id), got = pre ? await pre.p : null;
+      const [full, res, msgs, ws, dec, why] = got && pre.gen === aheadGen ? got : await Promise.all([api("candidates/" + encodeURIComponent(id)), api("criteria/results?candidate_id=" + encodeURIComponent(id)), api("messages?candidate_id=" + encodeURIComponent(id)),
         has("worksample") ? wsLoad(id) : null, api("decisions?candidate_id=" + encodeURIComponent(id), "GET", null, []),
         has("reasons") ? api("reasons?candidate_id=" + encodeURIComponent(id), "GET", null, null) : null]);
       Object.assign(c, full); state.resBy = state.resBy || {}; state.resBy[id] = res; state.msgsBy = state.msgsBy || {}; state.msgsBy[id] = msgs; state.wsBy[id] = ws; state.decBy[id] = dec;
@@ -1084,6 +1144,9 @@
       bindLater(c); bindScoreBlock(c); bindWsBlock(c); bindMsgs($("#recbody"), c); bindCvCheck($("#recbody"), () => render(true));
     }
     bindRecordForm(c, id, carry);
+    // the record J opens next, read ahead once this one is drawn
+    const ord = id && state.recOrder, i = ord ? ord.indexOf(id) : -1;
+    if (i >= 0 && ord[i + 1]) setTimeout(() => readAhead(ord[i + 1]), 400);
   }
   // The main column's sections after the Next call panel (or Claude's read): [key, title, summary, body]. A section with nothing in it isn't
   // shown, nor Scorecards and Work sample before their step (cardsShown, wsShown), unless asked for from the line at the card's end

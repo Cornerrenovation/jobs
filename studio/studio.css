@@ -42,6 +42,11 @@ button{font:inherit}
 .edit{font-size:12px;color:var(--muted);background:none;border:none;padding:0;margin-left:8px;cursor:pointer;text-decoration:underline;text-underline-offset:3px}
 input,select,textarea{font:inherit;color:var(--text);background:var(--white);border:1px solid var(--line);border-radius:8px;padding:9px 11px;width:100%;outline:none}
 input:focus,select:focus,textarea:focus{border-color:var(--ink)}
+/* Every dropdown draws its own arrow, inset as far from the right edge as the text is from the left (24 Nov, Kostya: the browser's arrow
+   sat against the edge, 4px in on a Mac) */
+select{-webkit-appearance:none;appearance:none;padding-right:34px;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23333' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 13px center;background-size:10px 6px;text-overflow:ellipsis}
+select:disabled{cursor:default;opacity:.6}
+select::-ms-expand{display:none}
 textarea{min-height:84px;resize:vertical;line-height:1.5}
 label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--muted)}
 label>span.lbl{font-family:var(--m);font-size:11px;letter-spacing:.06em;text-transform:uppercase}
@@ -749,7 +754,7 @@ details.rsec[open]>summary>.rsec-s,details.subp[open]>summary>.subh{display:none
 /* A long address or file path with no spaces wraps instead of widening the record (an AI card's source line did at 390px) */
 #recbody p{overflow-wrap:anywhere}
 /* Phones: the Candidates filters two to a row (seven selects since the Stage and Status filters) */
-@media (max-width:600px){.toolbar input[type=search]{width:100%}.toolbar select{flex:1 1 calc(50% - 5px);min-width:0;max-width:none;font-size:14px;padding-inline:8px}}
+@media (max-width:600px){.toolbar input[type=search]{width:100%}.toolbar select{flex:1 1 calc(50% - 5px);min-width:0;max-width:none;font-size:14px;padding-left:8px;padding-right:26px;background-position:right 9px center}}
 /* Candidates on a laptop (Kostya, 23 Nov: laptop first; it replaces the 14 Nov "on a wide screen the filters sit in the toolbar as before"):
    the role buttons beside the title; one line of filters, the search, Stage, Status, My call and More filters, with the count at its end; the
    other filters on a line of their own under More filters, and each one that is set as a chip under the toolbar. On a phone (14 Nov review)
