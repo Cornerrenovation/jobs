@@ -796,6 +796,11 @@
     return `<a class="chip link" href="${h(u)}" target="_blank" rel="noopener" title="${h(u)}">${h(label)} ↗</a>`;
   }
   const urlsIn = (text) => (String(text || "").match(/https?:\/\/[^\s,;]+/g) || []);
+  // The application page or CV that is opened before the call (Yana, 25 Nov: "could the link to the LinkedIn application be visible before
+  // I choose shortlist, hold, or decline?"; it sat only in the Application section, at the record's bottom): at the top of the record and
+  // next to the name in a calls task. The Application section keeps its own.
+  const appLinks = (c) => urlsIn(c.cv).filter((u) => /linkedin\.com\/hiring\/applicants|drive\.google\.com|docs\.google\.com/.test(u))
+    .map((u) => linkChip(u, /linkedin\.com\/hiring\/applicants/.test(u) ? "Application" : "CV"));
   // Platform and country only: "LinkedIn Denmark, LinkedIn message" reads "LinkedIn Denmark"; the channel detail stays in the record
   function sourceShort(src) {
     const out = [];
@@ -969,7 +974,7 @@
     const w = wsOf(c), m = w && !w.failed ? w.meta : null, wsLink = m && /^https?:\/\/\S+$/i.test(m.link || "") ? m.link : "";
     const role = roleOf(c.role_id);
     const facts = [c.id, roleName(c.role_id) + (isArchivedRole(role) ? " (archived)" : isClosedRole(role) ? " (earlier round)" : ""), c.sources, c.applied ? "applied " + fmt(c.applied) : "", c.location, c.english ? "English: " + c.english : ""].filter(Boolean);
-    const links = [c.linkedin ? linkChip(c.linkedin, "LinkedIn") : "", cvOpen(c, "chip link"),
+    const links = [c.linkedin ? linkChip(c.linkedin, "LinkedIn") : "", ...appLinks(c), cvOpen(c, "chip link"),
       m && Number(m.size) > 0 ? `<a class="chip link" href="${API}worksample/${encodeURIComponent(c.id)}/file" target="_blank" rel="noopener" title="${h(m.filename || c.ws_file || "")}">Open work sample ↗</a>` : wsLink ? linkChip(wsLink, "Work sample") : "",
       c.email ? `<a class="chip link mail" href="mailto:${h(c.email.trim())}" title="${h(c.email)}">${h(c.email.trim())}</a>` : ""].filter(Boolean);
     // the stage group only when it says something the status doesn't ("Hired" "Hired", "Offer" "Offer" read twice: 14 Nov review), nor
@@ -3184,8 +3189,9 @@
           <input name="reason" maxlength="2000" autocomplete="off" placeholder="${h(cl ? `Reason, needed if not ${cl}` : "Reason")}" aria-label="Your reason for ${h(c.name)}${cl ? `, needed when it differs from Claude's ${h(cl)}` : ""}" value="${h(reason)}">
           <div class="formfoot">${state.onbCallErr[key] ? `<span class="saved bad">${h(state.onbCallErr[key])}</span>` : ""}<button type="submit" class="btn small" aria-label="${r.call ? "Change" : "Save"} your call on ${h(c.name)}">${r.call ? "Change" : "Save"}</button></div></form>`; };
       const row = (c) => { const calls = deciders.map((by) => callOf(c, by).call).filter(Boolean), differ = new Set(calls).size > 1, ap = appliedOf(c), blind = blindNow(c);
+        const open = [...appLinks(c), cvOpen(c, "chip link")].filter(Boolean);  // the application or CV, opened before the call (Yana, 25 Nov)
         return `<tr${differ ? ' class="differ"' : ""}><td><a class="name" href="#candidates/${h(encodeURIComponent(c.id))}" target="_blank" rel="noopener">${h(c.name)}</a>${differ ? ` ${pill("Different calls", "warn")}` : ""}
-          ${c.headline ? `<span class="muted small clamp2">${h(c.headline)}</span>` : ""}<span class="muted small clamp2">${h([c.location || "", (ap.added ? "added " : "applied ") + fmt(ap.day)].filter(Boolean).join(" · "))}</span></td>
+          ${open.length ? `<span class="onbapp">${open.join("")}</span>` : ""}${c.headline ? `<span class="muted small clamp2">${h(c.headline)}</span>` : ""}<span class="muted small clamp2">${h([c.location || "", (ap.added ? "added " : "applied ") + fmt(ap.day)].filter(Boolean).join(" · "))}</span></td>
           <td data-label="Claude">${blind ? pill("blind") : `${callPill(claudeCall(c))}${c.why ? `<span class="muted small clamp2" title="${h(c.why)}">${h(c.why)}</span>` : ""}`}</td>${deciders.map((by) => `<td class="onbcallcell" data-label="${h(firstName(by))}">${cell(c, by)}</td>`).join("")}</tr>`; };
       // the count stays on the task's own line, above (it showed twice once the task was open)
       return `<div class="onbcalls">${table(["Candidate", "Claude", ...deciders.map((by) => firstName(by))], k.list.map(row))}</div>${outHtml(t, k)}`; };
