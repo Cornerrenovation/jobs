@@ -67,6 +67,7 @@
     v.cvFile = f;
     v.portfolio = form.elements['portfolio'] ? normUrl(form.elements['portfolio'].value) : '';
     if (v.portfolio === null) { setErr('portfolio', 'This link doesn’t look right. Please check it.'); ok = false; }
+    else if (form.elements['portfolio'] && form.elements['portfolio'].required && !v.portfolio) { setErr('portfolio', 'Please add a link to your portfolio.'); ok = false; }
     v.answer = form.elements['answer'] ? form.elements['answer'].value.trim() : '';
     if (form.elements['answer'] && form.elements['answer'].required && v.answer.length < 2) { setErr('answer', 'Please answer this question.'); ok = false; }
     if (form.elements['hours']) {
